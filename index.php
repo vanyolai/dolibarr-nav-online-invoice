@@ -11,6 +11,7 @@ if (!$res) {
 }
 
 dol_include_once('/navinvoice/class/navinvoicesync.class.php');
+dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
 $langs->loadLangs(array('navinvoice@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
@@ -18,6 +19,7 @@ if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
 }
 
 $sync = new NavInvoiceSync($db);
+$linkManager = new NavInvoiceLinkManager($db, (int) $conf->entity);
 try {
     $sync->ensureSchema();
 } catch (Throwable $e) {
@@ -111,7 +113,13 @@ if ($resql) {
         $currency = trim((string) $obj->currency);
         $detailUrl = dol_buildpath('/navinvoice/detail.php', 1).'?id='.(int) $obj->rowid;
         $importUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $obj->rowid;
-        $linkedId = $isInbound ? (int) $obj->fk_facture_fourn : (int) $obj->fk_facture;
+
+        try {
+            $linkedId = $linkManager->resolve($obj, $direction);
+        } catch (Throwable $e) {
+            dol_syslog('NAV invoice link verification failed for mirror row '.((int) $obj->rowid).': '.$e->getMessage(), LOG_ERR);
+            $linkedId = $isInbound ? (int) $obj->fk_facture_fourn : (int) $obj->fk_facture;
+        }
 
         print '<tr class="oddeven">';
         print '<td>'.$langs->trans($isInbound ? 'DirectionInbound' : 'DirectionOutbound').'</td>';
