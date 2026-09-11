@@ -106,6 +106,7 @@ $reconciliationLabel = static function (string $code) use ($langs): string {
         'default' => 'BatchReconciliationDefault',
         'mode1' => 'BatchReconciliationMode1',
         'mode2' => 'BatchReconciliationMode2',
+        'nav_summary' => 'BatchReconciliationNavSummary',
         'nav_fallback' => 'BatchReconciliationNavFallback',
     );
     if (!isset($keys[$code])) {
