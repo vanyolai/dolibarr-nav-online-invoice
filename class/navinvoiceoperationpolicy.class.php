@@ -67,7 +67,19 @@ class NavInvoiceOperationPolicy
         $result['source_invoice_id'] = (int) ($relation['original_dolibarr_invoice_id'] ?? 0);
 
         try {
-            $navChain = $this->chainService->fetch($invoiceNumber, $direction);
+            // Inbound invoice numbers are issuer-local and may collide across
+            // suppliers. NAV's optional taxNumber query field disambiguates the
+            // authoritative chain, so use the supplier's 8-digit taxpayer ID
+            // whenever the InvoiceData contains it.
+            $chainTaxNumber = null;
+            if ($direction === 'INBOUND') {
+                $supplierTaxNumber = trim((string) ($parsed['supplier']['tax_number'] ?? ''));
+                if ($supplierTaxNumber !== '') {
+                    $chainTaxNumber = $supplierTaxNumber;
+                }
+            }
+
+            $navChain = $this->chainService->fetch($invoiceNumber, $direction, $chainTaxNumber);
             $result['authoritative_chain'] = $navChain;
             $comparison = $this->chainService->compareToLocal(
                 is_array($navChain['elements'] ?? null) ? $navChain['elements'] : array(),
