@@ -156,6 +156,7 @@ if ($linkedId > 0) {
 
 if (is_array($preview)) {
     $state = (string) $preview['state'];
+    $isSimplified = strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED';
     if ($state === 'ready') {
         $stateDisplay = img_picto('', 'tick').' <span class="ok">'.$langs->trans('ImportStateReady').'</span>';
     } elseif ($state === 'review') {
@@ -169,6 +170,7 @@ if (is_array($preview)) {
     print '<tr><td class="titlefield">'.$langs->trans('ProposalStatus').'</td><td>'.$stateDisplay.'</td></tr>';
     print '<tr><td>'.$langs->trans('ImportTarget').'</td><td>'.$langs->trans($isInbound ? 'ImportAsSupplierInvoice' : 'ImportAsCustomerInvoice').'</td></tr>';
     print '<tr><td>'.$langs->trans('NavInvoiceNumber').'</td><td>'.$display($preview['invoice_number']).'</td></tr>';
+    print '<tr><td>'.$langs->trans('InvoiceCategory').'</td><td>'.$display($preview['category']).'</td></tr>';
     print '<tr><td>'.$langs->trans('InvoiceIssueDate').'</td><td>'.$display($preview['header']['invoice_date']).'</td></tr>';
     print '<tr><td>'.$langs->trans('InvoiceDeliveryDate').'</td><td>'.$display($preview['header']['delivery_date']).'</td></tr>';
     print '<tr><td>'.$langs->trans('PaymentDate').'</td><td>'.$display($preview['header']['due_date']).'</td></tr>';
@@ -176,6 +178,7 @@ if (is_array($preview)) {
     print '<tr><td>'.$langs->trans('Currency').'</td><td>'.$display($preview['header']['currency']).'</td></tr>';
     print '</table></div>';
 
+    $derivedMarker = $isSimplified ? ' <span class="opacitymedium">*</span>' : '';
     print '<div class="fichehalfright">';
     print '<table class="border centpercent">';
     $partner = $preview['partner'];
@@ -187,12 +190,16 @@ if (is_array($preview)) {
         print $display(null);
     }
     print '</td></tr>';
-    print '<tr><td>'.$langs->trans('AmountHT').'</td><td class="right">'.$money($preview['totals']['net'] ?? null, $preview['header']['currency']).'</td></tr>';
-    print '<tr><td>'.$langs->trans('VAT').'</td><td class="right">'.$money($preview['totals']['vat'] ?? null, $preview['header']['currency']).'</td></tr>';
+    print '<tr><td>'.$langs->trans('AmountHT').$derivedMarker.'</td><td class="right">'.$money($preview['totals']['net'] ?? null, $preview['header']['currency']).'</td></tr>';
+    print '<tr><td>'.$langs->trans('VAT').$derivedMarker.'</td><td class="right">'.$money($preview['totals']['vat'] ?? null, $preview['header']['currency']).'</td></tr>';
     print '<tr><td>'.$langs->trans('AmountTTC').'</td><td class="right">'.$money($preview['totals']['gross'] ?? null, $preview['header']['currency']).'</td></tr>';
     print '<tr><td>'.$langs->trans('ExternalReference').'</td><td>'.$display($preview['external_key']).'</td></tr>';
     print '</table></div>';
-    print '<div class="clearboth"></div><br>';
+    print '<div class="clearboth"></div>';
+    if ($isSimplified) {
+        print '<div class="opacitymedium small marginbottomonly">* '.$langs->trans('SimplifiedDerivedAmountsHelp').'</div>';
+    }
+    print '<br>';
 
     if (!empty($preview['blockers'])) {
         print '<div class="error marginbottomonly"><strong>'.$langs->trans('ImportBlockers').'</strong><br>';
@@ -219,12 +226,13 @@ if (is_array($preview)) {
         print '<td>'.$langs->trans('NavUnit').'</td>';
         print '<td>'.$langs->trans('DolibarrUnit').'</td>';
     }
-    print '<td class="right">'.$langs->trans('NavUnitPrice').'</td>';
-    print '<td class="right">'.$langs->trans('DolibarrUnitPrice').'</td>';
+    print '<td class="right">'.$langs->trans($isSimplified ? 'NavGrossUnitPrice' : 'NavUnitPrice').'</td>';
+    print '<td class="right">'.$langs->trans('DolibarrNetUnitPrice').'</td>';
     print '<td class="right">'.$langs->trans('VAT').'</td>';
-    print '<td class="right">'.$langs->trans('AmountHT').'</td>';
+    print '<td class="right">'.$langs->trans('AmountHT').($isSimplified ? ' *' : '').'</td>';
     print '<td class="right">'.$langs->trans('AmountTTC').'</td>';
     print '</tr>';
+    $hasAdjustedPrice = false;
     foreach ($preview['lines'] as $line) {
         $gross = $line['gross'];
         if (($gross === null || $gross === '') && $line['net'] !== null && $line['vat'] !== null) {
@@ -250,19 +258,31 @@ if (is_array($preview)) {
             }
             print '</td>';
         }
-        print '<td class="right">'.$money($line['nav_unit_price_ht'], $preview['header']['currency']).'</td>';
+        $navUnitPrice = array_key_exists('nav_unit_price', $line) ? $line['nav_unit_price'] : ($line['nav_unit_price_ht'] ?? null);
+        print '<td class="right">'.$money($navUnitPrice, $preview['header']['currency']).'</td>';
         print '<td class="right">'.$money($line['unit_price_ht'], $preview['header']['currency']);
         if (!empty($line['unit_price_adjusted'])) {
+            $hasAdjustedPrice = true;
             print ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('ImportUnitPriceAdjustedHelp')).'">*</span>';
         }
         print '</td>';
-        print '<td class="right">'.($line['vat_rate'] !== null ? price($line['vat_rate']).'%' : $display(null)).'</td>';
+        $vatDisplay = $line['vat_rate'] !== null ? price($line['vat_rate']).'%' : $display(null);
+        if ($isSimplified && !empty($line['vat_content'])) {
+            $vatDisplay = rtrim(rtrim(number_format(((float) $line['vat_content']) * 100, 4, '.', ''), '0'), '.').'% → '.price($line['vat_rate']).'%';
+        }
+        print '<td class="right">'.$vatDisplay.'</td>';
         print '<td class="right">'.$money($line['net'], $preview['header']['currency']).'</td>';
         print '<td class="right">'.$money($gross, $preview['header']['currency']).'</td>';
         print '</tr>';
     }
     print '</table></div>';
-    print '<div class="opacitymedium small">* '.$langs->trans('ImportUnitPriceAdjustedHelp').'</div><br>';
+    if ($hasAdjustedPrice) {
+        print '<div class="opacitymedium small">* '.$langs->trans('ImportUnitPriceAdjustedHelp').'</div>';
+    }
+    if ($isSimplified) {
+        print '<div class="opacitymedium small">* '.$langs->trans('SimplifiedDerivedAmountsHelp').'</div>';
+    }
+    print '<br>';
 
     if (!$isInbound) {
         print '<div class="info marginbottomonly">'.$langs->trans('ImportOutboundDraftNumberNotice').'</div>';
