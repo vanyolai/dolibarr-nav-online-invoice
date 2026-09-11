@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0 - development
+
+- Add guarded manual import of NAV invoices into Dolibarr as draft customer or supplier invoices.
+- Import parsed NAV invoice lines as free-text Dolibarr invoice lines; product matching is intentionally deferred.
+- Require strong partner matching, full invoice XML, CREATE operation, NORMAL category and base-currency invoices for the first live importer.
+- Block unsupported VAT-content/special-VAT cases and invoices whose line totals do not reconcile with NAV header totals.
+- Preserve authoritative NAV line net totals by deriving the Dolibarr unit price from line net amount and quantity when required.
+- Detect duplicates using NAV external keys and direction-specific Dolibarr invoice references.
+- Store NAV source metadata in the invoice private note and link the created Dolibarr invoice back to the NAV mirror record.
+- Create drafts only; no automatic validation, booking or payment operation is performed.
+
 ## 0.5.0 - development
 
 - Add read-only partner enrichment preview based on matched NAV invoice party data.
