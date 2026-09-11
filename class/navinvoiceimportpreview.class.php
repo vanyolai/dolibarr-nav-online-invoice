@@ -35,6 +35,7 @@ class NavInvoiceImportPreview
         $operation = strtoupper((string) ($record->invoice_operation ?? 'CREATE'));
         $invoiceNumber = trim((string) ($parsed['invoice_number'] ?? $record->invoice_number ?? ''));
         $currency = strtoupper(trim((string) ($parsed['detail']['currency'] ?? $record->currency ?? '')));
+        $category = strtoupper(trim((string) ($parsed['detail']['category'] ?? $record->invoice_category ?? '')));
         $blockers = array();
         $warnings = array();
 
@@ -51,6 +52,9 @@ class NavInvoiceImportPreview
 
         if ($operation !== 'CREATE') {
             $blockers[] = 'operation_relation';
+        }
+        if ($category !== 'NORMAL') {
+            $blockers[] = 'category_unsupported';
         }
         if ($invoiceNumber === '') {
             $blockers[] = 'invoice_number_missing';
@@ -103,6 +107,7 @@ class NavInvoiceImportPreview
             'target_class' => $inbound ? 'FactureFournisseur' : 'Facture',
             'direction' => $direction,
             'operation' => $operation,
+            'category' => $category,
             'invoice_number' => $invoiceNumber,
             'external_key' => $this->externalKey($record, $direction, $invoiceNumber),
             'partner' => $partner,
