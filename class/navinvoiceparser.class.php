@@ -431,6 +431,15 @@ class NavInvoiceParser
             }
         }
 
+        $itemNumbers = array();
+        $itemNumberNodes = $line->xpath('./*[local-name()="conventionalLineInfo"]/*[local-name()="itemNumbers"]/*[local-name()="itemNumber"]');
+        foreach ($itemNumberNodes ?: array() as $itemNumberNode) {
+            $itemNumber = trim((string) $itemNumberNode);
+            if ($itemNumber !== '' && !in_array($itemNumber, $itemNumbers, true)) {
+                $itemNumbers[] = $itemNumber;
+            }
+        }
+
         return array(
             'number' => $this->text($line, './*[local-name()="lineNumber"]'),
             'description' => $this->text($line, './*[local-name()="lineDescription"]'),
@@ -444,6 +453,7 @@ class NavInvoiceParser
             'vat' => $vat,
             'amounts' => $amounts,
             'product_codes' => $codes,
+            'item_numbers' => $itemNumbers,
             'modification' => array(
                 'reference' => $this->text($line, './*[local-name()="lineModificationReference"]/*[local-name()="lineNumberReference"]'),
                 'operation' => $this->text($line, './*[local-name()="lineModificationReference"]/*[local-name()="lineOperation"]'),
