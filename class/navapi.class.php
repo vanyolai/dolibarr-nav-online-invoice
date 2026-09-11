@@ -21,7 +21,7 @@ class NavInvoiceApi
         $this->signingKey = trim($this->readSecret('NAVINVOICE_SIGNING_KEY'));
         $this->environment = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === 'production' ? 'production' : 'test';
         $this->softwareId = trim((string) getDolGlobalString('NAVINVOICE_SOFTWARE_ID', 'DOLIBARRNAVSYNC001'));
-        $this->softwareVersion = '0.1.0';
+        $this->softwareVersion = '0.2.0';
     }
 
     public function isConfigured(): bool
@@ -40,10 +40,11 @@ class NavInvoiceApi
         return $this->request('queryTaxpayer', 'QueryTaxpayerRequest', $body);
     }
 
-    public function queryInvoiceDigest(string $dateFrom, string $dateTo, int $page = 1): SimpleXMLElement
+    public function queryInvoiceDigest(string $dateFrom, string $dateTo, int $page = 1, string $direction = 'OUTBOUND'): SimpleXMLElement
     {
         $this->assertDate($dateFrom);
         $this->assertDate($dateTo);
+        $direction = $this->normalizeDirection($direction);
         if ($page < 1) {
             throw new Exception('NAV page number must be positive.');
         }
@@ -58,7 +59,7 @@ class NavInvoiceApi
         }
 
         $body = '<page>'.$page.'</page>'
-            .'<invoiceDirection>OUTBOUND</invoiceDirection>'
+            .'<invoiceDirection>'.$direction.'</invoiceDirection>'
             .'<invoiceQueryParams><mandatoryQueryParams><invoiceIssueDate>'
             .'<dateFrom>'.$this->xml($dateFrom).'</dateFrom>'
             .'<dateTo>'.$this->xml($dateTo).'</dateTo>'
@@ -67,15 +68,16 @@ class NavInvoiceApi
         return $this->request('queryInvoiceDigest', 'QueryInvoiceDigestRequest', $body);
     }
 
-    public function queryInvoiceData(string $invoiceNumber, int $batchIndex = 0): string
+    public function queryInvoiceData(string $invoiceNumber, int $batchIndex = 0, string $direction = 'OUTBOUND'): string
     {
         if ($invoiceNumber === '') {
             throw new Exception('Invoice number is required.');
         }
+        $direction = $this->normalizeDirection($direction);
 
         $body = '<invoiceNumberQuery>'
             .'<invoiceNumber>'.$this->xml($invoiceNumber).'</invoiceNumber>'
-            .'<invoiceDirection>OUTBOUND</invoiceDirection>';
+            .'<invoiceDirection>'.$direction.'</invoiceDirection>';
         if ($batchIndex > 0) {
             $body .= '<batchIndex>'.$batchIndex.'</batchIndex>';
         }
@@ -258,6 +260,15 @@ class NavInvoiceApi
     {
         $digits = preg_replace('/\\D+/', '', $taxNumber);
         return substr((string) $digits, 0, 8);
+    }
+
+    private function normalizeDirection(string $direction): string
+    {
+        $direction = strtoupper(trim($direction));
+        if (!in_array($direction, array('OUTBOUND', 'INBOUND'), true)) {
+            throw new Exception('NAV invoice direction must be OUTBOUND or INBOUND.');
+        }
+        return $direction;
     }
 
     private function assertDate(string $date): void
