@@ -220,11 +220,16 @@ class NavInvoiceBatchService
         $warnings = array_values($warnings);
 
         $blockers = array_values(array_unique(array_map('strval', $preview['blockers'] ?? array())));
+        $imported = $this->isImportedMirrorLink($preview);
+        if ($imported) {
+            $blockers = array_values(array_diff($blockers, array('duplicate')));
+        }
+
         $preview['blockers'] = $blockers;
         $preview['warnings'] = $warnings;
         $preview['notices'] = array_values(array_unique(array_merge($preview['notices'] ?? array(), $notices)));
 
-        if ($this->isImportedMirrorLink($preview)) {
+        if ($imported) {
             $preview['state'] = 'imported';
         } else {
             $preview['state'] = $blockers ? 'blocked' : ($warnings ? 'review' : 'ready');
