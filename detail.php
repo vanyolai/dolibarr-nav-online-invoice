@@ -148,7 +148,7 @@ $navEnum = static function (string $group, $value) use ($langs, $display): strin
     if ($value === null || $value === '') {
         return $display(null);
     }
-    $raw = strtoupper((string) $value;
+    $raw = strtoupper((string) $value);
     $key = 'Nav'.$group.'_'.$raw;
     $translated = $langs->trans($key);
     return $translated !== $key ? dol_escape_htmltag($translated) : $display($value);
