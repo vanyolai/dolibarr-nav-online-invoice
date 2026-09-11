@@ -59,7 +59,7 @@ print load_fiche_titre($langs->trans('NavOnlineInvoice'), '', 'file-invoice');
 if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
     $today = new DateTimeImmutable('today');
     $defaultFrom = $today->modify('-6 days')->format('Y-m-d');
-    print '<form method="POST" action="'.$_SERVER['PHP_SELF'].'">';
+    print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'">';
     print '<input type="hidden" name="token" value="'.newToken().'">';
     print '<input type="hidden" name="action" value="sync">';
     print '<div class="fichecenter">';
@@ -95,6 +95,7 @@ print '<td>'.$langs->trans('TaxNumber').'</td>';
 print '<td class="right">'.$langs->trans('AmountHT').'</td>';
 print '<td class="right">'.$langs->trans('VAT').'</td>';
 print '<td>'.$langs->trans('XmlDownloaded').'</td>';
+print '<td>'.$langs->trans('DolibarrInvoice').'</td>';
 print '<td>'.$langs->trans('LastSync').'</td>';
 print '</tr>';
 
@@ -109,6 +110,8 @@ if ($resql) {
         $hasVatAmount = $obj->invoice_vat_amount !== null && $obj->invoice_vat_amount !== '';
         $currency = trim((string) $obj->currency);
         $detailUrl = dol_buildpath('/navinvoice/detail.php', 1).'?id='.(int) $obj->rowid;
+        $importUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $obj->rowid;
+        $linkedId = $isInbound ? (int) $obj->fk_facture_fourn : (int) $obj->fk_facture;
 
         print '<tr class="oddeven">';
         print '<td>'.$langs->trans($isInbound ? 'DirectionInbound' : 'DirectionOutbound').'</td>';
@@ -120,12 +123,22 @@ if ($resql) {
         print '<td class="right">'.($hasNetAmount ? price($obj->invoice_net_amount).' '.dol_escape_htmltag($currency) : '<span class="opacitymedium">—</span>').'</td>';
         print '<td class="right">'.($hasVatAmount ? price($obj->invoice_vat_amount).' '.dol_escape_htmltag($currency) : '<span class="opacitymedium">—</span>').'</td>';
         print '<td>'.($obj->data_fetched ? img_picto($langs->trans('Yes'), 'tick') : img_picto($langs->trans('No'), 'warning')).'</td>';
+        print '<td>';
+        if ($linkedId > 0) {
+            $invoiceUrl = $isInbound
+                ? DOL_URL_ROOT.'/fourn/facture/card.php?facid='.$linkedId
+                : DOL_URL_ROOT.'/compta/facture/card.php?facid='.$linkedId;
+            print img_picto('', 'tick').' <a href="'.dol_escape_htmltag($invoiceUrl).'">'.$langs->trans('OpenDolibarrInvoice').'</a>';
+        } else {
+            print '<a href="'.dol_escape_htmltag($importUrl).'">'.img_picto('', 'file-invoice').' '.$langs->trans('ImportPreview').'</a>';
+        }
+        print '</td>';
         print '<td>'.dol_escape_htmltag($obj->last_sync).'</td>';
         print '</tr>';
     }
     $db->free($resql);
 } else {
-    print '<tr><td colspan="10" class="error">'.dol_escape_htmltag($db->lasterror()).'</td></tr>';
+    print '<tr><td colspan="11" class="error">'.dol_escape_htmltag($db->lasterror()).'</td></tr>';
 }
 print '</table></div>';
 
