@@ -385,12 +385,10 @@ if ($parsed) {
         $unitDisplay = $line['unit_own'] !== '' ? $display($line['unit_own']) : $navEnum('Unit', $line['unit']);
         $vatLabel = $line['vat']['label'];
         if ($line['vat']['kind'] === 'content') {
-            $contentPercent = rtrim(rtrim(number_format(((float) $line['vat']['value']) * 100, 4, '.', ''), '0'), '.');
-            $vatLabel = $langs->trans('VatContent').' '.$contentPercent.'%';
             $effectiveRate = $vatRateFromContent($line['vat']['value']);
-            if ($effectiveRate !== null) {
-                $vatLabel .= ' → '.rtrim(rtrim(number_format($effectiveRate, 2, '.', ''), '0'), '.').'%';
-            }
+            $vatLabel = $effectiveRate !== null
+                ? rtrim(rtrim(number_format($effectiveRate, 2, '.', ''), '0'), '.').'%' 
+                : $langs->trans('VatContent');
         }
 
         $gross = $line['amounts']['gross'];
