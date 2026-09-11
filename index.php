@@ -12,7 +12,7 @@ if (!$res) {
 
 dol_include_once('/navinvoice/class/navinvoicesync.class.php');
 dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice', 'navpartner@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice', 'navpartner@navinvoice', 'navrelation@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -108,6 +108,8 @@ if ($resql) {
     while ($obj = $db->fetch_object($resql)) {
         $direction = strtoupper((string) $obj->invoice_direction);
         $isInbound = $direction === 'INBOUND';
+        $operation = strtoupper(trim((string) $obj->invoice_operation));
+        $isNonCreate = $operation !== '' && $operation !== 'CREATE';
         $partnerName = trim((string) ($isInbound ? $obj->supplier_name : $obj->customer_name));
         $partnerTaxNumber = trim((string) ($isInbound ? $obj->supplier_tax_number : $obj->customer_tax_number));
         $privatePerson = (!$isInbound && $partnerName === '' && $partnerTaxNumber === '');
@@ -117,6 +119,7 @@ if ($resql) {
         $detailUrl = dol_buildpath('/navinvoice/detail.php', 1).'?id='.(int) $obj->rowid;
         $importUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $obj->rowid;
         $partnerUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.(int) $obj->rowid;
+        $relationUrl = dol_buildpath('/navinvoice/relation.php', 1).'?id='.(int) $obj->rowid;
 
         try {
             $linkedId = $linkManager->resolve($obj, $direction);
@@ -129,7 +132,13 @@ if ($resql) {
         print '<td>'.$langs->trans($isInbound ? 'DirectionInbound' : 'DirectionOutbound').'</td>';
         print '<td><a href="'.$detailUrl.'">'.dol_escape_htmltag($obj->invoice_number).'</a></td>';
         print '<td>'.dol_escape_htmltag($obj->invoice_issue_date).'</td>';
-        print '<td>'.dol_escape_htmltag($obj->invoice_operation).'</td>';
+        print '<td>';
+        if ($isNonCreate) {
+            print '<a href="'.dol_escape_htmltag($relationUrl).'" title="'.dol_escape_htmltag($langs->trans('ReviewRelation')).'">'.dol_escape_htmltag($operation).'</a>';
+        } else {
+            print dol_escape_htmltag($operation !== '' ? $operation : (string) $obj->invoice_operation);
+        }
+        print '</td>';
         print '<td>';
         if ($privatePerson) {
             print '<span class="opacitymedium">'.$langs->trans('PrivatePerson').'</span>';
@@ -149,6 +158,8 @@ if ($resql) {
                 ? DOL_URL_ROOT.'/fourn/facture/card.php?facid='.$linkedId
                 : DOL_URL_ROOT.'/compta/facture/card.php?facid='.$linkedId;
             print img_picto('', 'tick').' <a href="'.dol_escape_htmltag($invoiceUrl).'">'.$langs->trans('OpenDolibarrInvoice').'</a>';
+        } elseif ($isNonCreate) {
+            print '<a href="'.dol_escape_htmltag($relationUrl).'">'.img_picto('', 'link').' '.$langs->trans('ReviewRelation').'</a>';
         } else {
             print '<a href="'.dol_escape_htmltag($importUrl).'">'.img_picto('', 'file-invoice').' '.$langs->trans('ImportPreview').'</a>';
         }
