@@ -205,6 +205,11 @@ class NavInvoiceBatchService
      * therefore informational here; the importer reconciles the authoritative
      * NAV summary after first trying Dolibarr's native calculation modes.
      *
+     * A single remaining partner_missing blocker is promoted to a dedicated
+     * partner_required state. This lets the batch UI route the invoice into the
+     * NAV taxpayer/third-party resolution workflow instead of presenting it as
+     * an undifferentiated import failure.
+     *
      * @param array<string,mixed> $preview
      * @return array<string,mixed>
      */
@@ -242,6 +247,8 @@ class NavInvoiceBatchService
 
         if ($imported) {
             $preview['state'] = 'imported';
+        } elseif ($blockers === array('partner_missing')) {
+            $preview['state'] = 'partner_required';
         } else {
             $preview['state'] = $blockers ? 'blocked' : ($warnings ? 'review' : 'ready');
         }
