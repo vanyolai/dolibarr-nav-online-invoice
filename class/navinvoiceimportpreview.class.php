@@ -216,32 +216,50 @@ class NavInvoiceImportPreview
         $vatAmount = $line['amounts']['vat'] ?? null;
         $gross = $sourceGross;
         $adjusted = false;
+        $quantityDerived = false;
+        $unitPriceDerived = false;
+        $nonExpressionLine = array_key_exists('expression', $line) && $line['expression'] === false;
 
         if ($qty === null || $qty === '' || (float) $qty == 0.0) {
-            $blocker = $blocker ?: 'quantity_invalid';
-        } elseif ($simplified) {
-            if ($gross === null || $gross === '') {
-                $blocker = $blocker ?: 'line_gross_missing';
-            } elseif ($vatRate !== null) {
-                // On SIMPLIFIED invoices NAV unit price and line amount are gross.
-                // Convert authoritative gross to the legal VAT rate Dolibarr needs,
-                // then derive an HT unit price without treating NAV unitPrice as HT.
-                $grossFloat = (float) $gross;
-                $netFloat = $vatRate == 0.0 ? $grossFloat : $grossFloat / (1 + ($vatRate / 100));
-                $net = $this->decimal($netFloat);
-                $vatAmount = $this->decimal($grossFloat - $netFloat);
-                $unitPrice = $netFloat / (float) $qty;
+            if ($nonExpressionLine) {
+                // NAV allows quantity and unitPrice to be omitted when the line
+                // cannot be expressed in a natural unit. Dolibarr still needs a
+                // quantity, so represent the complete line as one technical unit.
+                // This does not claim that the source invoice contained quantity 1.
+                $qty = 1;
+                $quantityDerived = true;
+            } else {
+                $blocker = $blocker ?: 'quantity_invalid';
             }
-        } elseif ($sourceNet === null || $sourceNet === '') {
-            $blocker = $blocker ?: 'line_net_missing';
-        } else {
-            // Normal-invoice NAV line net is authoritative. Derive the Dolibarr
-            // unit price from net / quantity to preserve exact NAV line totals.
-            $unitPrice = (float) $sourceNet / (float) $qty;
-            if ($navUnitPrice !== null && $navUnitPrice !== '') {
-                $adjusted = abs((float) $navUnitPrice - $unitPrice) > 0.000001;
-                if ($adjusted) {
-                    $warning = 'unit_price_adjusted';
+        }
+
+        if ($qty !== null && $qty !== '' && (float) $qty != 0.0) {
+            if ($simplified) {
+                if ($gross === null || $gross === '') {
+                    $blocker = $blocker ?: 'line_gross_missing';
+                } elseif ($vatRate !== null) {
+                    // On SIMPLIFIED invoices NAV unit price and line amount are gross.
+                    // Convert authoritative gross to the legal VAT rate Dolibarr needs,
+                    // then derive an HT unit price without treating NAV unitPrice as HT.
+                    $grossFloat = (float) $gross;
+                    $netFloat = $vatRate == 0.0 ? $grossFloat : $grossFloat / (1 + ($vatRate / 100));
+                    $net = $this->decimal($netFloat);
+                    $vatAmount = $this->decimal($grossFloat - $netFloat);
+                    $unitPrice = $netFloat / (float) $qty;
+                    $unitPriceDerived = $quantityDerived || $navUnitPrice === null || $navUnitPrice === '';
+                }
+            } elseif ($sourceNet === null || $sourceNet === '') {
+                $blocker = $blocker ?: 'line_net_missing';
+            } else {
+                // Normal-invoice NAV line net is authoritative. Derive the Dolibarr
+                // unit price from net / quantity to preserve exact NAV line totals.
+                $unitPrice = (float) $sourceNet / (float) $qty;
+                $unitPriceDerived = $quantityDerived || $navUnitPrice === null || $navUnitPrice === '';
+                if ($navUnitPrice !== null && $navUnitPrice !== '') {
+                    $adjusted = abs((float) $navUnitPrice - $unitPrice) > 0.000001;
+                    if ($adjusted) {
+                        $warning = 'unit_price_adjusted';
+                    }
                 }
             }
         }
@@ -252,7 +270,9 @@ class NavInvoiceImportPreview
         return array(
             'number' => (string) ($line['number'] ?? ''),
             'description' => (string) ($line['description'] ?? ''),
+            'expression' => $line['expression'] ?? null,
             'quantity' => $qty,
+            'quantity_derived' => $quantityDerived,
             'unit' => (string) ($unitResolution['source'] ?? ''),
             'unit_id' => (int) ($unitResolution['id'] ?? 0),
             'unit_code' => (string) ($unitResolution['code'] ?? ''),
@@ -262,6 +282,7 @@ class NavInvoiceImportPreview
             'nav_unit_price_basis' => $simplified ? 'gross' : 'net',
             'nav_unit_price_ht' => $simplified ? null : $navUnitPrice,
             'unit_price_ht' => $unitPrice,
+            'unit_price_derived' => $unitPriceDerived,
             'unit_price_adjusted' => $adjusted,
             'vat_rate' => $vatRate,
             'vat_content' => $kind === 'content' ? $value : null,
