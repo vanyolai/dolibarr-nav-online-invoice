@@ -128,9 +128,14 @@ $vatRateFromContent = static function ($value): ?float {
     if ($content < 0 || $content >= 1) {
         return null;
     }
-    foreach (array(0.0476 => 5.0, 0.1525 => 18.0, 0.2126 => 27.0) as $ratio => $rate) {
-        if (abs($content - (float) $ratio) <= 0.00005) {
-            return $rate;
+    $known = array(
+        array(0.0476, 5.0),
+        array(0.1525, 18.0),
+        array(0.2126, 27.0),
+    );
+    foreach ($known as $entry) {
+        if (abs($content - $entry[0]) <= 0.00005) {
+            return $entry[1];
         }
     }
     $derived = 100 * $content / (1 - $content);
