@@ -52,6 +52,25 @@ class NavInvoiceImporter
             throw new Exception('Only invoices in the Dolibarr base currency can currently be imported.');
         }
 
+        $operation = strtoupper(trim((string) ($preview['operation'] ?? $record->invoice_operation ?? 'CREATE')));
+        $operationMapping = trim((string) ($preview['operation_mapping'] ?? ($operation === 'CREATE' ? 'standard' : '')));
+        $sourceInvoiceId = (int) ($preview['source_invoice_id'] ?? 0);
+        if ($operation === 'CREATE') {
+            if ($operationMapping !== 'standard') {
+                throw new Exception('CREATE NAV invoices must map to a standard Dolibarr invoice.');
+            }
+        } elseif ($operation === 'MODIFY') {
+            if (!in_array($operationMapping, array('credit_note', 'standard_adjustment'), true) || $sourceInvoiceId <= 0) {
+                throw new Exception('MODIFY NAV invoice has no deterministic Dolibarr mapping/source invoice.');
+            }
+        } elseif ($operation === 'STORNO') {
+            if ($operationMapping !== 'credit_note' || $sourceInvoiceId <= 0) {
+                throw new Exception('STORNO NAV invoice must map to a source-linked Dolibarr credit note.');
+            }
+        } else {
+            throw new Exception('Unsupported NAV invoice operation: '.$operation);
+        }
+
         $direction = strtoupper((string) $preview['direction']);
         $inbound = $direction === 'INBOUND';
         $category = strtoupper((string) ($preview['category'] ?? ''));
@@ -86,6 +105,7 @@ class NavInvoiceImporter
             }
 
             $this->assertCreatedTotals($invoice, $preview);
+            $this->assertOperationMapping($invoice, $preview);
             $this->linkMirrorRecord((int) $record->rowid, $direction, $invoiceId);
 
             return array(
@@ -96,6 +116,9 @@ class NavInvoiceImporter
                     ? DOL_URL_ROOT.'/fourn/facture/card.php?facid='.$invoiceId
                     : DOL_URL_ROOT.'/compta/facture/card.php?facid='.$invoiceId,
                 'reconciliation' => $reconciliation,
+                'operation' => $operation,
+                'operation_mapping' => $operationMapping,
+                'source_invoice_id' => $sourceInvoiceId,
             );
         } catch (Throwable $e) {
             if ($invoiceId > 0 && is_object($invoice)) {
@@ -117,7 +140,10 @@ class NavInvoiceImporter
 
         $invoice = new Facture($this->db);
         $invoice->socid = (int) $preview['partner']['id'];
-        $invoice->type = Facture::TYPE_STANDARD;
+        $invoice->type = (string) ($preview['operation_mapping'] ?? 'standard') === 'credit_note'
+            ? Facture::TYPE_CREDIT_NOTE
+            : Facture::TYPE_STANDARD;
+        $invoice->fk_facture_source = (int) ($preview['source_invoice_id'] ?? 0);
         $invoice->date = $this->dateToTimestamp((string) $preview['header']['invoice_date']);
         $invoice->date_pointoftax = $this->dateToTimestampOrZero((string) ($preview['header']['delivery_date'] ?? ''));
         $invoice->ref_customer = (string) $preview['invoice_number'];
@@ -188,7 +214,10 @@ class NavInvoiceImporter
 
         $invoice = new FactureFournisseur($this->db);
         $invoice->socid = (int) $preview['partner']['id'];
-        $invoice->type = FactureFournisseur::TYPE_STANDARD;
+        $invoice->type = (string) ($preview['operation_mapping'] ?? 'standard') === 'credit_note'
+            ? FactureFournisseur::TYPE_CREDIT_NOTE
+            : FactureFournisseur::TYPE_STANDARD;
+        $invoice->fk_facture_source = (int) ($preview['source_invoice_id'] ?? 0);
         $invoice->date = $this->dateToTimestamp((string) $preview['header']['invoice_date']);
         $pointOfTaxDate = $this->dateToTimestampOrZero((string) ($preview['header']['delivery_date'] ?? ''));
         $invoice->date_pointoftax = $pointOfTaxDate;
@@ -583,6 +612,24 @@ class NavInvoiceImporter
         );
     }
 
+    private function assertOperationMapping($invoice, array $preview): void
+    {
+        $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
+        $mapping = (string) ($preview['operation_mapping'] ?? ($operation === 'CREATE' ? 'standard' : ''));
+        $sourceInvoiceId = (int) ($preview['source_invoice_id'] ?? 0);
+        $expectedType = $mapping === 'credit_note' ? 2 : 0;
+
+        if ((int) ($invoice->type ?? -1) !== $expectedType) {
+            throw new Exception('Created Dolibarr invoice type does not match the NAV operation mapping.');
+        }
+        if ($operation !== 'CREATE' && (int) ($invoice->fk_facture_source ?? 0) !== $sourceInvoiceId) {
+            throw new Exception('Created Dolibarr modification/storno invoice lost its source-invoice relationship.');
+        }
+        if ($mapping === 'credit_note' && (float) ($invoice->total_ht ?? 0) > 0.00001) {
+            throw new Exception('Created Dolibarr credit note has a positive HT total.');
+        }
+    }
+
     /** @param array<string,mixed> $mapped */
     private function resolveUnitId(array $mapped): ?int
     {
@@ -653,9 +700,13 @@ class NavInvoiceImporter
 
     private function auditNote(array $preview, $record): string
     {
+        $operation = strtoupper(trim((string) ($preview['operation'] ?? $record->invoice_operation ?? 'CREATE')));
         $parts = array(
             'NAV Online Invoice import',
             'direction='.(string) $preview['direction'],
+            'operation='.$operation,
+            'operation_mapping='.(string) ($preview['operation_mapping'] ?? ($operation === 'CREATE' ? 'standard' : '')),
+            'source_invoice_id='.(int) ($preview['source_invoice_id'] ?? 0),
             'invoice='.(string) $preview['invoice_number'],
             'mirror_rowid='.(int) $record->rowid,
             'external_key='.(string) $preview['external_key'],
