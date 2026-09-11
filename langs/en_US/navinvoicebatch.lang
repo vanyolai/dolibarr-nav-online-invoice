@@ -21,3 +21,7 @@ BatchResultSuccess=imported
 BatchResultSkipped=skipped
 BatchResultError=error
 BatchMessage=Message
+BatchReconciliationDefault=Matched with Dolibarr default calculation
+BatchReconciliationMode1=Matched with Dolibarr calculation Mode 1
+BatchReconciliationMode2=Matched with Dolibarr calculation Mode 2
+BatchReconciliationNavFallback=Required authoritative NAV totals fallback
