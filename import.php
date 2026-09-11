@@ -233,6 +233,7 @@ if (is_array($preview)) {
     print '<td class="right">'.$langs->trans('AmountTTC').'</td>';
     print '</tr>';
     $hasAdjustedPrice = false;
+    $hasNonExpressionNormalization = false;
     foreach ($preview['lines'] as $line) {
         $gross = $line['gross'];
         if (($gross === null || $gross === '') && $line['net'] !== null && $line['vat'] !== null) {
@@ -241,7 +242,12 @@ if (is_array($preview)) {
         print '<tr class="oddeven">';
         print '<td class="right">'.$display($line['number']).'</td>';
         print '<td>'.$display($line['description']).'</td>';
-        print '<td class="right">'.$display($line['quantity']).'</td>';
+        print '<td class="right">'.$display($line['quantity']);
+        if (!empty($line['quantity_derived'])) {
+            $hasNonExpressionNormalization = true;
+            print ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>';
+        }
+        print '</td>';
         if ($showUnits) {
             print '<td>'.$display($line['unit']).'</td>';
             print '<td>';
@@ -264,6 +270,9 @@ if (is_array($preview)) {
         if (!empty($line['unit_price_adjusted'])) {
             $hasAdjustedPrice = true;
             print ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('ImportUnitPriceAdjustedHelp')).'">*</span>';
+        } elseif (!empty($line['unit_price_derived'])) {
+            $hasNonExpressionNormalization = true;
+            print ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>';
         }
         print '</td>';
         $vatDisplay = $line['vat_rate'] !== null ? price($line['vat_rate']).'%' : $display(null);
@@ -273,6 +282,9 @@ if (is_array($preview)) {
         print '</tr>';
     }
     print '</table></div>';
+    if ($hasNonExpressionNormalization) {
+        print '<div class="opacitymedium small">* '.$langs->trans('NonExpressionLineDerivedHelp').'</div>';
+    }
     if ($hasAdjustedPrice) {
         print '<div class="opacitymedium small">* '.$langs->trans('ImportUnitPriceAdjustedHelp').'</div>';
     }
