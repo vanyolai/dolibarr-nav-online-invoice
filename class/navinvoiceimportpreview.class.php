@@ -1,10 +1,12 @@
 <?php
 
 dol_include_once('/navinvoice/class/navunitresolver.class.php');
+dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
 
 /**
  * Build a read-only preview of how a NAV invoice would map into Dolibarr.
- * No Dolibarr business object is created or modified here.
+ * No Dolibarr business object is created or modified here, except repairing
+ * stale NAV mirror links to Dolibarr invoices that no longer exist.
  */
 class NavInvoiceImportPreview
 {
@@ -20,12 +22,16 @@ class NavInvoiceImportPreview
     /** @var NavUnitResolver */
     private $unitResolver;
 
+    /** @var NavInvoiceLinkManager */
+    private $linkManager;
+
     public function __construct($db, int $entity, string $baseCurrency = 'HUF')
     {
         $this->db = $db;
         $this->entity = $entity;
         $this->baseCurrency = strtoupper(trim($baseCurrency));
         $this->unitResolver = new NavUnitResolver($db);
+        $this->linkManager = new NavInvoiceLinkManager($db, $entity);
     }
 
     /**
@@ -234,7 +240,9 @@ class NavInvoiceImportPreview
     /** @return array<string,mixed>|null */
     private function findExistingInvoice($record, string $direction, string $invoiceNumber, int $partnerId): ?array
     {
-        $linkedId = $direction === 'INBOUND' ? (int) ($record->fk_facture_fourn ?? 0) : (int) ($record->fk_facture ?? 0);
+        // Validate the stored mirror link first. If the draft was deleted in
+        // Dolibarr, resolve() clears the stale link and import can proceed again.
+        $linkedId = $this->linkManager->resolve($record, $direction);
         if ($linkedId > 0) {
             return array('id' => $linkedId, 'type' => $direction === 'INBOUND' ? 'supplier' : 'customer', 'source' => 'mirror_link');
         }
