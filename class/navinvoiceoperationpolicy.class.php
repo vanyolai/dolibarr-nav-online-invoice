@@ -118,8 +118,20 @@ class NavInvoiceOperationPolicy
             }
         }
 
-        if ($this->hasMixedLineSigns($parsed)) {
+        if ($result['mapping'] === 'credit_note') {
+            $net = $this->numeric($parsed['totals']['net'] ?? null);
+            if ($net !== null && $net > $epsilon) {
+                // Dolibarr validates credit notes by HT sign, not TTC sign.
+                $result['blockers'][] = 'credit_note_net_positive';
+            }
+        }
+
+        $mixedSigns = $this->hasMixedLineSigns($parsed);
+        if ($mixedSigns) {
             $result['warnings'][] = 'mixed_sign_modification';
+            if ($result['mapping'] === 'standard_adjustment' && !getDolGlobalString('FACTURE_ENABLE_NEGATIVE_LINES')) {
+                $result['blockers'][] = 'standard_adjustment_negative_lines_disabled';
+            }
         }
         if ($result['source_invoice_id'] <= 0) {
             $result['blockers'][] = 'source_invoice_missing';
