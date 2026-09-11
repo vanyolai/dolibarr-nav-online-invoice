@@ -21,7 +21,7 @@ class NavInvoiceApi
         $this->signingKey = trim($this->readSecret('NAVINVOICE_SIGNING_KEY'));
         $this->environment = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === 'production' ? 'production' : 'test';
         $this->softwareId = trim((string) getDolGlobalString('NAVINVOICE_SOFTWARE_ID', 'DOLIBARRNAVSYNC001'));
-        $this->softwareVersion = '0.3.0';
+        $this->softwareVersion = '0.6.0';
     }
 
     public function isConfigured(): bool
@@ -146,102 +146,62 @@ class NavInvoiceApi
             .'<common:taxNumber>'.$this->xml($this->taxNumber).'</common:taxNumber>'
             .'<common:requestSignature cryptoType="SHA3-512">'.$signature.'</common:requestSignature>'
             .'</common:user>'
-            .$this->softwareXml()
+            .'<software>'
+            .'<softwareId>'.$this->xml($this->softwareId).'</softwareId>'
+            .'<softwareName>Dolibarr NAV Online Invoice</softwareName>'
+            .'<softwareOperation>ONLINE_SERVICE</softwareOperation>'
+            .'<softwareMainVersion>'.$this->xml($this->softwareVersion).'</softwareMainVersion>'
+            .'<softwareDevName>vanyolai</softwareDevName>'
+            .'<softwareDevContact>https://github.com/vanyolai/dolibarr-nav-online-invoice</softwareDevContact>'
+            .'<softwareDevCountryCode>HU</softwareDevCountryCode>'
+            .'<softwareDevTaxNumber>'.$this->xml($this->taxNumber).'</softwareDevTaxNumber>'
+            .'</software>'
             .$body
             .'</'.$rootElement.'>';
 
         $url = $this->baseUrl().'/'.$endpoint;
         $ch = curl_init($url);
         curl_setopt_array($ch, array(
+            CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => $xml,
-            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => array('Content-Type: application/xml', 'Accept: application/xml'),
             CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_TIMEOUT => 45,
-            CURLOPT_HTTPHEADER => array('Content-Type: application/xml; charset=UTF-8', 'Accept: application/xml'),
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_TIMEOUT => 30,
         ));
-
         $raw = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlError = curl_error($ch);
-        $httpCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         curl_close($ch);
 
-        if ($raw === false || $curlError !== '') {
-            throw new Exception('NAV HTTP request failed: '.$curlError);
+        if ($raw === false || $raw === '') {
+            throw new Exception('NAV API request failed'.($curlError !== '' ? ': '.$curlError : '.'));
         }
 
-        libxml_use_internal_errors(true);
-        $response = simplexml_load_string($raw);
-
-        if ($httpCode < 200 || $httpCode >= 300) {
-            $detail = $response instanceof SimpleXMLElement ? $this->extractApiError($response) : '';
-            $message = 'NAV HTTP request returned status '.$httpCode;
-            if ($detail !== '') {
-                $message .= ': '.$detail;
-            }
-            if ($httpCode === 401) {
-                $message .= ' (check that the technical user and keys belong to the selected NAV '.($this->environment === 'production' ? 'production' : 'test').' environment)';
-            }
-            throw new Exception($message.'.');
-        }
-
+        $response = @simplexml_load_string($raw);
         if ($response === false) {
-            $errors = libxml_get_errors();
-            libxml_clear_errors();
-            throw new Exception('NAV returned invalid XML'.(!empty($errors) ? ': '.trim($errors[0]->message) : '.'));
+            throw new Exception('NAV API returned invalid XML (HTTP '.$status.').');
         }
 
-        $detail = $this->extractApiError($response);
-        if ($detail !== '') {
-            throw new Exception($detail);
+        $technicalMessages = $response->xpath('//*[local-name()="technicalValidationMessages"]/*[local-name()="validationResultCode" and normalize-space(.) != "OK"]/..');
+        $businessMessages = $response->xpath('//*[local-name()="businessValidationMessages"]/*[local-name()="validationResultCode" and normalize-space(.) != "OK"]/..');
+        $messages = array_merge($technicalMessages ?: array(), $businessMessages ?: array());
+        if ($messages) {
+            $parts = array();
+            foreach ($messages as $message) {
+                $code = $this->xpathValue($message, './*[local-name()="validationErrorCode"]');
+                $text = $this->xpathValue($message, './*[local-name()="message"]');
+                $parts[] = trim($code.($text !== '' ? ': '.$text : ''));
+            }
+            throw new Exception('NAV API validation error: '.implode('; ', array_filter($parts)));
+        }
+
+        if ($status < 200 || $status >= 300) {
+            $hint = $status === 401 ? ' Check that the selected test/production environment matches the technical user.' : '';
+            throw new Exception('NAV API HTTP '.$status.'.'.$hint);
         }
 
         return $response;
-    }
-
-    private function extractApiError(SimpleXMLElement $response): string
-    {
-        $funcNodes = $response->xpath('//*[local-name()="result"]/*[local-name()="funcCode"]');
-        if (!$funcNodes || (string) $funcNodes[0] === 'OK') {
-            return '';
-        }
-
-        $errorCodeNodes = $response->xpath('//*[local-name()="result"]/*[local-name()="errorCode"]');
-        $messageNodes = $response->xpath('//*[local-name()="result"]/*[local-name()="message"]');
-        $errorCode = $errorCodeNodes ? trim((string) $errorCodeNodes[0]) : 'UNKNOWN';
-        $message = $messageNodes ? trim((string) $messageNodes[0]) : 'NAV API request failed';
-
-        return $errorCode.': '.$message;
-    }
-
-    private function readSecret(string $name): string
-    {
-        $value = (string) getDolGlobalString($name);
-        if ($value === '') {
-            return '';
-        }
-
-        if (preg_match('/^dolcrypt:/i', $value)) {
-            require_once DOL_DOCUMENT_ROOT.'/core/lib/security.lib.php';
-            $value = (string) dolDecrypt($value);
-        }
-
-        return $value;
-    }
-
-    private function softwareXml(): string
-    {
-        return '<software>'
-            .'<softwareId>'.$this->xml($this->softwareId).'</softwareId>'
-            .'<softwareName>Dolibarr NAV Online Invoice</softwareName>'
-            .'<softwareOperation>LOCAL_SOFTWARE</softwareOperation>'
-            .'<softwareMainVersion>'.$this->xml($this->softwareVersion).'</softwareMainVersion>'
-            .'<softwareDevName>vanyolai</softwareDevName>'
-            .'<softwareDevContact>https://github.com/vanyolai/dolibarr-nav-online-invoice</softwareDevContact>'
-            .'<softwareDevCountryCode>HU</softwareDevCountryCode>'
-            .'</software>';
     }
 
     private function baseUrl(): string
@@ -251,14 +211,9 @@ class NavInvoiceApi
             : 'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3';
     }
 
-    private function createRequestId(): string
+    private function normalizeTaxNumber(string $value): string
     {
-        return 'RID'.gmdate('YmdHis').strtoupper(bin2hex(random_bytes(5)));
-    }
-
-    private function normalizeTaxNumber(string $taxNumber): string
-    {
-        $digits = preg_replace('/\\D+/', '', $taxNumber);
+        $digits = preg_replace('/\D+/', '', $value);
         return substr((string) $digits, 0, 8);
     }
 
@@ -275,12 +230,40 @@ class NavInvoiceApi
     {
         $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
         if (!$parsed || $parsed->format('Y-m-d') !== $date) {
-            throw new Exception('Invalid date format, expected YYYY-MM-DD.');
+            throw new Exception('Invalid date, expected YYYY-MM-DD: '.$date);
         }
+    }
+
+    private function createRequestId(): string
+    {
+        return 'DOL'.strtoupper(substr(bin2hex(random_bytes(15)), 0, 27));
     }
 
     private function xml(string $value): string
     {
         return htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+    }
+
+    private function xpathValue(SimpleXMLElement $node, string $xpath): string
+    {
+        $nodes = $node->xpath($xpath);
+        return $nodes ? trim((string) $nodes[0]) : '';
+    }
+
+    private function readSecret(string $name): string
+    {
+        $value = trim((string) getDolGlobalString($name));
+        if ($value === '') {
+            return '';
+        }
+
+        if (str_starts_with($value, 'dolcrypt:') && function_exists('dolDecrypt')) {
+            $decrypted = dolDecrypt($value);
+            if ($decrypted !== false && $decrypted !== null) {
+                return trim((string) $decrypted);
+            }
+        }
+
+        return $value;
     }
 }
