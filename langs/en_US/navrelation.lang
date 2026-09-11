@@ -14,6 +14,7 @@ NavInvoiceRelationChain=NAV invoice relation chain
 RelationChainEmpty=No related NAV mirror records were found.
 RelationImportSafetyNotice=MODIFY/STORNO import remains blocked until the resolved NAV relationship can be mapped deterministically to the correct Dolibarr document type and original invoice relationship.
 RelationResolutionFailed=Invoice relationship resolution failed
+ReviewRelation=Review relationship
 RelationBlocker_operation_unsupported=The NAV operation is not CREATE, MODIFY or STORNO.
 RelationBlocker_original_invoice_number_missing=The non-CREATE invoice does not identify its original invoice.
 RelationBlocker_original_mirror_missing=The original NAV invoice is not present in the local mirror and modifyWithoutMaster does not allow this case.
