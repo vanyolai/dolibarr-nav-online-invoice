@@ -19,32 +19,63 @@ if (!$user->admin) {
 }
 
 $action = GETPOST('action', 'aZ09');
+$isConfigPost = in_array($action, array('save', 'test'), true);
 
-if ($action === 'save') {
-    $environment = GETPOST('environment', 'alpha') === 'production' ? 'production' : 'test';
-    $taxNumber = preg_replace('/\D+/', '', GETPOST('tax_number', 'alphanohtml'));
-    $taxNumber = substr((string) $taxNumber, 0, 8);
+$formEnvironment = $isConfigPost
+    ? (GETPOST('environment', 'alpha') === 'production' ? 'production' : 'test')
+    : getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test');
+$formLogin = $isConfigPost ? trim(GETPOST('login', 'alphanohtml')) : getDolGlobalString('NAVINVOICE_LOGIN');
+$formTaxNumber = $isConfigPost
+    ? preg_replace('/\D+/', '', GETPOST('tax_number', 'alphanohtml'))
+    : getDolGlobalString('NAVINVOICE_TAX_NUMBER');
+$formLookbackDays = $isConfigPost ? max(1, min(35, GETPOSTINT('lookback_days'))) : getDolGlobalInt('NAVINVOICE_SYNC_LOOKBACK_DAYS', 7);
+$formSyncEnabled = $isConfigPost ? (bool) GETPOSTINT('sync_enabled') : (bool) getDolGlobalInt('NAVINVOICE_SYNC_ENABLED');
+$formFetchFullData = $isConfigPost ? (bool) GETPOSTINT('fetch_full_data') : (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1);
 
-    dolibarr_set_const($db, 'NAVINVOICE_ENVIRONMENT', $environment, 'chaine', 0, '', $conf->entity);
-    dolibarr_set_const($db, 'NAVINVOICE_LOGIN', trim(GETPOST('login', 'alphanohtml')), 'chaine', 0, '', $conf->entity);
-    dolibarr_set_const($db, 'NAVINVOICE_TAX_NUMBER', $taxNumber, 'chaine', 0, '', $conf->entity);
-    dolibarr_set_const($db, 'NAVINVOICE_SYNC_ENABLED', GETPOSTINT('sync_enabled') ? '1' : '0', 'yesno', 0, '', $conf->entity);
-    dolibarr_set_const($db, 'NAVINVOICE_FETCH_FULL_DATA', GETPOSTINT('fetch_full_data') ? '1' : '0', 'yesno', 0, '', $conf->entity);
-    dolibarr_set_const($db, 'NAVINVOICE_SYNC_LOOKBACK_DAYS', (string) max(1, min(35, GETPOSTINT('lookback_days'))), 'chaine', 0, '', $conf->entity);
-
+if ($isConfigPost) {
     $password = GETPOST('password', 'none');
-    if ($password !== '') {
-        dolibarr_set_const($db, 'NAVINVOICE_PASSWORD', $password, 'chaine', 0, '', $conf->entity);
+    $signingKey = trim(GETPOST('signing_key', 'none'));
+    $validationErrors = array();
+
+    if ($formLogin === '') {
+        $validationErrors[] = $langs->trans('NavLoginRequired');
     }
-    $signingKey = GETPOST('signing_key', 'none');
-    if ($signingKey !== '') {
-        dolibarr_set_const($db, 'NAVINVOICE_SIGNING_KEY', trim($signingKey), 'chaine', 0, '', $conf->entity);
+    if (strlen((string) $formTaxNumber) < 8) {
+        $validationErrors[] = $langs->trans('NavTaxNumberInvalid');
+    } else {
+        $formTaxNumber = substr((string) $formTaxNumber, 0, 8);
+    }
+    if ($action === 'test' && $password === '' && getDolGlobalString('NAVINVOICE_PASSWORD') === '') {
+        $validationErrors[] = $langs->trans('NavPasswordRequired');
+    }
+    if ($action === 'test' && $signingKey === '' && getDolGlobalString('NAVINVOICE_SIGNING_KEY') === '') {
+        $validationErrors[] = $langs->trans('NavSigningKeyRequired');
     }
 
-    setEventMessages($langs->trans('SettingsSaved'), null, 'mesgs');
+    if (empty($validationErrors)) {
+        dolibarr_set_const($db, 'NAVINVOICE_ENVIRONMENT', $formEnvironment, 'chaine', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_LOGIN', $formLogin, 'chaine', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_TAX_NUMBER', $formTaxNumber, 'chaine', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_SYNC_ENABLED', $formSyncEnabled ? '1' : '0', 'yesno', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_FETCH_FULL_DATA', $formFetchFullData ? '1' : '0', 'yesno', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_SYNC_LOOKBACK_DAYS', (string) $formLookbackDays, 'chaine', 0, '', $conf->entity);
+
+        if ($password !== '') {
+            dolibarr_set_const($db, 'NAVINVOICE_PASSWORD', $password, 'chaine', 0, '', $conf->entity);
+        }
+        if ($signingKey !== '') {
+            dolibarr_set_const($db, 'NAVINVOICE_SIGNING_KEY', $signingKey, 'chaine', 0, '', $conf->entity);
+        }
+
+        if ($action === 'save') {
+            setEventMessages($langs->trans('SettingsSaved'), null, 'mesgs');
+        }
+    } else {
+        setEventMessages(null, $validationErrors, 'errors');
+    }
 }
 
-if ($action === 'test') {
+if ($action === 'test' && empty($validationErrors)) {
     try {
         $api = new NavInvoiceApi();
         $response = $api->queryTaxpayer();
@@ -63,36 +94,38 @@ if ($action === 'test') {
     }
 }
 
+$hasStoredPassword = getDolGlobalString('NAVINVOICE_PASSWORD') !== '';
+$hasStoredSigningKey = getDolGlobalString('NAVINVOICE_SIGNING_KEY') !== '';
+$secretHint = static function (bool $hasValue) use ($langs): string {
+    return $hasValue ? $langs->trans('StoredSecretPresent') : $langs->trans('StoredSecretMissing');
+};
+
 llxHeader('', $langs->trans('NavInvoiceSetup'));
 print load_fiche_titre($langs->trans('NavInvoiceSetup'), '', 'title_setup');
 
 print '<form method="POST" action="'.$_SERVER['PHP_SELF'].'">';
 print '<input type="hidden" name="token" value="'.newToken().'">';
-print '<input type="hidden" name="action" value="save">';
 print '<table class="noborder centpercent">';
 print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavApiConfiguration').'</td></tr>';
 
 print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('Environment').'</td><td><select name="environment">';
 foreach (array('test' => 'Test', 'production' => 'Production') as $value => $label) {
-    $selected = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === $value ? ' selected' : '';
+    $selected = $formEnvironment === $value ? ' selected' : '';
     print '<option value="'.$value.'"'.$selected.'>'.$langs->trans($label).'</option>';
 }
 print '</select></td></tr>';
-print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnicalUserLogin').'</td><td><input class="minwidth300" type="text" name="login" value="'.dol_escape_htmltag(getDolGlobalString('NAVINVOICE_LOGIN')).'"></td></tr>';
-print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnicalUserPassword').'</td><td><input class="minwidth300" type="password" name="password" value="" autocomplete="new-password"> <span class="opacitymedium">'.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
-print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTaxNumber').'</td><td><input class="minwidth200" maxlength="8" type="text" name="tax_number" value="'.dol_escape_htmltag(getDolGlobalString('NAVINVOICE_TAX_NUMBER')).'"> <span class="opacitymedium">'.$langs->trans('NavTaxNumberHelp').'</span></td></tr>';
-print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavSigningKey').'</td><td><input class="minwidth300" type="password" name="signing_key" value="" autocomplete="new-password"> <span class="opacitymedium">'.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
-print '<tr class="oddeven"><td>'.$langs->trans('ScheduledSync').'</td><td><input type="checkbox" name="sync_enabled" value="1"'.(getDolGlobalInt('NAVINVOICE_SYNC_ENABLED') ? ' checked' : '').'></td></tr>';
-print '<tr class="oddeven"><td>'.$langs->trans('SyncLookbackDays').'</td><td><input type="number" min="1" max="35" name="lookback_days" value="'.getDolGlobalInt('NAVINVOICE_SYNC_LOOKBACK_DAYS', 7).'"></td></tr>';
-print '<tr class="oddeven"><td>'.$langs->trans('DownloadFullInvoiceXml').'</td><td><input type="checkbox" name="fetch_full_data" value="1"'.(getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1) ? ' checked' : '').'></td></tr>';
+print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnicalUserLogin').'</td><td><input class="minwidth300" type="text" name="login" value="'.dol_escape_htmltag($formLogin).'" autocomplete="off"></td></tr>';
+print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnicalUserPassword').'</td><td><input class="minwidth300" type="password" name="password" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint($hasStoredPassword).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
+print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTaxNumber').'</td><td><input class="minwidth200" maxlength="8" inputmode="numeric" type="text" name="tax_number" value="'.dol_escape_htmltag((string) $formTaxNumber).'"> <span class="opacitymedium">'.$langs->trans('NavTaxNumberHelp').'</span></td></tr>';
+print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavSigningKey').'</td><td><input class="minwidth300" type="password" name="signing_key" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint($hasStoredSigningKey).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('ScheduledSync').'</td><td><input type="checkbox" name="sync_enabled" value="1"'.($formSyncEnabled ? ' checked' : '').'></td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('SyncLookbackDays').'</td><td><input type="number" min="1" max="35" name="lookback_days" value="'.((int) $formLookbackDays).'"></td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('DownloadFullInvoiceXml').'</td><td><input type="checkbox" name="fetch_full_data" value="1"'.($formFetchFullData ? ' checked' : '').'></td></tr>';
 print '</table>';
-print '<div class="center"><input class="button button-save" type="submit" value="'.$langs->trans('Save').'"></div>';
-print '</form>';
-
-print '<form method="POST" action="'.$_SERVER['PHP_SELF'].'" class="center">';
-print '<input type="hidden" name="token" value="'.newToken().'">';
-print '<input type="hidden" name="action" value="test">';
-print '<input class="button" type="submit" value="'.$langs->trans('TestNavConnection').'">';
+print '<div class="center">';
+print '<button class="button button-save" type="submit" name="action" value="save">'.$langs->trans('Save').'</button> ';
+print '<button class="button" type="submit" name="action" value="test">'.$langs->trans('SaveAndTestNavConnection').'</button>';
+print '</div>';
 print '</form>';
 
 llxFooter();
