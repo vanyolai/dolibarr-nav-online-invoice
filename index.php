@@ -105,6 +105,9 @@ if ($resql) {
         $partnerName = trim((string) ($isInbound ? $obj->supplier_name : $obj->customer_name));
         $partnerTaxNumber = trim((string) ($isInbound ? $obj->supplier_tax_number : $obj->customer_tax_number));
         $privatePerson = (!$isInbound && $partnerName === '' && $partnerTaxNumber === '');
+        $hasNetAmount = $obj->invoice_net_amount !== null && $obj->invoice_net_amount !== '';
+        $hasVatAmount = $obj->invoice_vat_amount !== null && $obj->invoice_vat_amount !== '';
+        $currency = trim((string) $obj->currency);
 
         print '<tr class="oddeven">';
         print '<td>'.$langs->trans($isInbound ? 'DirectionInbound' : 'DirectionOutbound').'</td>';
@@ -113,8 +116,8 @@ if ($resql) {
         print '<td>'.dol_escape_htmltag($obj->invoice_operation).'</td>';
         print '<td>'.($privatePerson ? '<span class="opacitymedium">'.$langs->trans('PrivatePerson').'</span>' : ($partnerName !== '' ? dol_escape_htmltag($partnerName) : '<span class="opacitymedium">—</span>')).'</td>';
         print '<td>'.($partnerTaxNumber !== '' ? dol_escape_htmltag($partnerTaxNumber) : '<span class="opacitymedium">—</span>').'</td>';
-        print '<td class="right">'.price($obj->invoice_net_amount).' '.dol_escape_htmltag($obj->currency).'</td>';
-        print '<td class="right">'.price($obj->invoice_vat_amount).' '.dol_escape_htmltag($obj->currency).'</td>';
+        print '<td class="right">'.($hasNetAmount ? price($obj->invoice_net_amount).' '.dol_escape_htmltag($currency) : '<span class="opacitymedium">—</span>').'</td>';
+        print '<td class="right">'.($hasVatAmount ? price($obj->invoice_vat_amount).' '.dol_escape_htmltag($currency) : '<span class="opacitymedium">—</span>').'</td>';
         print '<td>'.($obj->data_fetched ? img_picto($langs->trans('Yes'), 'tick') : img_picto($langs->trans('No'), 'warning')).'</td>';
         print '<td>'.dol_escape_htmltag($obj->last_sync).'</td>';
         print '</tr>';
