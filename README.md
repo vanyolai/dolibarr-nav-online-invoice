@@ -1,8 +1,8 @@
 # Dolibarr NAV Online Invoice
 
-External Dolibarr module for synchronizing inbound and outbound invoices from the Hungarian NAV Online Invoice API v3.
+External Dolibarr module for synchronizing inbound and outbound invoices from the Hungarian NAV Online Invoice API v3 and importing supported NAV invoices into Dolibarr as drafts.
 
-> **Development status:** experimental / read-only NAV mirror. The current milestone downloads NAV invoice metadata and, optionally, complete invoice XML. It does **not** create or overwrite Dolibarr customer or supplier invoices yet.
+> **Development status:** experimental. NAV acquisition is read-only, while supported NAV invoices can now be imported manually into Dolibarr as draft customer or supplier invoices. Automatic validation, accounting and payment actions are intentionally not performed.
 
 ## Target
 
@@ -26,6 +26,10 @@ External Dolibarr module for synchronizing inbound and outbound invoices from th
 - Unified local mirror table with invoice direction, digest and full-data SHA-256 hashes
 - Idempotent upsert by Dolibarr entity, direction, invoice number and batch index
 - Automatic migration of the initial outbound-only mirror schema
+- Detailed parsed invoice view with parties, addresses, totals and invoice lines
+- Read-only Dolibarr partner matching and partner-enrichment preview
+- Guarded manual import into Dolibarr draft customer (`Facture`) and supplier (`FactureFournisseur`) invoices
+- Duplicate detection and NAV mirror-to-Dolibarr linkage
 - Hungarian and English UI strings
 
 ## Repository layout
@@ -39,6 +43,8 @@ htdocs/custom/navinvoice/
 ├── core/
 ├── langs/
 ├── sql/
+├── detail.php
+├── import.php
 └── index.php
 ```
 
@@ -59,7 +65,7 @@ A direct clone into `htdocs/custom/navinvoice` also works, but a submodule lets 
 
 Then enable **NAV Online Invoice** in Dolibarr's module setup.
 
-For an existing 0.1.x installation, no manual SQL migration is required. On first module-page access or synchronization the module adds the invoice-direction and supplier-invoice-link fields and treats existing rows as `OUTBOUND`.
+For an existing installation, no manual SQL migration is required. On first module-page access or synchronization the module ensures the current mirror schema is present.
 
 For automatic synchronization, Dolibarr Scheduled Jobs must also be operational.
 
@@ -80,7 +86,7 @@ Use **Save and test NAV connection** before running invoice synchronization.
 
 The password and signing key use Dolibarr constant names ending in `_PASSWORD` and `_KEY`; Dolibarr 23 therefore treats them as sensitive constants and encrypts their stored values. The module decrypts them only when preparing authenticated NAV API requests.
 
-## Synchronization model
+## Synchronization and import model
 
 NAV acquisition is deliberately separated from Dolibarr invoice creation:
 
@@ -100,34 +106,55 @@ NAV acquisition is deliberately separated from Dolibarr invoice creation:
             queryInvoiceData          change detection
                    |
              complete invoice XML
+                   |
+              parser + checks
+                   |
+          partner matching / preview
+                   |
+             manual draft import
+                   |
+       Facture / FactureFournisseur
 ```
 
-The mirror table reserves:
+The mirror table stores `fk_facture` for customer invoices and `fk_facture_fourn` for supplier invoices after a successful import/link.
 
-- `fk_facture` for future linkage to Dolibarr customer invoices (`Facture`)
-- `fk_facture_fourn` for future linkage to Dolibarr supplier invoices (`FactureFournisseur`)
+The first live importer is intentionally conservative. It currently accepts only invoices that satisfy all of the following:
 
-Existing Dolibarr invoices should be linked and checked rather than silently overwritten.
+- NAV operation is `CREATE`
+- invoice category is `NORMAL`
+- complete NAV XML is available
+- an existing Dolibarr partner is matched strongly by tax number or name+address
+- invoice currency equals the Dolibarr base currency
+- invoice lines contain supported percentage/zero VAT data
+- NAV line totals reconcile with header totals
+- no duplicate Dolibarr invoice is found
 
-## Next milestone
+Imported lines are currently created as free-text invoice lines (`fk_product = 0`). Product/supplier-product matching is a planned later milestone.
 
-The next phase will map NAV invoice XML to Dolibarr business objects and classify each NAV record before any write is allowed:
+Existing Dolibarr invoices and partner data are never silently overwritten by the synchronization process.
 
-- existing matching Dolibarr invoice
-- existing but different invoice
-- NAV-only invoice eligible for import
-- modification invoice
-- cancellation/storno invoice
-- ambiguous or unsupported invoice requiring manual review
+## Planned direction
+
+Next milestones include:
+
+- controlled partner creation and NAV-based partner-data completion
+- current taxpayer master-data lookup with `queryTaxpayer`
+- product and supplier-product matching for inbound invoice lines
+- supplier price maintenance from invoices
+- supplier-order matching / reconstruction workflows
+- support for foreign-currency and special VAT cases
+- controlled handling of modification and storno invoices
+- explicit validation workflow for imported outbound drafts while preserving the original NAV invoice number
+- bank-transaction reconciliation in a separate integration layer
 
 For inbound invoices the external partner is the supplier; for outbound invoices it is the customer. Private-person customer identity is intentionally unavailable through NAV Online Invoice v3 and cannot be reconstructed from NAV data alone.
 
 ## Development branch
 
-Initial implementation is developed on:
+Current implementation is developed on:
 
 ```text
 feature/nav-sync-foundation
 ```
 
-The `main` branch is intentionally kept stable until the foundation has been tested against real NAV data and a Dolibarr 23 instance.
+The `main` branch is intentionally kept stable until the foundation and draft-import workflow have been tested against real NAV data and a Dolibarr 23 instance.
