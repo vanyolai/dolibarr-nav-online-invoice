@@ -78,6 +78,7 @@ $currency = (string) $record->currency;
 if ($parsed && !empty($parsed['detail']['currency'])) {
     $currency = (string) $parsed['detail']['currency'];
 }
+$isSimplified = $parsed && strtoupper((string) ($parsed['detail']['category'] ?? '')) === 'SIMPLIFIED';
 
 $display = static function ($value): string {
     if ($value === null || $value === '') {
@@ -121,6 +122,20 @@ $navEnum = static function (string $group, $value) use ($langs, $display): strin
     $key = 'Nav'.$group.'_'.$raw;
     $translated = $langs->trans($key);
     return $translated !== $key ? dol_escape_htmltag($translated) : $display($value);
+};
+$vatRateFromContent = static function ($value): ?float {
+    $content = (float) $value;
+    if ($content < 0 || $content >= 1) {
+        return null;
+    }
+    foreach (array(0.0476 => 5.0, 0.1525 => 18.0, 0.2126 => 27.0) as $ratio => $rate) {
+        if (abs($content - (float) $ratio) <= 0.00005) {
+            return $rate;
+        }
+    }
+    $derived = 100 * $content / (1 - $content);
+    $integerRate = round($derived);
+    return abs($derived - $integerRate) <= 0.05 ? (float) $integerRate : null;
 };
 $addressDisplay = static function (string $partyKey, array $party, string $xml) use ($langs, $display): string {
     if (!empty($party['address']['formatted'])) {
@@ -243,21 +258,26 @@ if (!empty($record->original_invoice_number) || ($parsed && !empty($parsed['refe
 print '</table>';
 print '</div>';
 
+$derivedMarker = $isSimplified ? ' <span class="opacitymedium">*</span>' : '';
 print '<div class="fichehalfright">';
 print '<table class="border centpercent">';
-print '<tr><td class="titlefield">'.$langs->trans('AmountHT').'</td><td class="right">'.$money($parsed ? $parsed['totals']['net'] : $record->invoice_net_amount, $currency).'</td></tr>';
-print '<tr><td>'.$langs->trans('VAT').'</td><td class="right">'.$money($parsed ? $parsed['totals']['vat'] : $record->invoice_vat_amount, $currency).'</td></tr>';
+print '<tr><td class="titlefield">'.$langs->trans('AmountHT').$derivedMarker.'</td><td class="right">'.$money($parsed ? $parsed['totals']['net'] : $record->invoice_net_amount, $currency).'</td></tr>';
+print '<tr><td>'.$langs->trans('VAT').$derivedMarker.'</td><td class="right">'.$money($parsed ? $parsed['totals']['vat'] : $record->invoice_vat_amount, $currency).'</td></tr>';
 print '<tr><td>'.$langs->trans('AmountTTC').'</td><td class="right">'.$money($parsed ? $parsed['totals']['gross'] : null, $currency).'</td></tr>';
 if ($currency !== 'HUF' && $parsed) {
-    print '<tr><td>'.$langs->trans('AmountHT').' (HUF)</td><td class="right">'.$money($parsed['totals']['net_huf'], 'HUF').'</td></tr>';
-    print '<tr><td>'.$langs->trans('VAT').' (HUF)</td><td class="right">'.$money($parsed['totals']['vat_huf'], 'HUF').'</td></tr>';
+    print '<tr><td>'.$langs->trans('AmountHT').' (HUF)'.$derivedMarker.'</td><td class="right">'.$money($parsed['totals']['net_huf'], 'HUF').'</td></tr>';
+    print '<tr><td>'.$langs->trans('VAT').' (HUF)'.$derivedMarker.'</td><td class="right">'.$money($parsed['totals']['vat_huf'], 'HUF').'</td></tr>';
     print '<tr><td>'.$langs->trans('AmountTTC').' (HUF)</td><td class="right">'.$money($parsed['totals']['gross_huf'], 'HUF').'</td></tr>';
 }
 print '<tr><td>'.$langs->trans('XmlDownloaded').'</td><td>'.($record->data_fetched ? img_picto($langs->trans('Yes'), 'tick').' '.$langs->trans('Yes') : img_picto($langs->trans('No'), 'warning').' '.$langs->trans('No')).'</td></tr>';
 print '<tr><td>'.$langs->trans('LastSync').'</td><td>'.$display($record->last_sync).'</td></tr>';
 print '</table>';
 print '</div>';
-print '<div class="clearboth"></div><br>';
+print '<div class="clearboth"></div>';
+if ($isSimplified) {
+    print '<div class="opacitymedium small marginbottomonly">* '.$langs->trans('SimplifiedDerivedAmountsHelp').'</div>';
+}
+print '<br>';
 
 if ($parsed) {
     foreach (array('supplier' => 'Supplier', 'customer' => 'Customer') as $partyKey => $labelKey) {
@@ -336,10 +356,10 @@ if ($parsed) {
     }
     print '<td class="right">'.$langs->trans('Qty').'</td>';
     print '<td>'.$langs->trans('Unit').'</td>';
-    print '<td class="right">'.$langs->trans('UnitPriceHT').'</td>';
+    print '<td class="right">'.$langs->trans($isSimplified ? 'UnitPriceGross' : 'UnitPriceHT').'</td>';
     print '<td>'.$langs->trans('VAT').'</td>';
-    print '<td class="right">'.$langs->trans('AmountHT').'</td>';
-    print '<td class="right">'.$langs->trans('VAT').'</td>';
+    print '<td class="right">'.$langs->trans('AmountHT').($isSimplified ? ' *' : '').'</td>';
+    print '<td class="right">'.$langs->trans('VAT').($isSimplified ? ' *' : '').'</td>';
     print '<td class="right">'.$langs->trans('AmountTTC').'</td>';
     print '</tr>';
 
@@ -360,7 +380,12 @@ if ($parsed) {
         $unitDisplay = $line['unit_own'] !== '' ? $display($line['unit_own']) : $navEnum('Unit', $line['unit']);
         $vatLabel = $line['vat']['label'];
         if ($line['vat']['kind'] === 'content') {
-            $vatLabel = $langs->trans('VatContent').' '.rtrim(rtrim(number_format(((float) $line['vat']['value']) * 100, 4, '.', ''), '0'), '.').'%';
+            $contentPercent = rtrim(rtrim(number_format(((float) $line['vat']['value']) * 100, 4, '.', ''), '0'), '.');
+            $vatLabel = $langs->trans('VatContent').' '.$contentPercent.'%';
+            $effectiveRate = $vatRateFromContent($line['vat']['value']);
+            if ($effectiveRate !== null) {
+                $vatLabel .= ' → '.rtrim(rtrim(number_format($effectiveRate, 2, '.', ''), '0'), '.').'%';
+            }
         }
 
         $gross = $line['amounts']['gross'];
@@ -397,6 +422,9 @@ if ($parsed) {
     print '</table></div>';
     if ($hasDerivedGross) {
         print '<div class="opacitymedium small">* '.$langs->trans('DerivedGrossAmountHelp').'</div>';
+    }
+    if ($isSimplified) {
+        print '<div class="opacitymedium small">* '.$langs->trans('SimplifiedDerivedAmountsHelp').'</div>';
     }
 }
 
