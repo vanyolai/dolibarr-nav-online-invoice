@@ -8,8 +8,12 @@
 - Add controlled third-party creation from freshly queried NAV data, with duplicate-candidate blocking, country mapping and a second match check immediately before creation.
 - Create suppliers/customers with only the role implied by invoice direction and return to invoice import after successful creation.
 - Keep invoice party values out of partner writes; invoice data is comparison/history only, while creation values come from the fresh NAV master-data response.
-- Add Hungarian and English UI strings for the taxpayer/partner workflow.
-- Add non-CREATE invoice import (MODIFY/STORNO relationship handling) to the explicit development roadmap before product matching.
+- Add a dedicated `partner_required` batch state when partner absence is the only remaining import blocker, with direct routing into the NAV taxpayer/partner resolution workflow.
+- Add a NAV relation resolver for CREATE/MODIFY/STORNO chains, including original mirror lookup, modification index checks, `modifyWithoutMaster` handling and original Dolibarr invoice linkage.
+- Add a relation-review page and route non-CREATE records there instead of presenting them as ordinary import candidates.
+- Keep MODIFY/STORNO import blocked until the resolved NAV relation can be mapped deterministically to the correct Dolibarr document type and original invoice relationship.
+- Add Hungarian and English UI strings for the taxpayer, partner and relation workflows.
+- Keep non-CREATE invoice import ahead of product matching in the explicit development roadmap.
 
 ## 0.7.2 - development
 
