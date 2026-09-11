@@ -54,6 +54,7 @@ class NavInvoiceImporter
 
         $direction = strtoupper((string) $preview['direction']);
         $inbound = $direction === 'INBOUND';
+        $category = strtoupper((string) ($preview['category'] ?? ''));
         $invoiceId = 0;
         $invoice = null;
 
@@ -67,12 +68,20 @@ class NavInvoiceImporter
             $invoiceId = (int) $result['id'];
             $invoice = $result['object'];
 
-            // Dolibarr can be configured either as "total of rounded lines" or
-            // "rounded total". Existing external invoices must reproduce the
-            // authoritative NAV totals, so if the default mode differs, try the
-            // two native Dolibarr rounding modes explicitly before rejecting the
-            // import. No global Dolibarr setting is changed by this operation.
-            $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
+            if ($inbound && $category === 'NORMAL') {
+                // Supplier invoice creation recalculates line totals from qty,
+                // unit price and VAT rate. Existing NAV invoices can legitimately
+                // carry authoritative line/header totals that differ from that
+                // recalculation because of source-system rounding. Restore those
+                // source totals through Dolibarr business objects before the final
+                // consistency check instead of accepting an arbitrary tolerance.
+                $this->preserveSupplierNavTotals($invoice, $preview, $user);
+            } else {
+                // For invoice types where we do not yet restore source line totals,
+                // try Dolibarr's two native rounding modes before rejecting import.
+                $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
+            }
+
             $this->assertCreatedTotals($invoice, $preview);
             $this->linkMirrorRecord((int) $record->rowid, $direction, $invoiceId);
 
@@ -264,6 +273,111 @@ class NavInvoiceImporter
         }
     }
 
+    /**
+     * Preserve authoritative NAV totals for a NORMAL supplier invoice.
+     *
+     * FactureFournisseur::create() recalculates line totals from unit price,
+     * quantity and VAT. That is correct for native Dolibarr invoices but can
+     * change the amounts of an already-issued external invoice. NAV line and
+     * invoice totals are therefore written back through Dolibarr object APIs.
+     */
+    private function preserveSupplierNavTotals(FactureFournisseur $invoice, array $preview, User $user): void
+    {
+        $mappedLines = is_array($preview['lines'] ?? null) ? $preview['lines'] : array();
+        if (!$mappedLines) {
+            throw new Exception('Cannot preserve NAV totals without invoice lines.');
+        }
+
+        $sql = 'SELECT rowid FROM '.MAIN_DB_PREFIX.'facture_fourn_det';
+        $sql .= ' WHERE fk_facture_fourn = '.((int) $invoice->id);
+        $sql .= ' ORDER BY rang, rowid';
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception('Could not load created supplier invoice line identifiers: '.$this->db->lasterror());
+        }
+
+        $lineIds = array();
+        while ($obj = $this->db->fetch_object($resql)) {
+            $lineIds[] = (int) $obj->rowid;
+        }
+        $this->db->free($resql);
+
+        if (count($lineIds) !== count($mappedLines)) {
+            throw new Exception(
+                'Created supplier invoice line count differs from NAV preview: Dolibarr '
+                .count($lineIds).' vs NAV '.count($mappedLines)
+            );
+        }
+
+        $changed = false;
+        foreach ($lineIds as $index => $lineId) {
+            $mapped = $mappedLines[$index];
+            if (($mapped['net'] ?? null) === null || ($mapped['vat'] ?? null) === null || ($mapped['gross'] ?? null) === null) {
+                throw new Exception('NAV authoritative line totals are incomplete for line '.($index + 1).'.');
+            }
+
+            $line = new SupplierInvoiceLine($this->db);
+            if ($line->fetch($lineId) <= 0) {
+                throw new Exception('Could not reload created supplier invoice line '.$lineId.'.');
+            }
+
+            $navNet = (float) $mapped['net'];
+            $navVat = (float) $mapped['vat'];
+            $navGross = (float) $mapped['gross'];
+            if (!$this->amountsEqual((float) $line->total_ht, $navNet)
+                || !$this->amountsEqual((float) $line->total_tva, $navVat)
+                || !$this->amountsEqual((float) $line->total_ttc, $navGross)) {
+                $changed = true;
+            }
+
+            $line->total_ht = $navNet;
+            $line->total_tva = $navVat;
+            $line->total_ttc = $navGross;
+
+            // Do not emit a second modification trigger for the same imported
+            // line. The invoice is still a draft and the initial create path has
+            // already executed the normal Dolibarr business flow.
+            if ($line->update(1) <= 0) {
+                throw new Exception('Could not preserve NAV totals on supplier invoice line '.$lineId.': '.$this->objectError($line));
+            }
+        }
+
+        $expected = $preview['totals'] ?? array();
+        if (($expected['net'] ?? null) === null || ($expected['vat'] ?? null) === null || ($expected['gross'] ?? null) === null) {
+            throw new Exception('NAV authoritative invoice totals are incomplete.');
+        }
+
+        $navNet = (float) $expected['net'];
+        $navVat = (float) $expected['vat'];
+        $navGross = (float) $expected['gross'];
+        if (!$this->amountsEqual((float) $invoice->total_ht, $navNet)
+            || !$this->amountsEqual((float) $invoice->total_tva, $navVat)
+            || !$this->amountsEqual((float) $invoice->total_ttc, $navGross)) {
+            $changed = true;
+        }
+
+        $invoice->total_ht = $navNet;
+        $invoice->total_tva = $navVat;
+        $invoice->total_ttc = $navGross;
+        if ($changed && strpos((string) $invoice->note_private, 'nav_totals_preserved=1') === false) {
+            $invoice->note_private = rtrim((string) $invoice->note_private)."\nnav_totals_preserved=1";
+        }
+
+        if ($invoice->update($user, 1) <= 0) {
+            throw new Exception('Could not preserve authoritative NAV supplier invoice totals: '.$this->objectError($invoice));
+        }
+        if ($invoice->fetch((int) $invoice->id) <= 0) {
+            throw new Exception('Supplier invoice could not be reloaded after preserving NAV totals.');
+        }
+
+        if ($changed) {
+            dol_syslog(
+                'NavInvoiceImporter preserved authoritative NAV totals on supplier invoice '.((int) $invoice->id),
+                LOG_INFO
+            );
+        }
+    }
+
     private function reconcileRoundingWithNav($invoice, array $preview, bool $inbound): void
     {
         if ($this->totalsMatch($invoice, $preview)) {
@@ -280,9 +394,6 @@ class NavInvoiceImporter
             $seller = $invoice->thirdparty;
         }
 
-        // Try Dolibarr's native "rounding of total" first. This is the common
-        // representation for NAV invoices whose decimal line totals add up to
-        // the authoritative whole-currency invoice total.
         foreach (array('1', '0') as $roundingMode) {
             $result = $invoice->update_price(1, $roundingMode, 0, $seller);
             if ($result <= 0) {
@@ -300,20 +411,26 @@ class NavInvoiceImporter
 
     private function totalsMatch($invoice, array $preview): bool
     {
-        $currency = strtoupper((string) $preview['header']['currency']);
-        $decimals = in_array($currency, array('HUF', 'JPY'), true) ? 0 : 2;
         $expected = $preview['totals'];
 
         if (strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED') {
-            // On simplified invoices NAV gross is the authoritative amount.
-            // Net/VAT are reconstructed from VAT content and may differ slightly
-            // from Dolibarr's inverse calculation because NAV vatContent is rounded.
-            return round((float) $invoice->total_ttc, $decimals) == round((float) $expected['gross'], $decimals);
+            // On simplified invoices NAV gross is authoritative. Compare the
+            // actual monetary value instead of assuming HUF has zero decimals;
+            // NAV may legally contain fractional HUF amounts.
+            return $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
         }
 
-        return round((float) $invoice->total_ht, $decimals) == round((float) $expected['net'], $decimals)
-            && round((float) $invoice->total_tva, $decimals) == round((float) $expected['vat'], $decimals)
-            && round((float) $invoice->total_ttc, $decimals) == round((float) $expected['gross'], $decimals);
+        return $this->amountsEqual((float) $invoice->total_ht, (float) $expected['net'])
+            && $this->amountsEqual((float) $invoice->total_tva, (float) $expected['vat'])
+            && $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
+    }
+
+    private function amountsEqual(float $actual, float $expected): bool
+    {
+        // Dolibarr stores invoice amounts with substantially more precision than
+        // NAV line/summary amounts. A tiny epsilon handles binary-float noise only;
+        // it is not a business tolerance and will not hide cent/forint differences.
+        return abs($actual - $expected) <= 0.00001;
     }
 
     private function assertCreatedTotals($invoice, array $preview): void
