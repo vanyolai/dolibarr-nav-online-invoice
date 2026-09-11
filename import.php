@@ -209,11 +209,16 @@ if (is_array($preview)) {
         print '</div>';
     }
 
+    $showUnits = !empty($preview['units_enabled']);
     print load_fiche_titre($langs->trans('InvoiceLines'), '', 'list');
     print '<div class="div-table-responsive"><table class="noborder centpercent">';
     print '<tr class="liste_titre">';
     print '<td class="right">#</td><td>'.$langs->trans('Description').'</td>';
     print '<td class="right">'.$langs->trans('Qty').'</td>';
+    if ($showUnits) {
+        print '<td>'.$langs->trans('NavUnit').'</td>';
+        print '<td>'.$langs->trans('DolibarrUnit').'</td>';
+    }
     print '<td class="right">'.$langs->trans('NavUnitPrice').'</td>';
     print '<td class="right">'.$langs->trans('DolibarrUnitPrice').'</td>';
     print '<td class="right">'.$langs->trans('VAT').'</td>';
@@ -229,6 +234,22 @@ if (is_array($preview)) {
         print '<td class="right">'.$display($line['number']).'</td>';
         print '<td>'.$display($line['description']).'</td>';
         print '<td class="right">'.$display($line['quantity']).'</td>';
+        if ($showUnits) {
+            print '<td>'.$display($line['unit']).'</td>';
+            print '<td>';
+            if (!empty($line['unit_id'])) {
+                $unitText = (string) $line['unit_code'];
+                if (!empty($line['unit_short_label']) && strcasecmp((string) $line['unit_short_label'], $unitText) !== 0) {
+                    $unitText .= ' / '.(string) $line['unit_short_label'];
+                }
+                print img_picto('', 'tick').' '.dol_escape_htmltag($unitText);
+            } elseif (($line['unit_status'] ?? '') === 'ambiguous') {
+                print img_picto('', 'warning').' <span class="warning">'.$langs->trans('UnitMatchAmbiguous').'</span>';
+            } else {
+                print '<span class="opacitymedium">—</span>';
+            }
+            print '</td>';
+        }
         print '<td class="right">'.$money($line['nav_unit_price_ht'], $preview['header']['currency']).'</td>';
         print '<td class="right">'.$money($line['unit_price_ht'], $preview['header']['currency']);
         if (!empty($line['unit_price_adjusted'])) {
