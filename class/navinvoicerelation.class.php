@@ -60,6 +60,7 @@ class NavInvoiceRelationResolver
             'original_dolibarr_invoice_id' => 0,
             'original_dolibarr_url' => '',
             'chain' => array(),
+            'prior_unimported' => array(),
             'blockers' => array(),
             'warnings' => array(),
             'ready' => true,
@@ -118,12 +119,21 @@ class NavInvoiceRelationResolver
                 if (strtoupper((string) ($item['operation'] ?? '')) === 'CREATE') {
                     continue;
                 }
-                if ((int) ($item['modification_index'] ?? 0) === $modificationIndex) {
+                $itemModificationIndex = (int) ($item['modification_index'] ?? 0);
+                if ($itemModificationIndex === $modificationIndex) {
                     $sameIndex++;
+                }
+                if ($itemModificationIndex > 0
+                    && $itemModificationIndex < $modificationIndex
+                    && (int) ($item['dolibarr_invoice_id'] ?? 0) <= 0) {
+                    $result['prior_unimported'][] = $item;
                 }
             }
             if ($sameIndex > 1) {
                 $result['blockers'][] = 'modification_index_ambiguous';
+            }
+            if ($result['prior_unimported']) {
+                $result['blockers'][] = 'prior_modification_not_imported';
             }
         }
 
