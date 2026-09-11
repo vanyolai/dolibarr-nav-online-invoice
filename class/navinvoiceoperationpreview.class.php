@@ -26,6 +26,11 @@ class NavInvoiceOperationPreview
 
     public function __construct($db, int $entity, string $baseCurrency = 'HUF')
     {
+        global $langs;
+        if (is_object($langs)) {
+            $langs->load('navoperation@navinvoice');
+        }
+
         $this->db = $db;
         $this->entity = $entity;
         $this->basePreview = new NavInvoiceImportPreview($db, $entity, $baseCurrency);
