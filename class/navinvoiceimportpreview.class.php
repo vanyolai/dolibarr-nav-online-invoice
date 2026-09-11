@@ -83,10 +83,8 @@ class NavInvoiceImportPreview
             if (!empty($mapped['blocker'])) {
                 $blockers[] = (string) $mapped['blocker'];
             }
-            foreach (array('warning', 'unit_warning') as $warningField) {
-                if (!empty($mapped[$warningField])) {
-                    $warnings[] = (string) $mapped[$warningField];
-                }
+            if (!empty($mapped['warning'])) {
+                $warnings[] = (string) $mapped['warning'];
             }
             $lines[] = $mapped;
         }
@@ -189,14 +187,6 @@ class NavInvoiceImportPreview
 
         $nature = strtoupper((string) ($line['nature'] ?? ''));
         $unitResolution = $this->unitResolver->resolve($line);
-        $unitWarning = '';
-        if ($this->unitResolver->isEnabled() && ($unitResolution['source'] ?? '') !== '') {
-            if (($unitResolution['status'] ?? '') === 'unresolved') {
-                $unitWarning = 'unit_unresolved';
-            } elseif (($unitResolution['status'] ?? '') === 'ambiguous') {
-                $unitWarning = 'unit_ambiguous';
-            }
-        }
 
         return array(
             'number' => (string) ($line['number'] ?? ''),
@@ -218,7 +208,6 @@ class NavInvoiceImportPreview
             'product_type' => $nature === 'SERVICE' ? 1 : 0,
             'blocker' => $blocker,
             'warning' => $warning,
-            'unit_warning' => $unitWarning,
         );
     }
 
