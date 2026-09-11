@@ -145,10 +145,19 @@ class NavPartnerCreationService
         $societe->client = (string) $preview['expected_role'] === 'customer' ? 1 : 0;
         $societe->fournisseur = (string) $preview['expected_role'] === 'supplier' ? 1 : 0;
 
-        $this->db->begin();
+        // Societe::create() owns its transaction and calls verify()/update() and
+        // COMPANY_CREATE itself. Request automatic customer/supplier code
+        // generation so installations with mandatory third-party codes work the
+        // same way as the standard Dolibarr creation workflow.
+        if ($societe->client) {
+            $societe->code_client = 'auto';
+        }
+        if ($societe->fournisseur) {
+            $societe->code_fournisseur = 'auto';
+        }
+
         $id = $societe->create($user);
         if ($id <= 0) {
-            $this->db->rollback();
             $errors = array();
             if (!empty($societe->error)) {
                 $errors[] = (string) $societe->error;
@@ -158,7 +167,6 @@ class NavPartnerCreationService
             }
             throw new Exception('Dolibarr third-party creation failed'.($errors ? ': '.implode('; ', $errors) : '.'));
         }
-        $this->db->commit();
 
         return array(
             'id' => (int) $id,
