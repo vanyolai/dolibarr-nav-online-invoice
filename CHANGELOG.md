@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 - development
+
+- Add read-only partner enrichment preview based on matched NAV invoice party data.
+- Suggest filling missing tax number, street address, postal code, town, country and customer/supplier role without modifying Dolibarr yet.
+- Preserve existing non-empty Dolibarr values and surface differences instead of overwriting them.
+- Keep bank-account data in a separate review category because partners may have multiple or changing bank accounts.
+- Only mark enrichment as safe when the partner match is based on tax number or strong name/address evidence.
+
 ## 0.4.0 - development
 
 - Add read-only NAV-to-Dolibarr third-party matching on invoice details.
