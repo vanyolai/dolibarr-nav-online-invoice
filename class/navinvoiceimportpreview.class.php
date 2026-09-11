@@ -48,7 +48,7 @@ class NavInvoiceImportPreview
             $blockers[] = 'operation_relation';
         }
 
-        $duplicate = $this->findExistingInvoice($direction, $invoiceNumber);
+        $duplicate = $this->findExistingInvoice($direction, $invoiceNumber, $partner !== null ? (int) $partner['id'] : 0);
         if ($duplicate !== null) {
             $blockers[] = 'duplicate';
         }
@@ -119,7 +119,7 @@ class NavInvoiceImportPreview
         } elseif ($kind === 'content' && $value !== '') {
             $content = (float) $value;
             if ($content >= 0 && $content < 1) {
-                $vatRate = $content < 1 ? ($content / (1 - $content)) * 100 : null;
+                $vatRate = ($content / (1 - $content)) * 100;
                 $warning = 'vat_content_derived';
             }
         } elseif ($kind === 'special') {
@@ -152,15 +152,19 @@ class NavInvoiceImportPreview
     /**
      * @return array<string,mixed>|null
      */
-    private function findExistingInvoice(string $direction, string $invoiceNumber): ?array
+    private function findExistingInvoice(string $direction, string $invoiceNumber, int $partnerId): ?array
     {
         if ($invoiceNumber === '') {
             return null;
         }
 
         if ($direction === 'INBOUND') {
+            if ($partnerId <= 0) {
+                return null;
+            }
             $sql = 'SELECT rowid, ref, ref_supplier FROM '.MAIN_DB_PREFIX.'facture_fourn';
-            $sql .= " WHERE entity = ".$this->entity;
+            $sql .= ' WHERE entity = '.$this->entity;
+            $sql .= ' AND fk_soc = '.$partnerId;
             $sql .= " AND ref_supplier = '".$this->db->escape($invoiceNumber)."'";
             $sql .= ' ORDER BY rowid DESC';
             $resql = $this->db->query($sql);
@@ -176,7 +180,7 @@ class NavInvoiceImportPreview
         }
 
         $sql = 'SELECT rowid, ref FROM '.MAIN_DB_PREFIX.'facture';
-        $sql .= " WHERE entity = ".$this->entity;
+        $sql .= ' WHERE entity = '.$this->entity;
         $sql .= " AND ref = '".$this->db->escape($invoiceNumber)."'";
         $sql .= ' ORDER BY rowid DESC';
         $resql = $this->db->query($sql);
