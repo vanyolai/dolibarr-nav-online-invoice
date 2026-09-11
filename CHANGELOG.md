@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0 - development
+
+- Document git subtree as the preferred integration model; this repository is the authoritative module source and Dolibarr consumes it under `htdocs/custom/navinvoice`.
+- Promote `queryTaxpayer` into a reusable current taxpayer master-data service with namespace-independent parsing, tax-number normalization and HQ/site/branch address handling.
+- Add a dedicated partner-resolution page that compares historical invoice party data with current NAV taxpayer master data.
+- Add controlled third-party creation from freshly queried NAV data, with duplicate-candidate blocking, country mapping and a second match check immediately before creation.
+- Create suppliers/customers with only the role implied by invoice direction and return to invoice import after successful creation.
+- Keep invoice party values out of partner writes; invoice data is comparison/history only, while creation values come from the fresh NAV master-data response.
+- Add Hungarian and English UI strings for the taxpayer/partner workflow.
+- Add non-CREATE invoice import (MODIFY/STORNO relationship handling) to the explicit development roadmap before product matching.
+
 ## 0.7.2 - development
 
 - Map NAV `invoiceDeliveryDate` to Dolibarr's native `date_pointoftax` field on customer and supplier invoice imports.
@@ -85,4 +96,4 @@
 ## 0.1.0 - development
 
 - Initial NAV Online Invoice read-only synchronization foundation.
-- Repository root is now the Dolibarr module root, suitable for direct installation or Git submodule use at `htdocs/custom/navinvoice`.
+- Repository root is now the Dolibarr module root, suitable for direct installation or Git subtree use at `htdocs/custom/navinvoice`.
