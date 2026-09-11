@@ -106,6 +106,7 @@ NoInvoiceLinesInNavXml=A NAV XML nem tartalmaz tételsorokat
 DerivedGrossAmountHelp=A NAV XML nem tartalmazott külön tételszintű bruttó összeget; a megjelenített érték a nettó és az ÁFA összege.
 DerivedInvoiceGrossHelp=A NAV XML nem tartalmazott külön számla bruttó összeget; a megjelenített érték a NAV által közölt nettó és ÁFA összeg összege.
 DerivedLineAmountsHelp=A NAV XML a tételnél nem közölt minden összeget; a * jelölt ÁFA és/vagy bruttó érték a NAV nettó összegéből és ÁFA-kulcsából determinisztikusan levezetett érték.
+NonExpressionLineDerivedHelp=A NAV lineExpressionIndicator=false tételnél nem közölt strukturált mennyiséget/egységárat. A Dolibarr import ezért technikailag 1 egységgel és a teljes tétel nettó összegével mint egységárral dolgozik; ez nem az eredeti NAV mennyiség állítása.
 SimplifiedDerivedAmountsHelp=Egyszerűsített számlánál a NAV a bruttó összeget és az ÁFA-tartalmat közli. A nettó és az ÁFA itt származtatott érték; a bruttó összeg az elsődleges NAV-adat.
 AddressNotInNavXml=A NAV XML nem tartalmaz címet
 AddressPresentButNotParsed=A NAV XML tartalmaz címblokkot, de azt a parser nem tudta értelmezni
