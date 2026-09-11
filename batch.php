@@ -67,7 +67,7 @@ try {
     $loadError = $e->getMessage();
 }
 
-$counts = array('ready' => 0, 'review' => 0, 'blocked' => 0, 'imported' => 0);
+$counts = array('ready' => 0, 'review' => 0, 'partner_required' => 0, 'blocked' => 0, 'imported' => 0);
 foreach ($rows as $row) {
     $state = (string) ($row['state'] ?? 'blocked');
     if (isset($counts[$state])) {
@@ -94,6 +94,9 @@ $stateHtml = static function (string $state) use ($langs): string {
     }
     if ($state === 'review') {
         return img_picto('', 'warning').' <span class="warning">'.$langs->trans('ImportStateReview').'</span>';
+    }
+    if ($state === 'partner_required') {
+        return img_picto('', 'company').' <span class="warning">'.$langs->trans('BatchStatePartnerRequired').'</span>';
     }
     if ($state === 'imported') {
         return img_picto('', 'check').' <span class="opacitymedium">'.$langs->trans('BatchStateImported').'</span>';
@@ -143,7 +146,8 @@ print '<tr><td>'.$langs->trans('BatchReady').'</td><td class="right"><span class
 print '<tr><td>'.$langs->trans('BatchReview').'</td><td class="right"><span class="warning">'.$counts['review'].'</span></td></tr>';
 print '</table></div>';
 print '<div class="fichehalfright"><table class="border centpercent">';
-print '<tr><td class="titlefield">'.$langs->trans('BatchBlocked').'</td><td class="right"><span class="error">'.$counts['blocked'].'</span></td></tr>';
+print '<tr><td class="titlefield">'.$langs->trans('BatchPartnerRequired').'</td><td class="right"><span class="warning">'.$counts['partner_required'].'</span></td></tr>';
+print '<tr><td>'.$langs->trans('BatchBlocked').'</td><td class="right"><span class="error">'.$counts['blocked'].'</span></td></tr>';
 print '<tr><td>'.$langs->trans('BatchAlreadyImported').'</td><td class="right">'.$counts['imported'].'</td></tr>';
 print '</table></div>';
 print '<div class="clearboth"></div></div><br>';
@@ -195,11 +199,19 @@ if ($rows) {
             : (string) ($record->supplier_name ?? '');
         $currency = (string) ($preview['header']['currency'] ?? $record->currency ?? $baseCurrency);
         $gross = $preview['totals']['gross'] ?? null;
-        $rowUrl = $ready
-            ? dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $record->rowid
-            : dol_buildpath('/navinvoice/detail.php', 1).'?id='.(int) $record->rowid;
+        if ($state === 'partner_required') {
+            $rowUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.(int) $record->rowid;
+        } elseif ($ready) {
+            $rowUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $record->rowid;
+        } else {
+            $rowUrl = dol_buildpath('/navinvoice/detail.php', 1).'?id='.(int) $record->rowid;
+        }
 
         $issues = array();
+        if ($state === 'partner_required') {
+            $partnerUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.(int) $record->rowid;
+            $issues[] = img_picto('', 'company').' <a href="'.dol_escape_htmltag($partnerUrl).'">'.dol_escape_htmltag($langs->trans('BatchResolvePartner')).'</a>';
+        }
         foreach (($preview['blockers'] ?? array()) as $code) {
             $issues[] = img_picto('', 'error').' '.dol_escape_htmltag($issueLabel((string) $code));
         }
