@@ -267,9 +267,6 @@ if (is_array($preview)) {
         }
         print '</td>';
         $vatDisplay = $line['vat_rate'] !== null ? price($line['vat_rate']).'%' : $display(null);
-        if ($isSimplified && !empty($line['vat_content'])) {
-            $vatDisplay = rtrim(rtrim(number_format(((float) $line['vat_content']) * 100, 4, '.', ''), '0'), '.').'% → '.price($line['vat_rate']).'%';
-        }
         print '<td class="right">'.$vatDisplay.'</td>';
         print '<td class="right">'.$money($line['net'], $preview['header']['currency']).'</td>';
         print '<td class="right">'.$money($gross, $preview['header']['currency']).'</td>';
