@@ -1,0 +1,15 @@
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build output
+build/
+*.zip
+
+# Local development
+.env
+.env.*
