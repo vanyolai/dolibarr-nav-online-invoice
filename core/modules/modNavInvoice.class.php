@@ -25,12 +25,12 @@ class modNavInvoice extends DolibarrModules
         $this->descriptionlong = 'ModuleNavInvoiceDesc';
         $this->editor_name = 'vanyolai';
         $this->editor_url = 'https://github.com/vanyolai/dolibarr-nav-online-invoice';
-        $this->version = '0.6.1';
+        $this->version = '0.6.2';
         $this->const_name = 'MAIN_MODULE_'.strtoupper($this->name);
         $this->picto = 'file-invoice';
 
         $this->module_parts = array(
-            'triggers' => 0,
+            'triggers' => 1,
             'login' => 0,
             'substitutions' => 0,
             'menus' => 0,
