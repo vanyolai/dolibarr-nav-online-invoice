@@ -15,21 +15,25 @@ External Dolibarr module for synchronizing inbound and outbound invoices from th
 
 - NAV test and production environments
 - NAV technical-user authentication
-- Connection test with `queryTaxpayer`
+- Current taxpayer master-data lookup with `queryTaxpayer`
 - Outbound (`OUTBOUND`) and inbound (`INBOUND`) invoice discovery with `queryInvoiceDigest`
 - Manual synchronization of inbound, outbound or both directions
 - Scheduled synchronization of both directions
 - Automatic pagination
 - Automatic splitting of long history imports into at most 35-day NAV query windows
 - Complete invoice retrieval with `queryInvoiceData`
+- Authoritative modification/storno-chain lookup with `queryInvoiceChainDigest`
 - Base64 decoding and optional gzip decompression of invoice payloads
 - Unified local mirror table with invoice direction, digest and full-data SHA-256 hashes
 - Idempotent upsert by Dolibarr entity, direction, invoice number and batch index
 - Automatic migration of the initial outbound-only mirror schema
 - Detailed parsed invoice view with parties, addresses, totals and invoice lines
 - Conservative Dolibarr partner matching and safe partner-data enrichment
+- Historical invoice-party vs current NAV taxpayer comparison
+- Controlled creation of missing Dolibarr third parties from fresh NAV master data
 - Guarded manual import into Dolibarr draft customer (`Facture`) and supplier (`FactureFournisseur`) invoices
-- Batch preflight/import for inbound supplier invoices
+- Controlled MODIFY/STORNO draft import when the NAV relation chain has a deterministic Dolibarr mapping
+- Batch preflight/import for inbound supplier invoices, including dedicated partner-resolution state
 - Duplicate detection and NAV mirror-to-Dolibarr linkage
 - Hungarian and English UI strings
 
@@ -126,31 +130,42 @@ NAV acquisition is deliberately separated from Dolibarr invoice creation:
                    |
           partner matching / preview
                    |
-             manual draft import
-                   |
-       Facture / FactureFournisseur
+             +-----+-------------------+
+             |                         |
+          CREATE               MODIFY / STORNO
+             |                         |
+             |              queryInvoiceChainDigest
+             |                         |
+             +------------+------------+
+                          |
+                 manual draft import
+                          |
+              Facture / FactureFournisseur
 ```
 
 The mirror table stores `fk_facture` for customer invoices and `fk_facture_fourn` for supplier invoices after a successful import/link.
 
-The importer is intentionally conservative. At the current development stage it requires complete NAV XML, a strong existing partner match, supported currency/VAT data and duplicate checks before a Dolibarr draft is created. Simplified invoices are supported where their VAT-content values can be mapped deterministically. Product matching is intentionally separate from the accounting-safe invoice import path.
+The importer is intentionally conservative. It requires complete NAV XML, a strong partner match, supported currency/VAT data and duplicate checks before a Dolibarr draft is created. Simplified invoices are supported where their VAT-content values can be mapped deterministically.
 
-Existing Dolibarr invoices and partner data are never silently overwritten by the synchronization process.
+For non-`CREATE` operations the module additionally requires the original NAV invoice to be known and linked to Dolibarr, earlier modification indexes to be imported first, and the local relation chain to match the authoritative NAV chain. Negative `MODIFY` and `STORNO` operations map to source-linked Dolibarr credit notes; positive `MODIFY` operations map to source-linked standard adjustment drafts. Zero-value/non-financial modifications and `modifyWithoutMaster` cases remain blocked until a representation can be made without inventing accounting events.
+
+Existing Dolibarr invoices and partner data are never silently overwritten by the synchronization process. All invoice imports create new drafts only.
+
+Product matching is intentionally separate from this accounting-safe invoice import path.
 
 ## Development roadmap
 
+The completed 0.8.0 development block covers current NAV taxpayer master data, controlled partner creation/resolution and guarded CREATE/MODIFY/STORNO import foundations.
+
 The next development blocks are:
 
-1. promote `queryTaxpayer` from a connection test to an explicit current taxpayer master-data service;
-2. compare historical invoice-party data with current NAV taxpayer master data;
-3. controlled creation of missing Dolibarr third parties from fresh NAV taxpayer data;
-4. batch-import states/actions for invoices whose partner must be created or resolved;
-5. controlled import of non-`CREATE` NAV operations, including modification/storno chains and their relationship to the original invoice;
-6. product and supplier-product matching for inbound invoice lines;
-7. supplier price maintenance from invoices and supplier-order matching/reconstruction workflows;
-8. support for additional foreign-currency and special VAT cases;
-9. explicit validation workflow for imported outbound drafts while preserving the original NAV invoice number;
-10. bank-transaction reconciliation in a separate integration layer.
+1. product and supplier-product matching for inbound invoice lines;
+2. supplier price maintenance from invoices and supplier-order matching/reconstruction workflows;
+3. support for additional foreign-currency and special VAT cases;
+4. explicit validation workflow for imported outbound drafts while preserving the original NAV invoice number;
+5. bank-transaction reconciliation in a separate integration layer.
+
+Before a stable release, the MODIFY/STORNO mapping still needs validation against real NAV invoice chains and a Dolibarr 23 test installation, especially multi-step modifications, mixed-sign adjustments and supplier credit notes.
 
 For inbound invoices the external partner is the supplier; for outbound invoices it is the customer. Private-person customer identity is intentionally unavailable through NAV Online Invoice v3 and cannot be reconstructed from NAV data alone.
 
