@@ -81,7 +81,7 @@ class NavInvoiceParser
      */
     private function parseSupplier(?SimpleXMLElement $node): array
     {
-        if (!$node) {
+        if ($node === null) {
             return $this->emptyParty();
         }
 
@@ -103,7 +103,7 @@ class NavInvoiceParser
      */
     private function parseCustomer(?SimpleXMLElement $node): array
     {
-        if (!$node) {
+        if ($node === null) {
             return $this->emptyParty();
         }
 
@@ -145,14 +145,14 @@ class NavInvoiceParser
      */
     private function parseAddress(?SimpleXMLElement $address): array
     {
-        if (!$address) {
+        if ($address === null) {
             return $this->emptyAddress();
         }
 
         $detailed = $this->node($address, './*[local-name()="detailedAddress"]');
         $simple = $this->node($address, './*[local-name()="simpleAddress"]');
-        $source = $detailed ?: $simple;
-        if (!$source) {
+        $source = $detailed !== null ? $detailed : $simple;
+        if ($source === null) {
             return $this->emptyAddress();
         }
 
