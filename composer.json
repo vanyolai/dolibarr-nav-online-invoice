@@ -1,0 +1,9 @@
+{
+  "name": "vanyolai/dolibarr-nav-online-invoice",
+  "description": "Dolibarr module for synchronizing outbound invoices from the Hungarian NAV Online Invoice API",
+  "type": "project",
+  "license": "GPL-3.0-or-later",
+  "require": {
+    "php": ">=8.1"
+  }
+}
