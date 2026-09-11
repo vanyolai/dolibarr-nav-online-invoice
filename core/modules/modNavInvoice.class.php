@@ -1,9 +1,9 @@
 <?php
 /* Copyright (C) 2026 Krisztian Vanyolai
  *
- * This program is free software; you can redistribute it and/or modify
+ * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
+ * the Free Software Foundation, either version 3 of the License, or
  * any later version.
  */
 
@@ -25,7 +25,7 @@ class modNavInvoice extends DolibarrModules
         $this->descriptionlong = 'ModuleNavInvoiceDesc';
         $this->editor_name = 'vanyolai';
         $this->editor_url = 'https://github.com/vanyolai/dolibarr-nav-online-invoice';
-        $this->version = '0.6.2';
+        $this->version = '0.7.0';
         $this->const_name = 'MAIN_MODULE_'.strtoupper($this->name);
         $this->picto = 'file-invoice';
 
@@ -104,18 +104,21 @@ class modNavInvoice extends DolibarrModules
         $this->rights[$r][4] = 'invoice';
         $this->rights[$r][5] = 'import';
 
+        // NAV Online Invoice belongs to Dolibarr's Billing / Payment area.
+        // Use the stable core mainmenu code "billing" instead of creating a
+        // separate top-level application menu.
         $this->menu = array();
         $r = 0;
         $this->menu[$r++] = array(
-            'fk_menu' => '',
-            'type' => 'top',
+            'fk_menu' => 'fk_mainmenu=billing',
+            'type' => 'left',
             'titre' => 'NavOnlineInvoice',
-            'prefix' => img_picto('', $this->picto, 'class="pictofixedwidth valignmiddle"'),
-            'mainmenu' => 'navinvoice',
-            'leftmenu' => '',
-            'url' => '/navinvoice/index.php',
+            'prefix' => img_picto('', $this->picto, 'class="pictofixedwidth valignmiddle paddingright"'),
+            'mainmenu' => 'billing',
+            'leftmenu' => 'navinvoice',
+            'url' => '/navinvoice/index.php?mainmenu=billing&leftmenu=navinvoice',
             'langs' => 'navinvoice@navinvoice',
-            'position' => 1000 + $r,
+            'position' => 250,
             'enabled' => "isModEnabled('navinvoice')",
             'perms' => '$user->hasRight("navinvoice", "invoice", "read")',
             'target' => '',
