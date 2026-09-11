@@ -148,7 +148,7 @@ $navEnum = static function (string $group, $value) use ($langs, $display): strin
     if ($value === null || $value === '') {
         return $display(null);
     }
-    $raw = strtoupper((string) $value);
+    $raw = strtoupper((string) $value;
     $key = 'Nav'.$group.'_'.$raw;
     $translated = $langs->trans($key);
     return $translated !== $key ? dol_escape_htmltag($translated) : $display($value);
@@ -430,6 +430,7 @@ if ($parsed) {
     print '</tr>';
 
     $hasDerivedLineAmounts = false;
+    $hasNonExpressionNormalization = false;
     foreach ($parsed['lines'] as $line) {
         $description = $display($line['description']);
         $extras = array();
@@ -457,15 +458,27 @@ if ($parsed) {
         $lineGrossDerived = !empty($amounts['gross_derived']);
         $hasDerivedLineAmounts = $hasDerivedLineAmounts || $lineVatDerived || $lineGrossDerived;
 
+        $quantityDisplay = $line['quantity'];
+        $unitPriceDisplay = $line['unit_price'];
+        $nonExpressionNormalized = false;
+        if (($line['expression'] ?? null) === false && ($quantityDisplay === null || $quantityDisplay === '')) {
+            $quantityDisplay = 1;
+            if ($unitPriceDisplay === null || $unitPriceDisplay === '') {
+                $unitPriceDisplay = $isSimplified ? ($amounts['gross'] ?? null) : ($amounts['net'] ?? null);
+            }
+            $nonExpressionNormalized = true;
+            $hasNonExpressionNormalization = true;
+        }
+
         print '<tr class="oddeven">';
         print '<td class="right">'.$display($line['number']).'</td>';
         print '<td>'.$description.'</td>';
         if ($showLineNature) {
             print '<td>'.$navEnum('LineNature', $line['nature']).'</td>';
         }
-        print '<td class="right">'.$display($line['quantity']).'</td>';
+        print '<td class="right">'.$display($quantityDisplay).($nonExpressionNormalized ? ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>' : '').'</td>';
         print '<td>'.$unitDisplay.'</td>';
-        print '<td class="right">'.$money($line['unit_price'], $currency).'</td>';
+        print '<td class="right">'.$money($unitPriceDisplay, $currency).($nonExpressionNormalized ? ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>' : '').'</td>';
         print '<td>'.$display($vatLabel).'</td>';
         print '<td class="right">'.$money($amounts['net'], $currency).'</td>';
         print '<td class="right">'.$money($amounts['vat'], $currency).($lineVatDerived ? ' <span class="opacitymedium">*</span>' : '').'</td>';
@@ -477,6 +490,9 @@ if ($parsed) {
         print '<tr><td colspan="'.($showLineNature ? '10' : '9').'" class="opacitymedium">'.$langs->trans('NoInvoiceLinesInNavXml').'</td></tr>';
     }
     print '</table></div>';
+    if ($hasNonExpressionNormalization) {
+        print '<div class="opacitymedium small">* '.$langs->trans('NonExpressionLineDerivedHelp').'</div>';
+    }
     if ($hasDerivedLineAmounts) {
         print '<div class="opacitymedium small">* '.$langs->trans('DerivedLineAmountsHelp').'</div>';
     }
