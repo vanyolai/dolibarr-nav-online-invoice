@@ -53,12 +53,14 @@ class modNavInvoice extends DolibarrModules
         $this->need_dolibarr_version = array(23, 0);
         $this->need_javascript_ajax = 0;
 
+        // Keep NAV connection settings when the module is temporarily disabled.
+        // This also makes a disable/enable cycle safe when refreshing menu entries.
         $this->const = array(
-            0 => array('NAVINVOICE_ENVIRONMENT', 'chaine', 'test', 'NAV API environment', 0, 'current', 1),
-            1 => array('NAVINVOICE_SYNC_ENABLED', 'yesno', '0', 'Enable scheduled synchronization', 0, 'current', 1),
-            2 => array('NAVINVOICE_SYNC_LOOKBACK_DAYS', 'chaine', '7', 'Days to re-check on scheduled sync', 0, 'current', 1),
-            3 => array('NAVINVOICE_FETCH_FULL_DATA', 'yesno', '1', 'Download complete invoice XML', 0, 'current', 1),
-            4 => array('NAVINVOICE_SOFTWARE_ID', 'chaine', 'DOLIBARRNAVSYNC001', 'NAV software identifier', 0, 'current', 1),
+            0 => array('NAVINVOICE_ENVIRONMENT', 'chaine', 'test', 'NAV API environment', 0, 'current', 0),
+            1 => array('NAVINVOICE_SYNC_ENABLED', 'yesno', '0', 'Enable scheduled synchronization', 0, 'current', 0),
+            2 => array('NAVINVOICE_SYNC_LOOKBACK_DAYS', 'chaine', '7', 'Days to re-check on scheduled sync', 0, 'current', 0),
+            3 => array('NAVINVOICE_FETCH_FULL_DATA', 'yesno', '1', 'Download complete invoice XML', 0, 'current', 0),
+            4 => array('NAVINVOICE_SOFTWARE_ID', 'chaine', 'DOLIBARRNAVSYNC001', 'NAV software identifier', 0, 'current', 0),
         );
 
         if (!isModEnabled('navinvoice')) {
