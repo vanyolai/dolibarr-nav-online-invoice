@@ -18,11 +18,12 @@ class ActionsNavInvoice
     public $errors = array();
 
     /**
-     * Display the native point-of-tax date on supplier invoices.
+     * Compatibility fallback for supplier invoice point-of-tax display.
      *
-     * Dolibarr 23 stores facture_fourn.date_pointoftax but the standard
-     * supplier invoice card does not render it. Keep the presentation tied to
-     * the native INVOICE_POINTOFTAX_DATE feature flag.
+     * Stock Dolibarr 23 stores facture_fourn.date_pointoftax in the schema but
+     * does not load/render it on supplier invoice cards. Patched/newer cores do
+     * so natively; in that case $object->date_pointoftax is populated and this
+     * hook deliberately renders nothing to avoid a duplicate row.
      *
      * @param array<string,mixed> $parameters Hook parameters.
      * @param object $object Current Dolibarr object.
@@ -40,6 +41,11 @@ class ActionsNavInvoice
             return 0;
         }
         if (!is_object($object) || (string) ($object->element ?? '') !== 'invoice_supplier' || empty($object->id)) {
+            return 0;
+        }
+
+        // Patched/newer Dolibarr cores load and render this field natively.
+        if (!empty($object->date_pointoftax)) {
             return 0;
         }
 
