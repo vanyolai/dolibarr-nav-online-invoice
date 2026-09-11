@@ -106,6 +106,7 @@ NoInvoiceLinesInNavXml=The NAV XML contains no invoice lines
 DerivedGrossAmountHelp=The NAV XML did not contain a separate line gross amount; the displayed value is derived from net plus VAT.
 DerivedInvoiceGrossHelp=The NAV XML did not contain a separate invoice gross amount; the displayed value is derived from the NAV-reported net and VAT totals.
 DerivedLineAmountsHelp=The NAV XML omitted some line amounts; VAT and/or gross values marked with * are deterministically derived from the NAV net amount and VAT rate.
+NonExpressionLineDerivedHelp=For a NAV lineExpressionIndicator=false line no structured quantity/unit price was reported. Dolibarr therefore represents the complete line as one technical unit and uses the full line net amount as its unit price; this does not claim the source invoice contained quantity 1.
 SimplifiedDerivedAmountsHelp=For simplified invoices NAV reports the gross amount and VAT content. Net and VAT shown here are derived values; the gross amount is the authoritative NAV value.
 AddressNotInNavXml=The NAV XML does not contain an address
 AddressPresentButNotParsed=The NAV XML contains an address block, but the parser could not interpret it
