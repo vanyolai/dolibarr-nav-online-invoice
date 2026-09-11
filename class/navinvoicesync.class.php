@@ -175,10 +175,14 @@ class NavInvoiceSync
                     $stats['unchanged']++;
                 }
 
-                if ($fetchFullData && ($upsert['changed'] || !$upsert['data_fetched'])) {
-                    $xml = $api->queryInvoiceData($data['invoice_number'], (int) $data['batch_index'], $direction);
-                    $this->storeInvoiceData((int) $upsert['rowid'], $xml);
-                    $stats['downloaded']++;
+                if ($fetchFullData) {
+                    if ($upsert['changed'] || !$upsert['data_fetched']) {
+                        $xml = $api->queryInvoiceData($data['invoice_number'], (int) $data['batch_index'], $direction);
+                        $this->storeInvoiceData((int) $upsert['rowid'], $xml);
+                        $stats['downloaded']++;
+                    } elseif ($upsert['amounts_missing']) {
+                        $this->enrichStoredInvoiceAmounts((int) $upsert['rowid']);
+                    }
                 }
             }
             $page++;
@@ -259,7 +263,7 @@ class NavInvoiceSync
         global $conf;
         $entity = (int) $conf->entity;
 
-        $sql = 'SELECT rowid, digest_hash, data_fetched FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
+        $sql = 'SELECT rowid, digest_hash, data_fetched, invoice_net_amount, invoice_vat_amount FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
         $sql .= ' WHERE entity = '.$entity;
         $sql .= " AND invoice_direction = '".$this->db->escape($data['invoice_direction'])."'";
         $sql .= " AND invoice_number = '".$this->db->escape($data['invoice_number'])."'";
@@ -274,6 +278,9 @@ class NavInvoiceSync
         $inserted = !$existing;
         $changed = $inserted || $existing->digest_hash !== $data['digest_hash'];
         $dataFetched = $existing ? (bool) $existing->data_fetched : false;
+        $amountsMissing = $inserted
+            ? ($data['invoice_net_amount'] === '' || $data['invoice_vat_amount'] === '')
+            : ($existing->invoice_net_amount === null || $existing->invoice_vat_amount === null);
 
         if ($inserted) {
             $sql = 'INSERT INTO '.MAIN_DB_PREFIX.'navinvoice_invoice ('
@@ -298,7 +305,10 @@ class NavInvoiceSync
             $set[] = $key.' = '.($data[$key] !== '' && $data[$key] !== null ? "'".$this->db->escape((string) $data[$key])."'" : 'NULL');
         }
         foreach (array('invoice_net_amount', 'invoice_net_amount_huf', 'invoice_vat_amount', 'invoice_vat_amount_huf') as $key) {
-            $set[] = $key.' = '.($data[$key] !== '' ? "'".$this->db->escape((string) $data[$key])."'" : 'NULL');
+            // Missing digest values must not erase amounts previously recovered from the full invoice XML.
+            if ($data[$key] !== '') {
+                $set[] = $key." = '".$this->db->escape((string) $data[$key])."'";
+            }
         }
         $set[] = 'transaction_index = '.($data['transaction_index'] !== null ? (int) $data['transaction_index'] : 'NULL');
         $set[] = 'modification_index = '.($data['modification_index'] !== null ? (int) $data['modification_index'] : 'NULL');
@@ -310,17 +320,178 @@ class NavInvoiceSync
             throw new Exception($this->db->lasterror());
         }
 
-        return array('rowid' => $rowid, 'inserted' => $inserted, 'changed' => $changed, 'data_fetched' => $dataFetched);
+        return array(
+            'rowid' => $rowid,
+            'inserted' => $inserted,
+            'changed' => $changed,
+            'data_fetched' => $dataFetched,
+            'amounts_missing' => $amountsMissing,
+        );
     }
 
     private function storeInvoiceData(int $rowid, string $xml): void
     {
-        $sql = 'UPDATE '.MAIN_DB_PREFIX.'navinvoice_invoice SET ';
-        $sql .= "invoice_data = '".$this->db->escape($xml)."', data_fetched = 1, data_hash = '".hash('sha256', $xml)."'";
-        $sql .= ' WHERE rowid = '.$rowid;
+        $amounts = $this->extractInvoiceAmounts($xml);
+        $set = array(
+            "invoice_data = '".$this->db->escape($xml)."'",
+            'data_fetched = 1',
+            "data_hash = '".hash('sha256', $xml)."'",
+        );
+        foreach ($amounts as $column => $value) {
+            if ($value !== null) {
+                $set[] = $column." = COALESCE(".$column.", '".$this->db->escape($value)."')";
+            }
+        }
+
+        $sql = 'UPDATE '.MAIN_DB_PREFIX.'navinvoice_invoice SET '.implode(', ', $set).' WHERE rowid = '.$rowid;
         if (!$this->db->query($sql)) {
             throw new Exception($this->db->lasterror());
         }
+    }
+
+    private function enrichStoredInvoiceAmounts(int $rowid): void
+    {
+        $sql = 'SELECT invoice_data FROM '.MAIN_DB_PREFIX.'navinvoice_invoice WHERE rowid = '.$rowid;
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception($this->db->lasterror());
+        }
+        $obj = $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        if (!$obj || trim((string) $obj->invoice_data) === '') {
+            return;
+        }
+
+        $amounts = $this->extractInvoiceAmounts((string) $obj->invoice_data);
+        $set = array();
+        foreach ($amounts as $column => $value) {
+            if ($value !== null) {
+                $set[] = $column." = COALESCE(".$column.", '".$this->db->escape($value)."')";
+            }
+        }
+        if (!$set) {
+            return;
+        }
+
+        $sql = 'UPDATE '.MAIN_DB_PREFIX.'navinvoice_invoice SET '.implode(', ', $set).' WHERE rowid = '.$rowid;
+        if (!$this->db->query($sql)) {
+            throw new Exception($this->db->lasterror());
+        }
+    }
+
+    /**
+     * Recover invoice totals from the full NAV XML when queryInvoiceDigest omitted them.
+     * Normal invoices carry explicit net/VAT totals. Simplified invoices carry gross
+     * totals grouped by VAT content, so a display total can be derived from those groups.
+     * The digest remains authoritative: these values are only used with SQL COALESCE.
+     *
+     * @return array<string, string|null>
+     */
+    private function extractInvoiceAmounts(string $xml): array
+    {
+        $result = array(
+            'invoice_net_amount' => null,
+            'invoice_net_amount_huf' => null,
+            'invoice_vat_amount' => null,
+            'invoice_vat_amount_huf' => null,
+        );
+
+        libxml_use_internal_errors(true);
+        $document = simplexml_load_string($xml);
+        libxml_clear_errors();
+        if (!$document instanceof SimpleXMLElement) {
+            return $result;
+        }
+
+        $paths = array(
+            'invoice_net_amount' => '//*[local-name()="invoiceSummary"]/*[local-name()="summaryNormal"]/*[local-name()="invoiceNetAmount"]',
+            'invoice_net_amount_huf' => '//*[local-name()="invoiceSummary"]/*[local-name()="summaryNormal"]/*[local-name()="invoiceNetAmountHUF"]',
+            'invoice_vat_amount' => '//*[local-name()="invoiceSummary"]/*[local-name()="summaryNormal"]/*[local-name()="invoiceVatAmount"]',
+            'invoice_vat_amount_huf' => '//*[local-name()="invoiceSummary"]/*[local-name()="summaryNormal"]/*[local-name()="invoiceVatAmountHUF"]',
+        );
+        foreach ($paths as $key => $path) {
+            $nodes = $document->xpath($path);
+            if ($nodes && trim((string) $nodes[0]) !== '') {
+                $result[$key] = trim((string) $nodes[0]);
+            }
+        }
+
+        if ($result['invoice_net_amount'] !== null || $result['invoice_vat_amount'] !== null) {
+            return $result;
+        }
+
+        // Simplified invoices contain gross amounts by VAT content instead of explicit
+        // net/VAT invoice totals. Derive totals only from well-defined VAT-content or
+        // zero-VAT groups. This is a mirror/display fallback, not a replacement for the XML.
+        $summaries = $document->xpath('//*[local-name()="invoiceSummary"]/*[local-name()="summarySimplified"]');
+        if (!$summaries) {
+            return $result;
+        }
+
+        $grossTotal = 0.0;
+        $vatTotal = 0.0;
+        $grossHufTotal = 0.0;
+        $vatHufTotal = 0.0;
+        $hasGross = false;
+        $hasGrossHuf = false;
+        $canDerive = true;
+
+        foreach ($summaries as $summary) {
+            $grossNodes = $summary->xpath('./*[local-name()="vatContentGrossAmount"]');
+            if (!$grossNodes || trim((string) $grossNodes[0]) === '') {
+                $canDerive = false;
+                break;
+            }
+            $gross = (float) $grossNodes[0];
+            $grossTotal += $gross;
+            $hasGross = true;
+
+            $grossHufNodes = $summary->xpath('./*[local-name()="vatContentGrossAmountHUF"]');
+            $grossHuf = null;
+            if ($grossHufNodes && trim((string) $grossHufNodes[0]) !== '') {
+                $grossHuf = (float) $grossHufNodes[0];
+                $grossHufTotal += $grossHuf;
+                $hasGrossHuf = true;
+            }
+
+            $contentNodes = $summary->xpath('./*[local-name()="vatRate"]/*[local-name()="vatContent"]');
+            if ($contentNodes && trim((string) $contentNodes[0]) !== '') {
+                $content = (float) $contentNodes[0];
+                $vatTotal += $gross * $content;
+                if ($grossHuf !== null) {
+                    $vatHufTotal += $grossHuf * $content;
+                }
+                continue;
+            }
+
+            $zeroVatNodes = $summary->xpath(
+                './*[local-name()="vatRate"]/*[local-name()="vatExemption" or local-name()="vatOutOfScope" or local-name()="vatDomesticReverseCharge"]'
+            );
+            if (!$zeroVatNodes) {
+                $canDerive = false;
+                break;
+            }
+        }
+
+        if (!$canDerive || !$hasGross) {
+            return $result;
+        }
+
+        $result['invoice_vat_amount'] = $this->decimalFromFloat($vatTotal);
+        $result['invoice_net_amount'] = $this->decimalFromFloat($grossTotal - $vatTotal);
+        if ($hasGrossHuf) {
+            $result['invoice_vat_amount_huf'] = $this->decimalFromFloat($vatHufTotal);
+            $result['invoice_net_amount_huf'] = $this->decimalFromFloat($grossHufTotal - $vatHufTotal);
+        }
+
+        return $result;
+    }
+
+    private function decimalFromFloat(float $value): string
+    {
+        $formatted = number_format(round($value, 8), 8, '.', '');
+        $formatted = rtrim(rtrim($formatted, '0'), '.');
+        return $formatted === '-0' || $formatted === '' ? '0' : $formatted;
     }
 
     private function sqlDateTime(string $value): ?string
