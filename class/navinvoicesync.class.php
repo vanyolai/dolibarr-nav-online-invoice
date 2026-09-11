@@ -26,7 +26,12 @@ class NavInvoiceSync
         $from = $to->modify('-'.($days - 1).' days');
 
         try {
-            $stats = $this->syncPeriod($from->format('Y-m-d'), $to->format('Y-m-d'), (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1));
+            $stats = $this->syncPeriod(
+                $from->format('Y-m-d'),
+                $to->format('Y-m-d'),
+                (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1),
+                'BOTH'
+            );
             dol_syslog(__METHOD__.': NAV sync completed: '.json_encode($stats), LOG_INFO);
             return 0;
         } catch (Throwable $e) {
@@ -37,50 +42,141 @@ class NavInvoiceSync
         }
     }
 
-    public function syncPeriod(string $dateFrom, string $dateTo, bool $fetchFullData = true): array
+    public function syncPeriod(string $dateFrom, string $dateTo, bool $fetchFullData = true, string $direction = 'BOTH'): array
     {
+        $this->ensureSchema();
+
         $start = DateTimeImmutable::createFromFormat('!Y-m-d', $dateFrom);
         $end = DateTimeImmutable::createFromFormat('!Y-m-d', $dateTo);
         if (!$start || !$end || $end < $start) {
             throw new Exception('Invalid synchronization period.');
         }
 
-        $api = new NavInvoiceApi();
-        $stats = array('seen' => 0, 'inserted' => 0, 'updated' => 0, 'downloaded' => 0, 'chunks' => 0);
-        $chunkStart = $start;
+        $direction = strtoupper(trim($direction));
+        if (!in_array($direction, array('OUTBOUND', 'INBOUND', 'BOTH'), true)) {
+            throw new Exception('Synchronization direction must be OUTBOUND, INBOUND or BOTH.');
+        }
+        $directions = $direction === 'BOTH' ? array('OUTBOUND', 'INBOUND') : array($direction);
 
-        while ($chunkStart <= $end) {
-            $chunkEnd = $chunkStart->modify('+34 days');
-            if ($chunkEnd > $end) {
-                $chunkEnd = $end;
+        $api = new NavInvoiceApi();
+        $stats = array(
+            'seen' => 0,
+            'inserted' => 0,
+            'updated' => 0,
+            'unchanged' => 0,
+            'downloaded' => 0,
+            'chunks' => 0,
+            'outbound' => 0,
+            'inbound' => 0,
+        );
+
+        foreach ($directions as $currentDirection) {
+            $chunkStart = $start;
+            while ($chunkStart <= $end) {
+                $chunkEnd = $chunkStart->modify('+34 days');
+                if ($chunkEnd > $end) {
+                    $chunkEnd = $end;
+                }
+                $stats['chunks']++;
+                $this->syncChunk(
+                    $api,
+                    $chunkStart->format('Y-m-d'),
+                    $chunkEnd->format('Y-m-d'),
+                    $fetchFullData,
+                    $currentDirection,
+                    $stats
+                );
+                $chunkStart = $chunkEnd->modify('+1 day');
             }
-            $stats['chunks']++;
-            $this->syncChunk($api, $chunkStart->format('Y-m-d'), $chunkEnd->format('Y-m-d'), $fetchFullData, $stats);
-            $chunkStart = $chunkEnd->modify('+1 day');
         }
 
         return $stats;
     }
 
-    private function syncChunk(NavInvoiceApi $api, string $from, string $to, bool $fetchFullData, array &$stats): void
+    public function ensureSchema(): void
+    {
+        $table = MAIN_DB_PREFIX.'navinvoice_invoice';
+
+        $resql = $this->db->query("SHOW COLUMNS FROM ".$table." LIKE 'invoice_direction'");
+        if (!$resql) {
+            throw new Exception($this->db->lasterror());
+        }
+        $hasDirection = (bool) $this->db->fetch_object($resql);
+        $this->db->free($resql);
+
+        if (!$hasDirection) {
+            if (!$this->db->query("ALTER TABLE ".$table." ADD invoice_direction varchar(8) NOT NULL DEFAULT 'OUTBOUND' AFTER entity")) {
+                throw new Exception($this->db->lasterror());
+            }
+
+            $resql = $this->db->query("SHOW INDEX FROM ".$table." WHERE Key_name = 'uk_navinvoice_invoice'");
+            if (!$resql) {
+                throw new Exception($this->db->lasterror());
+            }
+            $hasOldUnique = (bool) $this->db->fetch_object($resql);
+            $this->db->free($resql);
+            if ($hasOldUnique && !$this->db->query("ALTER TABLE ".$table." DROP INDEX uk_navinvoice_invoice")) {
+                throw new Exception($this->db->lasterror());
+            }
+            if (!$this->db->query("ALTER TABLE ".$table." ADD UNIQUE INDEX uk_navinvoice_invoice (entity, invoice_direction, invoice_number, batch_index)")) {
+                throw new Exception($this->db->lasterror());
+            }
+        }
+
+        $resql = $this->db->query("SHOW COLUMNS FROM ".$table." LIKE 'fk_facture_fourn'");
+        if (!$resql) {
+            throw new Exception($this->db->lasterror());
+        }
+        $hasSupplierInvoiceLink = (bool) $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        if (!$hasSupplierInvoiceLink) {
+            if (!$this->db->query("ALTER TABLE ".$table." ADD fk_facture_fourn integer NULL AFTER fk_facture")) {
+                throw new Exception($this->db->lasterror());
+            }
+            if (!$this->db->query("ALTER TABLE ".$table." ADD INDEX idx_navinvoice_fk_facture_fourn (fk_facture_fourn)")) {
+                throw new Exception($this->db->lasterror());
+            }
+        }
+
+        $resql = $this->db->query("SHOW INDEX FROM ".$table." WHERE Key_name = 'idx_navinvoice_supplier_tax'");
+        if (!$resql) {
+            throw new Exception($this->db->lasterror());
+        }
+        $hasSupplierTaxIndex = (bool) $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        if (!$hasSupplierTaxIndex) {
+            if (!$this->db->query("ALTER TABLE ".$table." ADD INDEX idx_navinvoice_supplier_tax (entity, supplier_tax_number)")) {
+                throw new Exception($this->db->lasterror());
+            }
+        }
+    }
+
+    private function syncChunk(NavInvoiceApi $api, string $from, string $to, bool $fetchFullData, string $direction, array &$stats): void
     {
         $page = 1;
         $availablePage = 1;
 
         do {
-            $response = $api->queryInvoiceDigest($from, $to, $page);
+            $response = $api->queryInvoiceDigest($from, $to, $page, $direction);
             $pageNodes = $response->xpath('//*[local-name()="invoiceDigestResult"]/*[local-name()="availablePage"]');
             $availablePage = $pageNodes ? max(1, (int) $pageNodes[0]) : 1;
             $digests = $response->xpath('//*[local-name()="invoiceDigestResult"]/*[local-name()="invoiceDigest"]');
 
             foreach ($digests ?: array() as $digest) {
                 $stats['seen']++;
-                $data = $this->digestToArray($digest);
+                $stats[strtolower($direction)]++;
+                $data = $this->digestToArray($digest, $direction);
                 $upsert = $this->upsertDigest($data);
-                $stats[$upsert['inserted'] ? 'inserted' : 'updated']++;
+                if ($upsert['inserted']) {
+                    $stats['inserted']++;
+                } elseif ($upsert['changed']) {
+                    $stats['updated']++;
+                } else {
+                    $stats['unchanged']++;
+                }
 
                 if ($fetchFullData && ($upsert['changed'] || !$upsert['data_fetched'])) {
-                    $xml = $api->queryInvoiceData($data['invoice_number'], (int) $data['batch_index']);
+                    $xml = $api->queryInvoiceData($data['invoice_number'], (int) $data['batch_index'], $direction);
                     $this->storeInvoiceData((int) $upsert['rowid'], $xml);
                     $stats['downloaded']++;
                 }
@@ -89,7 +185,7 @@ class NavInvoiceSync
         } while ($page <= $availablePage);
     }
 
-    private function digestToArray(SimpleXMLElement $digest): array
+    private function digestToArray(SimpleXMLElement $digest, string $direction): array
     {
         $field = function (string $name) use ($digest): string {
             $nodes = $digest->xpath('./*[local-name()="'.$name.'"]');
@@ -97,6 +193,7 @@ class NavInvoiceSync
         };
 
         $raw = array(
+            'invoiceDirection' => $direction,
             'invoiceNumber' => $field('invoiceNumber'),
             'batchIndex' => $field('batchIndex'),
             'invoiceOperation' => $field('invoiceOperation'),
@@ -126,6 +223,7 @@ class NavInvoiceSync
         $rawJson = json_encode($raw, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         return array(
+            'invoice_direction' => $direction,
             'invoice_number' => $raw['invoiceNumber'],
             'batch_index' => $raw['batchIndex'] !== '' ? (int) $raw['batchIndex'] : 0,
             'invoice_operation' => $raw['invoiceOperation'],
@@ -163,6 +261,7 @@ class NavInvoiceSync
 
         $sql = 'SELECT rowid, digest_hash, data_fetched FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
         $sql .= ' WHERE entity = '.$entity;
+        $sql .= " AND invoice_direction = '".$this->db->escape($data['invoice_direction'])."'";
         $sql .= " AND invoice_number = '".$this->db->escape($data['invoice_number'])."'";
         $sql .= ' AND batch_index = '.((int) $data['batch_index']);
         $resql = $this->db->query($sql);
@@ -178,8 +277,8 @@ class NavInvoiceSync
 
         if ($inserted) {
             $sql = 'INSERT INTO '.MAIN_DB_PREFIX.'navinvoice_invoice ('
-                .'entity, invoice_number, batch_index, datec, last_sync) VALUES ('
-                .$entity.", '".$this->db->escape($data['invoice_number'])."', ".((int) $data['batch_index']).", '".$this->db->idate(dol_now())."', '".$this->db->idate(dol_now())."')";
+                .'entity, invoice_direction, invoice_number, batch_index, datec, last_sync) VALUES ('
+                .$entity.", '".$this->db->escape($data['invoice_direction'])."', '".$this->db->escape($data['invoice_number'])."', ".((int) $data['batch_index']).", '".$this->db->idate(dol_now())."', '".$this->db->idate(dol_now())."')";
             if (!$this->db->query($sql)) {
                 throw new Exception($this->db->lasterror());
             }
