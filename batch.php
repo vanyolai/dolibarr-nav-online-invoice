@@ -101,6 +101,19 @@ $stateHtml = static function (string $state) use ($langs): string {
     return img_picto('', 'error').' <span class="error">'.$langs->trans('ImportStateBlocked').'</span>';
 };
 
+$reconciliationLabel = static function (string $code) use ($langs): string {
+    $keys = array(
+        'default' => 'BatchReconciliationDefault',
+        'mode1' => 'BatchReconciliationMode1',
+        'mode2' => 'BatchReconciliationMode2',
+        'nav_fallback' => 'BatchReconciliationNavFallback',
+    );
+    if (!isset($keys[$code])) {
+        return '';
+    }
+    return $langs->trans($keys[$code]);
+};
+
 llxHeader('', $langs->trans('BatchImport'));
 print load_fiche_titre(
     $langs->trans('BatchImport'),
@@ -139,7 +152,8 @@ if (is_array($batchResult)) {
     print '<div class="div-table-responsive"><table class="noborder centpercent">';
     print '<tr class="liste_titre"><td>'.$langs->trans('NavInvoiceNumber').'</td><td>'.$langs->trans('ProposalStatus').'</td><td>'.$langs->trans('DolibarrInvoice').'</td><td>'.$langs->trans('BatchMessage').'</td></tr>';
     foreach ($batchResult['success'] as $item) {
-        print '<tr class="oddeven"><td>'.dol_escape_htmltag($item['invoice_number']).'</td><td>'.img_picto('', 'tick').' '.$langs->trans('BatchResultSuccess').'</td><td><a href="'.dol_escape_htmltag($item['url']).'">'.dol_escape_htmltag($item['ref']).'</a></td><td></td></tr>';
+        $message = $reconciliationLabel((string) ($item['reconciliation'] ?? ''));
+        print '<tr class="oddeven"><td>'.dol_escape_htmltag($item['invoice_number']).'</td><td>'.img_picto('', 'tick').' '.$langs->trans('BatchResultSuccess').'</td><td><a href="'.dol_escape_htmltag($item['url']).'">'.dol_escape_htmltag($item['ref']).'</a></td><td>'.dol_escape_htmltag($message).'</td></tr>';
     }
     foreach ($batchResult['skipped'] as $item) {
         print '<tr class="oddeven"><td>'.dol_escape_htmltag($item['invoice_number']).'</td><td>'.img_picto('', 'warning').' '.$langs->trans('BatchResultSkipped').'</td><td></td><td>'.dol_escape_htmltag($item['message']).'</td></tr>';
