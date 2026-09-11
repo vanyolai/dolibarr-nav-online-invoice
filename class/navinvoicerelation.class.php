@@ -90,7 +90,12 @@ class NavInvoiceRelationResolver
 
             if ($original === null) {
                 if ($modifyWithoutMaster === true) {
+                    // NAV explicitly permits a modification without the original
+                    // invoice being available to the reporting taxpayer. This is
+                    // legally distinct from a broken relation, but Dolibarr still
+                    // needs a separate policy before we can import it safely.
                     $result['warnings'][] = 'original_mirror_missing_allowed';
+                    $result['blockers'][] = 'modify_without_master_policy_required';
                 } else {
                     $result['blockers'][] = 'original_mirror_missing';
                 }
