@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 - development
+
+- Support `SIMPLIFIED` NAV invoices whose source amounts are expressed as gross values with VAT content instead of normal net/VAT amounts.
+- Convert supported NAV VAT-content values to Dolibarr VAT rates, including the Hungarian 5%, 18% and 27% rates, while treating NAV gross as the authoritative amount.
+- Derive Dolibarr net unit prices for simplified invoices from authoritative gross amounts rather than misinterpreting NAV `unitPrice` as net.
+- Validate simplified imports against the NAV gross total; net and VAT remain explicitly derived values because NAV VAT content is rounded.
+- Label simplified invoice unit prices as gross and show the VAT-content-to-rate conversion in invoice details and import preview.
+- Move the module entry from its own top-level menu into Dolibarr's Billing / Payment left menu.
+- Preserve NAV module constants when temporarily disabling the module so menu registration can be refreshed safely.
+
 ## 0.6.2 - development
 
 - Clear NAV mirror links automatically when linked Dolibarr customer or supplier invoices are deleted.
