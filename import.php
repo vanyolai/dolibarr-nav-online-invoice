@@ -12,7 +12,7 @@ if (!$res) {
 
 dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
-dol_include_once('/navinvoice/class/navinvoiceimportpreview.class.php');
+dol_include_once('/navinvoice/class/navinvoiceoperationpreview.class.php');
 dol_include_once('/navinvoice/class/navinvoiceimporter.class.php');
 $langs->loadLangs(array('navinvoice@navinvoice'));
 
@@ -70,7 +70,7 @@ if ($parsed !== null) {
 
     if ($partnerMatchError === '') {
         try {
-            $previewBuilder = new NavInvoiceImportPreview($db, (int) $conf->entity, $baseCurrency);
+            $previewBuilder = new NavInvoiceOperationPreview($db, (int) $conf->entity, $baseCurrency);
             $preview = $previewBuilder->build($parsed, $record, $partnerMatch);
         } catch (Throwable $e) {
             $previewError = $e->getMessage();
@@ -157,6 +157,9 @@ if ($linkedId > 0) {
 if (is_array($preview)) {
     $state = (string) $preview['state'];
     $isSimplified = strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED';
+    $operation = strtoupper((string) ($preview['operation'] ?? 'CREATE'));
+    $operationMapping = (string) ($preview['operation_mapping'] ?? ($operation === 'CREATE' ? 'standard' : ''));
+    $sourceInvoiceId = (int) ($preview['source_invoice_id'] ?? 0);
     if ($state === 'ready') {
         $stateDisplay = img_picto('', 'tick').' <span class="ok">'.$langs->trans('ImportStateReady').'</span>';
     } elseif ($state === 'review') {
@@ -170,6 +173,14 @@ if (is_array($preview)) {
     print '<tr><td class="titlefield">'.$langs->trans('ProposalStatus').'</td><td>'.$stateDisplay.'</td></tr>';
     print '<tr><td>'.$langs->trans('ImportTarget').'</td><td>'.$langs->trans($isInbound ? 'ImportAsSupplierInvoice' : 'ImportAsCustomerInvoice').'</td></tr>';
     print '<tr><td>'.$langs->trans('NavInvoiceNumber').'</td><td>'.$display($preview['invoice_number']).'</td></tr>';
+    print '<tr><td>'.$langs->trans('Operation').'</td><td>'.$display($operation).'</td></tr>';
+    print '<tr><td>'.$langs->trans('OperationMapping').'</td><td>'.$display($langs->trans('OperationMapping_'.$operationMapping)).'</td></tr>';
+    if ($sourceInvoiceId > 0) {
+        $sourceUrl = $isInbound
+            ? DOL_URL_ROOT.'/fourn/facture/card.php?facid='.$sourceInvoiceId
+            : DOL_URL_ROOT.'/compta/facture/card.php?facid='.$sourceInvoiceId;
+        print '<tr><td>'.$langs->trans('SourceDolibarrInvoice').'</td><td><a href="'.dol_escape_htmltag($sourceUrl).'">#'.$sourceInvoiceId.'</a></td></tr>';
+    }
     print '<tr><td>'.$langs->trans('InvoiceCategory').'</td><td>'.$display($preview['category']).'</td></tr>';
     print '<tr><td>'.$langs->trans('InvoiceIssueDate').'</td><td>'.$display($preview['header']['invoice_date']).'</td></tr>';
     print '<tr><td>'.$langs->trans('InvoiceDeliveryDate').'</td><td>'.$display($preview['header']['delivery_date']).'</td></tr>';
@@ -293,7 +304,9 @@ if (is_array($preview)) {
     }
     print '<br>';
 
-    if (!$isInbound) {
+    if ($operation !== 'CREATE') {
+        print '<div class="info marginbottomonly">'.$langs->trans('ImportNonCreateDraftNotice').'</div>';
+    } elseif (!$isInbound) {
         print '<div class="info marginbottomonly">'.$langs->trans('ImportOutboundDraftNumberNotice').'</div>';
     } else {
         print '<div class="info marginbottomonly">'.$langs->trans('ImportSupplierReferenceNotice').'</div>';
