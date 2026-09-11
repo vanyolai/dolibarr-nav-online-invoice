@@ -12,7 +12,7 @@ if (!$res) {
 
 dol_include_once('/navinvoice/class/navinvoicesync.class.php');
 dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice', 'navpartner@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
