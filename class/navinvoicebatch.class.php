@@ -2,7 +2,7 @@
 
 dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
-dol_include_once('/navinvoice/class/navinvoiceimportpreview.class.php');
+dol_include_once('/navinvoice/class/navinvoiceoperationpreview.class.php');
 dol_include_once('/navinvoice/class/navinvoiceimporter.class.php');
 
 /**
@@ -10,8 +10,8 @@ dol_include_once('/navinvoice/class/navinvoiceimporter.class.php');
  *
  * Batch import deliberately accepts READY invoices only and creates Dolibarr
  * supplier invoices as drafts. Every selected record is re-evaluated just
- * before import so a stale browser page cannot bypass duplicate or partner
- * checks performed by NavInvoiceImportPreview.
+ * before import so a stale browser page cannot bypass duplicate, partner,
+ * relation or authoritative NAV-chain checks.
  */
 class NavInvoiceBatchService
 {
@@ -30,7 +30,7 @@ class NavInvoiceBatchService
     /** @var NavPartnerMatcher */
     private $matcher;
 
-    /** @var NavInvoiceImportPreview */
+    /** @var NavInvoiceOperationPreview */
     private $previewBuilder;
 
     /** @var NavInvoiceImporter */
@@ -43,7 +43,7 @@ class NavInvoiceBatchService
         $this->baseCurrency = strtoupper(trim($baseCurrency));
         $this->parser = new NavInvoiceParser();
         $this->matcher = new NavPartnerMatcher($db, $entity);
-        $this->previewBuilder = new NavInvoiceImportPreview($db, $entity, $this->baseCurrency);
+        $this->previewBuilder = new NavInvoiceOperationPreview($db, $entity, $this->baseCurrency);
         $this->importer = new NavInvoiceImporter($db, $entity, $this->baseCurrency);
     }
 
@@ -183,6 +183,7 @@ class NavInvoiceBatchService
                     'ref' => (string) $imported['ref'],
                     'url' => (string) $imported['url'],
                     'reconciliation' => (string) ($imported['reconciliation'] ?? ''),
+                    'operation_mapping' => (string) ($imported['operation_mapping'] ?? ''),
                 );
             } catch (Throwable $e) {
                 $result['errors'][] = array(
