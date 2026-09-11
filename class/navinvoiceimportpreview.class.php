@@ -1,5 +1,7 @@
 <?php
 
+dol_include_once('/navinvoice/class/navunitresolver.class.php');
+
 /**
  * Build a read-only preview of how a NAV invoice would map into Dolibarr.
  * No Dolibarr business object is created or modified here.
@@ -15,11 +17,15 @@ class NavInvoiceImportPreview
     /** @var string */
     private $baseCurrency;
 
+    /** @var NavUnitResolver */
+    private $unitResolver;
+
     public function __construct($db, int $entity, string $baseCurrency = 'HUF')
     {
         $this->db = $db;
         $this->entity = $entity;
         $this->baseCurrency = strtoupper(trim($baseCurrency));
+        $this->unitResolver = new NavUnitResolver($db);
     }
 
     /**
@@ -77,8 +83,10 @@ class NavInvoiceImportPreview
             if (!empty($mapped['blocker'])) {
                 $blockers[] = (string) $mapped['blocker'];
             }
-            if (!empty($mapped['warning'])) {
-                $warnings[] = (string) $mapped['warning'];
+            foreach (array('warning', 'unit_warning') as $warningField) {
+                if (!empty($mapped[$warningField])) {
+                    $warnings[] = (string) $mapped[$warningField];
+                }
             }
             $lines[] = $mapped;
         }
@@ -115,6 +123,7 @@ class NavInvoiceImportPreview
             'duplicate' => $duplicate,
             'blockers' => $blockers,
             'warnings' => $warnings,
+            'units_enabled' => $this->unitResolver->isEnabled(),
             'header' => array(
                 'invoice_date' => $invoiceDate,
                 'delivery_date' => (string) ($parsed['detail']['delivery_date'] ?? ''),
@@ -179,12 +188,25 @@ class NavInvoiceImportPreview
         }
 
         $nature = strtoupper((string) ($line['nature'] ?? ''));
+        $unitResolution = $this->unitResolver->resolve($line);
+        $unitWarning = '';
+        if ($this->unitResolver->isEnabled() && ($unitResolution['source'] ?? '') !== '') {
+            if (($unitResolution['status'] ?? '') === 'unresolved') {
+                $unitWarning = 'unit_unresolved';
+            } elseif (($unitResolution['status'] ?? '') === 'ambiguous') {
+                $unitWarning = 'unit_ambiguous';
+            }
+        }
 
         return array(
             'number' => (string) ($line['number'] ?? ''),
             'description' => (string) ($line['description'] ?? ''),
             'quantity' => $qty,
-            'unit' => (string) (($line['unit_own'] ?? '') !== '' ? $line['unit_own'] : ($line['unit'] ?? '')),
+            'unit' => (string) ($unitResolution['source'] ?? ''),
+            'unit_id' => (int) ($unitResolution['id'] ?? 0),
+            'unit_code' => (string) ($unitResolution['code'] ?? ''),
+            'unit_short_label' => (string) ($unitResolution['short_label'] ?? ''),
+            'unit_status' => (string) ($unitResolution['status'] ?? ''),
             'nav_unit_price_ht' => $navUnitPrice,
             'unit_price_ht' => $unitPrice,
             'unit_price_adjusted' => $adjusted,
@@ -196,6 +218,7 @@ class NavInvoiceImportPreview
             'product_type' => $nature === 'SERVICE' ? 1 : 0,
             'blocker' => $blocker,
             'warning' => $warning,
+            'unit_warning' => $unitWarning,
         );
     }
 
