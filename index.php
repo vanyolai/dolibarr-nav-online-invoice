@@ -35,19 +35,19 @@ if ($action === 'sync' && $user->hasRight('navinvoice', 'invoice', 'sync')) {
     $to = GETPOST('date_to', 'alphanohtml');
     try {
         $stats = $sync->syncPeriod($from, $to, (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1), $syncDirection);
-        setEventMessages(
-            $langs->trans(
-                'SyncCompletedDetailed',
-                $stats['seen'],
-                $stats['outbound'],
-                $stats['inbound'],
-                $stats['inserted'],
-                $stats['updated'],
-                $stats['downloaded']
-            ),
-            null,
-            'mesgs'
+        $message = $langs->trans(
+            'SyncCompletedDetailed',
+            $stats['seen'],
+            $stats['outbound'],
+            $stats['inbound'],
+            $stats['inserted']
         );
+        $message .= ' '.$langs->trans(
+            'SyncCompletedDetailedExtra',
+            $stats['updated'],
+            $stats['downloaded']
+        );
+        setEventMessages($message, null, 'mesgs');
     } catch (Throwable $e) {
         setEventMessages($langs->trans('SyncFailed').': '.$e->getMessage(), null, 'errors');
     }
