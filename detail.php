@@ -448,7 +448,7 @@ if ($parsed) {
         if ($line['vat']['kind'] === 'content') {
             $effectiveRate = $vatRateFromContent($line['vat']['value']);
             $vatLabel = $effectiveRate !== null
-                ? rtrim(rtrim(number_format($effectiveRate, 2, '.', ''), '0'), '.').'%%'
+                ? rtrim(rtrim(number_format($effectiveRate, 2, '.', ''), '0'), '.').'%'
                 : $langs->trans('VatContent');
         }
 
