@@ -48,6 +48,7 @@ class NavInvoiceImportPreview
         $invoiceNumber = trim((string) ($parsed['invoice_number'] ?? $record->invoice_number ?? ''));
         $currency = strtoupper(trim((string) ($parsed['detail']['currency'] ?? $record->currency ?? '')));
         $category = strtoupper(trim((string) ($parsed['detail']['category'] ?? $record->invoice_category ?? '')));
+        $simplified = $category === 'SIMPLIFIED';
         $blockers = array();
         $warnings = array();
 
@@ -65,8 +66,11 @@ class NavInvoiceImportPreview
         if ($operation !== 'CREATE') {
             $blockers[] = 'operation_relation';
         }
-        if ($category !== 'NORMAL') {
+        if (!in_array($category, array('NORMAL', 'SIMPLIFIED'), true)) {
             $blockers[] = 'category_unsupported';
+        }
+        if ($simplified) {
+            $warnings[] = 'simplified_invoice_derived';
         }
         if ($invoiceNumber === '') {
             $blockers[] = 'invoice_number_missing';
@@ -85,7 +89,7 @@ class NavInvoiceImportPreview
 
         $lines = array();
         foreach (($parsed['lines'] ?? array()) as $line) {
-            $mapped = $this->mapLine($line);
+            $mapped = $this->mapLine($line, $category);
             if (!empty($mapped['blocker'])) {
                 $blockers[] = (string) $mapped['blocker'];
             }
@@ -99,10 +103,20 @@ class NavInvoiceImportPreview
         }
 
         $totals = $parsed['totals'] ?? array();
-        if (($totals['net'] ?? null) === null || ($totals['vat'] ?? null) === null || ($totals['gross'] ?? null) === null) {
-            $blockers[] = 'totals_incomplete';
-        } elseif ($lines && !$this->lineTotalsMatchHeader($lines, $totals, $currency)) {
-            $blockers[] = 'totals_mismatch';
+        if ($simplified) {
+            // A simplified NAV invoice reports gross amounts and VAT content.
+            // Net and VAT are derived values, therefore gross is authoritative.
+            if (($totals['gross'] ?? null) === null) {
+                $blockers[] = 'totals_incomplete';
+            } elseif ($lines && !$this->lineTotalsMatchHeader($lines, $totals, $currency, $category)) {
+                $blockers[] = 'totals_mismatch';
+            }
+        } else {
+            if (($totals['net'] ?? null) === null || ($totals['vat'] ?? null) === null || ($totals['gross'] ?? null) === null) {
+                $blockers[] = 'totals_incomplete';
+            } elseif ($lines && !$this->lineTotalsMatchHeader($lines, $totals, $currency, $category)) {
+                $blockers[] = 'totals_mismatch';
+            }
         }
 
         $invoiceDate = (string) ($parsed['invoice_issue_date'] ?? '');
@@ -120,6 +134,7 @@ class NavInvoiceImportPreview
             'direction' => $direction,
             'operation' => $operation,
             'category' => $category,
+            'amount_basis' => $simplified ? 'gross' : 'net',
             'invoice_number' => $invoiceNumber,
             'external_key' => $this->externalKey($record, $direction, $invoiceNumber),
             'partner' => $partner,
@@ -147,8 +162,9 @@ class NavInvoiceImportPreview
      * @param array<string,mixed> $line
      * @return array<string,mixed>
      */
-    private function mapLine(array $line): array
+    private function mapLine(array $line, string $category): array
     {
+        $simplified = $category === 'SIMPLIFIED';
         $vat = $line['vat'] ?? array();
         $kind = (string) ($vat['kind'] ?? '');
         $value = $vat['value'] ?? '';
@@ -161,7 +177,14 @@ class NavInvoiceImportPreview
         } elseif ($kind === 'zero') {
             $vatRate = 0.0;
         } elseif ($kind === 'content') {
-            $blocker = 'vat_content_unsupported';
+            if ($simplified && $value !== '') {
+                $vatRate = $this->vatRateFromContent((float) $value);
+                if ($vatRate === null) {
+                    $blocker = 'vat_content_unsupported';
+                }
+            } else {
+                $blocker = 'vat_content_unsupported';
+            }
         } elseif ($kind === 'special') {
             $blocker = 'vat_special_unsupported';
         } else {
@@ -169,20 +192,36 @@ class NavInvoiceImportPreview
         }
 
         $qty = $line['quantity'] ?? null;
-        $net = $line['amounts']['net'] ?? null;
+        $sourceNet = $line['amounts']['net'] ?? null;
+        $sourceGross = $line['amounts']['gross'] ?? null;
         $navUnitPrice = $line['unit_price'] ?? null;
         $unitPrice = null;
+        $net = $sourceNet;
+        $vatAmount = $line['amounts']['vat'] ?? null;
+        $gross = $sourceGross;
         $adjusted = false;
 
         if ($qty === null || $qty === '' || (float) $qty == 0.0) {
             $blocker = $blocker ?: 'quantity_invalid';
-        } elseif ($net === null || $net === '') {
+        } elseif ($simplified) {
+            if ($gross === null || $gross === '') {
+                $blocker = $blocker ?: 'line_gross_missing';
+            } elseif ($vatRate !== null) {
+                // On SIMPLIFIED invoices NAV unit price and line amount are gross.
+                // Convert authoritative gross to the legal VAT rate Dolibarr needs,
+                // then derive an HT unit price without treating NAV unitPrice as HT.
+                $grossFloat = (float) $gross;
+                $netFloat = $vatRate == 0.0 ? $grossFloat : $grossFloat / (1 + ($vatRate / 100));
+                $net = $this->decimal($netFloat);
+                $vatAmount = $this->decimal($grossFloat - $netFloat);
+                $unitPrice = $netFloat / (float) $qty;
+            }
+        } elseif ($sourceNet === null || $sourceNet === '') {
             $blocker = $blocker ?: 'line_net_missing';
         } else {
-            // NAV line totals are authoritative. Derive the Dolibarr unit price from
-            // line net / quantity so Dolibarr reproduces the authoritative line net
-            // instead of introducing a rounding difference from the displayed unit price.
-            $unitPrice = (float) $net / (float) $qty;
+            // Normal-invoice NAV line net is authoritative. Derive the Dolibarr
+            // unit price from net / quantity to preserve exact NAV line totals.
+            $unitPrice = (float) $sourceNet / (float) $qty;
             if ($navUnitPrice !== null && $navUnitPrice !== '') {
                 $adjusted = abs((float) $navUnitPrice - $unitPrice) > 0.000001;
                 if ($adjusted) {
@@ -203,23 +242,67 @@ class NavInvoiceImportPreview
             'unit_code' => (string) ($unitResolution['code'] ?? ''),
             'unit_short_label' => (string) ($unitResolution['short_label'] ?? ''),
             'unit_status' => (string) ($unitResolution['status'] ?? ''),
-            'nav_unit_price_ht' => $navUnitPrice,
+            'nav_unit_price' => $navUnitPrice,
+            'nav_unit_price_basis' => $simplified ? 'gross' : 'net',
+            'nav_unit_price_ht' => $simplified ? null : $navUnitPrice,
             'unit_price_ht' => $unitPrice,
             'unit_price_adjusted' => $adjusted,
             'vat_rate' => $vatRate,
+            'vat_content' => $kind === 'content' ? $value : null,
             'vat_label' => (string) ($vat['label'] ?? ''),
             'net' => $net,
-            'vat' => $line['amounts']['vat'] ?? null,
-            'gross' => $line['amounts']['gross'] ?? null,
+            'vat' => $vatAmount,
+            'gross' => $gross,
             'product_type' => $nature === 'SERVICE' ? 1 : 0,
             'blocker' => $blocker,
             'warning' => $warning,
         );
     }
 
-    /** @param array<int,array<string,mixed>> $lines @param array<string,mixed> $totals */
-    private function lineTotalsMatchHeader(array $lines, array $totals, string $currency): bool
+    /**
+     * Convert NAV VAT-content ratio from a simplified invoice to the legal
+     * VAT percentage Dolibarr expects.
+     */
+    private function vatRateFromContent(float $content): ?float
     {
+        if ($content < 0 || $content >= 1) {
+            return null;
+        }
+
+        $known = array(
+            0.0476 => 5.0,
+            0.1525 => 18.0,
+            0.2126 => 27.0,
+        );
+        foreach ($known as $ratio => $rate) {
+            if (abs($content - (float) $ratio) <= 0.00005) {
+                return $rate;
+            }
+        }
+
+        // VAT content = r / (100 + r). NAV stores a rounded content value,
+        // therefore only accept inversion when it is very close to an integer rate.
+        $derived = 100 * $content / (1 - $content);
+        $integerRate = round($derived);
+        return abs($derived - $integerRate) <= 0.05 ? (float) $integerRate : null;
+    }
+
+    /** @param array<int,array<string,mixed>> $lines @param array<string,mixed> $totals */
+    private function lineTotalsMatchHeader(array $lines, array $totals, string $currency, string $category): bool
+    {
+        $decimals = in_array($currency, array('HUF', 'JPY'), true) ? 0 : 2;
+
+        if ($category === 'SIMPLIFIED') {
+            $gross = 0.0;
+            foreach ($lines as $line) {
+                if ($line['gross'] === null || $line['gross'] === '') {
+                    return false;
+                }
+                $gross += (float) $line['gross'];
+            }
+            return round($gross, $decimals) == round((float) $totals['gross'], $decimals);
+        }
+
         $net = 0.0;
         $vat = 0.0;
         foreach ($lines as $line) {
@@ -230,11 +313,15 @@ class NavInvoiceImportPreview
             $vat += (float) $line['vat'];
         }
         $gross = $net + $vat;
-        $decimals = in_array($currency, array('HUF', 'JPY'), true) ? 0 : 2;
 
         return round($net, $decimals) == round((float) $totals['net'], $decimals)
             && round($vat, $decimals) == round((float) $totals['vat'], $decimals)
             && round($gross, $decimals) == round((float) $totals['gross'], $decimals);
+    }
+
+    private function decimal(float $value): string
+    {
+        return rtrim(rtrim(number_format($value, 8, '.', ''), '0'), '.');
     }
 
     /** @return array<string,mixed>|null */
