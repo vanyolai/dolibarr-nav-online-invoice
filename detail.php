@@ -11,6 +11,7 @@ if (!$res) {
 }
 
 dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
+dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
 $langs->loadLangs(array('navinvoice@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
@@ -49,6 +50,18 @@ if (!empty($record->invoice_data)) {
 
 $direction = strtoupper((string) $record->invoice_direction);
 $isInbound = $direction === 'INBOUND';
+$externalPartyKey = $isInbound ? 'supplier' : 'customer';
+$partnerMatch = null;
+$partnerMatchError = '';
+if ($parsed) {
+    try {
+        $matcher = new NavPartnerMatcher($db, (int) $conf->entity);
+        $partnerMatch = $matcher->match($parsed[$externalPartyKey], $externalPartyKey);
+    } catch (Throwable $e) {
+        $partnerMatchError = $e->getMessage();
+    }
+}
+
 $currency = (string) $record->currency;
 if ($parsed && !empty($parsed['detail']['currency'])) {
     $currency = (string) $parsed['detail']['currency'];
@@ -109,6 +122,52 @@ $addressDisplay = static function (string $partyKey, array $party, string $xml) 
     }
 
     return '<span class="opacitymedium">'.$langs->trans('AddressNotInNavXml').'</span>';
+};
+$partnerMatchDisplay = static function (?array $result, string $error = '') use ($langs, $display): string {
+    if ($error !== '') {
+        return img_picto('', 'warning').' <span class="warning">'.$langs->trans('PartnerMatchFailed').': '.dol_escape_htmltag($error).'</span>';
+    }
+    if ($result === null) {
+        return $display(null);
+    }
+
+    $status = (string) ($result['status'] ?? 'none');
+    $match = $result['match'] ?? null;
+
+    if (is_array($match)) {
+        $url = DOL_URL_ROOT.'/societe/card.php?socid='.(int) $match['id'];
+        $link = '<a href="'.dol_escape_htmltag($url).'">'.dol_escape_htmltag((string) $match['name']).'</a>';
+        if ($status === 'tax') {
+            $text = img_picto('', 'tick').' '.$link.' <span class="opacitymedium">('.$langs->trans('PartnerMatchByTax').')</span>';
+        } elseif ($status === 'name_address') {
+            $text = img_picto('', 'tick').' '.$link.' <span class="opacitymedium">('.$langs->trans('PartnerMatchByNameAddress').')</span>';
+        } elseif ($status === 'name') {
+            $text = img_picto('', 'warning').' '.$link.' <span class="opacitymedium">('.$langs->trans('PartnerMatchByName').')</span>';
+        } else {
+            $similarity = isset($match['name_similarity']) && $match['name_similarity'] !== null ? ' '.round((float) $match['name_similarity']).'%' : '';
+            $text = img_picto('', 'warning').' '.$link.' <span class="opacitymedium">('.$langs->trans('PartnerMatchCandidate').$similarity.')</span>';
+        }
+
+        if (!empty($result['can_fill_tax_number'])) {
+            $text .= '<br><span class="small warning">'.$langs->trans('PartnerTaxCanBeFilledFromNav').'</span>';
+        }
+        return $text;
+    }
+
+    if ($status === 'ambiguous') {
+        $parts = array();
+        foreach (array_slice($result['candidates'] ?? array(), 0, 3) as $candidate) {
+            $url = DOL_URL_ROOT.'/societe/card.php?socid='.(int) $candidate['id'];
+            $parts[] = '<a href="'.dol_escape_htmltag($url).'">'.dol_escape_htmltag((string) $candidate['name']).'</a> ('.(int) $candidate['score'].'%)';
+        }
+        $suffix = $parts ? '<br><span class="small opacitymedium">'.implode(' · ', $parts).'</span>' : '';
+        return img_picto('', 'warning').' <span class="warning">'.$langs->trans('PartnerMatchAmbiguous').'</span>'.$suffix;
+    }
+    if ($status === 'unavailable') {
+        return '<span class="opacitymedium">'.$langs->trans('PartnerMatchUnavailable').'</span>';
+    }
+
+    return '<span class="opacitymedium">'.$langs->trans('PartnerMatchNone').'</span>';
 };
 
 llxHeader('', $langs->trans('NavInvoiceDetails'));
@@ -188,6 +247,9 @@ if ($parsed) {
         print '<tr><td>'.$langs->trans('Address').'</td><td>'.$addressDisplay($partyKey, $party, (string) $record->invoice_data).'</td></tr>';
         if (!empty($party['bank_account'])) {
             print '<tr><td>'.$langs->trans('BankAccount').'</td><td>'.$display($party['bank_account']).'</td></tr>';
+        }
+        if ($partyKey === $externalPartyKey) {
+            print '<tr><td>'.$langs->trans('DolibarrPartner').'</td><td>'.$partnerMatchDisplay($partnerMatch, $partnerMatchError).'</td></tr>';
         }
         print '</table>';
         print '</div>';
