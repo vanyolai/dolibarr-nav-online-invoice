@@ -1,5 +1,7 @@
 <?php
 
+dol_include_once('/navinvoice/class/navunitresolver.class.php');
+
 /**
  * Import a validated NAV import preview into Dolibarr as a draft invoice.
  *
@@ -18,11 +20,15 @@ class NavInvoiceImporter
     /** @var string */
     private $baseCurrency;
 
+    /** @var NavUnitResolver */
+    private $unitResolver;
+
     public function __construct($db, int $entity, string $baseCurrency)
     {
         $this->db = $db;
         $this->entity = $entity;
         $this->baseCurrency = strtoupper(trim($baseCurrency));
+        $this->unitResolver = new NavUnitResolver($db);
     }
 
     /**
@@ -140,7 +146,7 @@ class NavInvoiceImporter
             $line->array_options = array();
             $line->situation_percent = 100;
             $line->fk_prev_id = 0;
-            $line->fk_unit = null;
+            $line->fk_unit = $this->resolveUnitId($mapped);
             $line->multicurrency_subprice = 0;
             $line->ref_ext = 'NAVLINE|'.(string) $mapped['number'];
             $invoice->lines[] = $line;
@@ -205,7 +211,7 @@ class NavInvoiceImporter
             $line->rang = ++$rank;
             $line->special_code = 0;
             $line->array_options = array();
-            $line->fk_unit = null;
+            $line->fk_unit = $this->resolveUnitId($mapped);
             $line->multicurrency_subprice = 0;
             $line->ref_supplier = '';
             $invoice->lines[] = $line;
@@ -277,6 +283,23 @@ class NavInvoiceImporter
                 .' vs NAV '.$expected['net'].'/'.$expected['vat'].'/'.$expected['gross']
             );
         }
+    }
+
+    /** @param array<string,mixed> $mapped */
+    private function resolveUnitId(array $mapped): ?int
+    {
+        if (!$this->unitResolver->isEnabled()) {
+            return null;
+        }
+        if (!empty($mapped['unit_id'])) {
+            return (int) $mapped['unit_id'];
+        }
+
+        $resolution = $this->unitResolver->resolve(array(
+            'unit' => (string) ($mapped['unit'] ?? ''),
+            'unit_own' => '',
+        ));
+        return ($resolution['status'] ?? '') === 'resolved' ? (int) $resolution['id'] : null;
     }
 
     private function linkMirrorRecord(int $mirrorId, string $direction, int $invoiceId): void
