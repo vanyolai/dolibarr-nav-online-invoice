@@ -2,7 +2,7 @@
 
 External Dolibarr module for synchronizing inbound and outbound invoices from the Hungarian NAV Online Invoice API v3 and importing supported NAV invoices into Dolibarr as drafts.
 
-> **Development status:** experimental. NAV acquisition is read-only, while supported NAV invoices can now be imported manually into Dolibarr as draft customer or supplier invoices. Automatic validation, accounting and payment actions are intentionally not performed.
+> **Development status:** experimental. NAV acquisition is read-only, while supported NAV invoices can be imported manually into Dolibarr as draft customer or supplier invoices. Automatic validation, accounting and payment actions are intentionally not performed.
 
 ## Target
 
@@ -27,14 +27,15 @@ External Dolibarr module for synchronizing inbound and outbound invoices from th
 - Idempotent upsert by Dolibarr entity, direction, invoice number and batch index
 - Automatic migration of the initial outbound-only mirror schema
 - Detailed parsed invoice view with parties, addresses, totals and invoice lines
-- Read-only Dolibarr partner matching and partner-enrichment preview
+- Conservative Dolibarr partner matching and safe partner-data enrichment
 - Guarded manual import into Dolibarr draft customer (`Facture`) and supplier (`FactureFournisseur`) invoices
+- Batch preflight/import for inbound supplier invoices
 - Duplicate detection and NAV mirror-to-Dolibarr linkage
 - Hungarian and English UI strings
 
 ## Repository layout
 
-The repository root is the Dolibarr module root. It is intended to be installed directly as:
+This repository is the authoritative source of the NAV module. The repository root is the Dolibarr module root and is intended to live at:
 
 ```text
 htdocs/custom/navinvoice/
@@ -43,25 +44,39 @@ htdocs/custom/navinvoice/
 ├── core/
 ├── langs/
 ├── sql/
+├── batch.php
 ├── detail.php
 ├── import.php
 └── index.php
 ```
 
-## Installation
+## Integration into a Dolibarr repository
 
-For a Git-managed Dolibarr checkout, using this repository as a submodule is recommended:
+The recommended integration for a Git-managed Dolibarr checkout is **git subtree**. Development happens in this repository first; the Dolibarr repository consumes released or tested module commits under `htdocs/custom/navinvoice`.
+
+Initial import:
 
 ```bash
 cd /path/to/dolibarr
-git submodule add -b feature/nav-sync-foundation \
+git subtree add \
+  --prefix=htdocs/custom/navinvoice \
   https://github.com/vanyolai/dolibarr-nav-online-invoice.git \
-  htdocs/custom/navinvoice
+  main \
+  --squash
 ```
 
-While the module is still under development, the submodule tracks `feature/nav-sync-foundation`. After the first stable release, production should track `main` or a release tag instead.
+Update an existing subtree:
 
-A direct clone into `htdocs/custom/navinvoice` also works, but a submodule lets the parent Dolibarr repository pin the exact module commit used in production.
+```bash
+cd /path/to/dolibarr
+git subtree pull \
+  --prefix=htdocs/custom/navinvoice \
+  https://github.com/vanyolai/dolibarr-nav-online-invoice.git \
+  main \
+  --squash
+```
+
+A named Git remote can be used instead of the repository URL, for example `navinvoice`. Changes should normally be committed to this module repository first and then pulled into Dolibarr. If an emergency change is made inside the Dolibarr subtree, `git subtree push` can be used to publish it back, but keeping this repository authoritative avoids divergent histories.
 
 Then enable **NAV Online Invoice** in Dolibarr's module setup.
 
@@ -118,43 +133,27 @@ NAV acquisition is deliberately separated from Dolibarr invoice creation:
 
 The mirror table stores `fk_facture` for customer invoices and `fk_facture_fourn` for supplier invoices after a successful import/link.
 
-The first live importer is intentionally conservative. It currently accepts only invoices that satisfy all of the following:
-
-- NAV operation is `CREATE`
-- invoice category is `NORMAL`
-- complete NAV XML is available
-- an existing Dolibarr partner is matched strongly by tax number or name+address
-- invoice currency equals the Dolibarr base currency
-- invoice lines contain supported percentage/zero VAT data
-- NAV line totals reconcile with header totals
-- no duplicate Dolibarr invoice is found
-
-Imported lines are currently created as free-text invoice lines (`fk_product = 0`). Product/supplier-product matching is a planned later milestone.
+The importer is intentionally conservative. At the current development stage it requires complete NAV XML, a strong existing partner match, supported currency/VAT data and duplicate checks before a Dolibarr draft is created. Simplified invoices are supported where their VAT-content values can be mapped deterministically. Product matching is intentionally separate from the accounting-safe invoice import path.
 
 Existing Dolibarr invoices and partner data are never silently overwritten by the synchronization process.
 
-## Planned direction
+## Development roadmap
 
-Next milestones include:
+The next development blocks are:
 
-- controlled partner creation and NAV-based partner-data completion
-- current taxpayer master-data lookup with `queryTaxpayer`
-- product and supplier-product matching for inbound invoice lines
-- supplier price maintenance from invoices
-- supplier-order matching / reconstruction workflows
-- support for foreign-currency and special VAT cases
-- controlled handling of modification and storno invoices
-- explicit validation workflow for imported outbound drafts while preserving the original NAV invoice number
-- bank-transaction reconciliation in a separate integration layer
+1. promote `queryTaxpayer` from a connection test to an explicit current taxpayer master-data service;
+2. compare historical invoice-party data with current NAV taxpayer master data;
+3. controlled creation of missing Dolibarr third parties from fresh NAV taxpayer data;
+4. batch-import states/actions for invoices whose partner must be created or resolved;
+5. controlled import of non-`CREATE` NAV operations, including modification/storno chains and their relationship to the original invoice;
+6. product and supplier-product matching for inbound invoice lines;
+7. supplier price maintenance from invoices and supplier-order matching/reconstruction workflows;
+8. support for additional foreign-currency and special VAT cases;
+9. explicit validation workflow for imported outbound drafts while preserving the original NAV invoice number;
+10. bank-transaction reconciliation in a separate integration layer.
 
 For inbound invoices the external partner is the supplier; for outbound invoices it is the customer. Private-person customer identity is intentionally unavailable through NAV Online Invoice v3 and cannot be reconstructed from NAV data alone.
 
-## Development branch
+## Branch policy
 
-Current implementation is developed on:
-
-```text
-feature/nav-sync-foundation
-```
-
-The `main` branch is intentionally kept stable until the foundation and draft-import workflow have been tested against real NAV data and a Dolibarr 23 instance.
+`main` is the integration branch consumed by the Dolibarr subtree. Larger development blocks should be implemented on focused feature branches, reviewed/tested there, and merged into `main` before the Dolibarr repository pulls the subtree update.
