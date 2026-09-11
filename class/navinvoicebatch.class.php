@@ -182,6 +182,7 @@ class NavInvoiceBatchService
                     'invoice_id' => (int) $imported['id'],
                     'ref' => (string) $imported['ref'],
                     'url' => (string) $imported['url'],
+                    'reconciliation' => (string) ($imported['reconciliation'] ?? ''),
                 );
             } catch (Throwable $e) {
                 $result['errors'][] = array(
