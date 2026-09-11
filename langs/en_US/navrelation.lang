@@ -20,5 +20,6 @@ RelationBlocker_original_invoice_number_missing=The non-CREATE invoice does not 
 RelationBlocker_original_mirror_missing=The original NAV invoice is not present in the local mirror and modifyWithoutMaster does not allow this case.
 RelationBlocker_original_not_imported=The original NAV invoice exists in the mirror but is not linked to a Dolibarr invoice yet. Import or resolve the original invoice first.
 RelationBlocker_modification_index_ambiguous=More than one known relation member uses the same modification index.
+RelationBlocker_modify_without_master_policy_required=NAV permits this modification without the original invoice, but the module has no safe Dolibarr mapping policy for that case yet.
 RelationWarning_modification_index_missing=The NAV relation does not contain a positive modification index.
 RelationWarning_original_mirror_missing_allowed=The original NAV invoice is not present in the local mirror, but NAV marks the relation as modifyWithoutMaster. This requires a separate import policy before it can be automated.
