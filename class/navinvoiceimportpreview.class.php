@@ -49,15 +49,29 @@ class NavInvoiceImportPreview
         $currency = strtoupper(trim((string) ($parsed['detail']['currency'] ?? $record->currency ?? '')));
         $category = strtoupper(trim((string) ($parsed['detail']['category'] ?? $record->invoice_category ?? '')));
         $simplified = $category === 'SIMPLIFIED';
+        $externalPartyKey = $inbound ? 'supplier' : 'customer';
+        $navCountryCode = strtoupper(trim((string) ($parsed[$externalPartyKey]['address']['country_code'] ?? '')));
         $blockers = array();
         $warnings = array();
 
         $partner = is_array($partnerMatch['match'] ?? null) ? $partnerMatch['match'] : null;
         $partnerStatus = (string) ($partnerMatch['status'] ?? 'none');
+        $partnerCountry = null;
         if ($partner === null) {
             $blockers[] = 'partner_missing';
         } elseif (!in_array($partnerStatus, array('tax', 'name_address'), true)) {
             $blockers[] = 'partner_review';
+        } else {
+            $partnerCountry = $this->partnerCountry((int) $partner['id']);
+            $partnerCountryCode = strtoupper(trim((string) ($partnerCountry['country_code'] ?? '')));
+            if ($partnerCountryCode === '') {
+                // Dolibarr needs the third-party country to determine VAT rules
+                // when invoice lines are created or edited.
+                $blockers[] = 'partner_country_missing';
+            } elseif ($navCountryCode !== '' && $partnerCountryCode !== $navCountryCode) {
+                // A country mismatch can change VAT treatment, so never guess.
+                $blockers[] = 'partner_country_mismatch';
+            }
         }
         if (!empty($partnerMatch['can_fill_tax_number'])) {
             $warnings[] = 'partner_tax_missing';
@@ -139,6 +153,8 @@ class NavInvoiceImportPreview
             'external_key' => $this->externalKey($record, $direction, $invoiceNumber),
             'partner' => $partner,
             'partner_status' => $partnerStatus,
+            'partner_country' => $partnerCountry,
+            'nav_country_code' => $navCountryCode,
             'duplicate' => $duplicate,
             'blockers' => $blockers,
             'warnings' => $warnings,
@@ -323,6 +339,35 @@ class NavInvoiceImportPreview
     private function decimal(float $value): string
     {
         return rtrim(rtrim(number_format($value, 8, '.', ''), '0'), '.');
+    }
+
+    /** @return array<string,mixed>|null */
+    private function partnerCountry(int $partnerId): ?array
+    {
+        if ($partnerId <= 0) {
+            return null;
+        }
+
+        $sql = 'SELECT s.fk_pays, c.code AS country_code, c.label AS country_label';
+        $sql .= ' FROM '.MAIN_DB_PREFIX.'societe AS s';
+        $sql .= ' LEFT JOIN '.MAIN_DB_PREFIX.'c_country AS c ON c.rowid = s.fk_pays';
+        $sql .= ' WHERE s.rowid = '.$partnerId.' AND s.entity = '.$this->entity;
+        $sql .= ' LIMIT 1';
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception($this->db->lasterror());
+        }
+        $obj = $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        if (!$obj) {
+            return null;
+        }
+
+        return array(
+            'id' => (int) $obj->fk_pays,
+            'country_code' => (string) $obj->country_code,
+            'country_label' => (string) $obj->country_label,
+        );
     }
 
     /** @return array<string,mixed>|null */
