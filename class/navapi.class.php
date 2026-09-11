@@ -16,9 +16,9 @@ class NavInvoiceApi
     public function __construct()
     {
         $this->login = trim((string) getDolGlobalString('NAVINVOICE_LOGIN'));
-        $this->password = (string) getDolGlobalString('NAVINVOICE_PASSWORD');
+        $this->password = $this->readSecret('NAVINVOICE_PASSWORD');
         $this->taxNumber = $this->normalizeTaxNumber((string) getDolGlobalString('NAVINVOICE_TAX_NUMBER'));
-        $this->signingKey = trim((string) getDolGlobalString('NAVINVOICE_SIGNING_KEY'));
+        $this->signingKey = trim($this->readSecret('NAVINVOICE_SIGNING_KEY'));
         $this->environment = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === 'production' ? 'production' : 'test';
         $this->softwareId = trim((string) getDolGlobalString('NAVINVOICE_SOFTWARE_ID', 'DOLIBARRNAVSYNC001'));
         $this->softwareVersion = '0.1.0';
@@ -125,7 +125,7 @@ class NavInvoiceApi
 
         $requestId = $this->createRequestId();
         $utc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-        $timestampXml = $utc->format('Y-m-d\TH:i:s.v\Z');
+        $timestampXml = $utc->format('Y-m-d\\TH:i:s.v\\Z');
         $timestampSignature = $utc->format('YmdHis');
         $passwordHash = strtoupper(hash('sha512', $this->password));
         $signature = strtoupper(hash('sha3-512', $requestId.$timestampSignature.$this->signingKey));
@@ -169,28 +169,64 @@ class NavInvoiceApi
         if ($raw === false || $curlError !== '') {
             throw new Exception('NAV HTTP request failed: '.$curlError);
         }
-        if ($httpCode < 200 || $httpCode >= 300) {
-            throw new Exception('NAV HTTP request returned status '.$httpCode.'.');
-        }
 
         libxml_use_internal_errors(true);
         $response = simplexml_load_string($raw);
+
+        if ($httpCode < 200 || $httpCode >= 300) {
+            $detail = $response instanceof SimpleXMLElement ? $this->extractApiError($response) : '';
+            $message = 'NAV HTTP request returned status '.$httpCode;
+            if ($detail !== '') {
+                $message .= ': '.$detail;
+            }
+            if ($httpCode === 401) {
+                $message .= ' (check that the technical user and keys belong to the selected NAV '.($this->environment === 'production' ? 'production' : 'test').' environment)';
+            }
+            throw new Exception($message.'.');
+        }
+
         if ($response === false) {
             $errors = libxml_get_errors();
             libxml_clear_errors();
             throw new Exception('NAV returned invalid XML'.(!empty($errors) ? ': '.trim($errors[0]->message) : '.'));
         }
 
-        $funcNodes = $response->xpath('//*[local-name()="result"]/*[local-name()="funcCode"]');
-        if ($funcNodes && (string) $funcNodes[0] !== 'OK') {
-            $errorCodeNodes = $response->xpath('//*[local-name()="result"]/*[local-name()="errorCode"]');
-            $messageNodes = $response->xpath('//*[local-name()="result"]/*[local-name()="message"]');
-            $errorCode = $errorCodeNodes ? (string) $errorCodeNodes[0] : 'UNKNOWN';
-            $message = $messageNodes ? (string) $messageNodes[0] : 'NAV API request failed';
-            throw new Exception($errorCode.': '.$message);
+        $detail = $this->extractApiError($response);
+        if ($detail !== '') {
+            throw new Exception($detail);
         }
 
         return $response;
+    }
+
+    private function extractApiError(SimpleXMLElement $response): string
+    {
+        $funcNodes = $response->xpath('//*[local-name()="result"]/*[local-name()="funcCode"]');
+        if (!$funcNodes || (string) $funcNodes[0] === 'OK') {
+            return '';
+        }
+
+        $errorCodeNodes = $response->xpath('//*[local-name()="result"]/*[local-name()="errorCode"]');
+        $messageNodes = $response->xpath('//*[local-name()="result"]/*[local-name()="message"]');
+        $errorCode = $errorCodeNodes ? trim((string) $errorCodeNodes[0]) : 'UNKNOWN';
+        $message = $messageNodes ? trim((string) $messageNodes[0]) : 'NAV API request failed';
+
+        return $errorCode.': '.$message;
+    }
+
+    private function readSecret(string $name): string
+    {
+        $value = (string) getDolGlobalString($name);
+        if ($value === '') {
+            return '';
+        }
+
+        if (preg_match('/^dolcrypt:/i', $value)) {
+            require_once DOL_DOCUMENT_ROOT.'/core/lib/security.lib.php';
+            $value = (string) dolDecrypt($value);
+        }
+
+        return $value;
     }
 
     private function softwareXml(): string
@@ -220,7 +256,7 @@ class NavInvoiceApi
 
     private function normalizeTaxNumber(string $taxNumber): string
     {
-        $digits = preg_replace('/\D+/', '', $taxNumber);
+        $digits = preg_replace('/\\D+/', '', $taxNumber);
         return substr((string) $digits, 0, 8);
     }
 
