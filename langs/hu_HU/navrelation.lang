@@ -28,6 +28,7 @@ RelationBlocker_operation_unsupported=A NAV művelet nem CREATE, MODIFY vagy STO
 RelationBlocker_original_invoice_number_missing=A nem CREATE számla nem azonosítja az eredeti számlát.
 RelationBlocker_original_mirror_missing=Az eredeti NAV számla nincs jelen a helyi tükörben, és a modifyWithoutMaster sem engedi ezt az esetet.
 RelationBlocker_original_not_imported=Az eredeti NAV számla megvan a tükörben, de még nincs Dolibarr számlához kapcsolva. Előbb az eredeti számlát kell importálni vagy feloldani.
+RelationBlocker_prior_modification_not_imported=A számlalánc legalább egy korábbi módosítása még nincs Dolibarrba importálva. A láncot módosítási index szerinti sorrendben kell importálni.
 RelationBlocker_modification_index_ambiguous=Több ismert kapcsolati elem használja ugyanazt a módosítási indexet.
 RelationBlocker_modify_without_master_policy_required=A NAV megengedi ezt a módosítást az eredeti számla nélkül, de ehhez még nincs biztonságos Dolibarr-leképezési szabályunk.
 RelationWarning_modification_index_missing=A NAV kapcsolat nem tartalmaz pozitív módosítási indexet.
