@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2 - development
+
+- Map NAV `invoiceDeliveryDate` to Dolibarr's native `date_pointoftax` field on customer and supplier invoice imports.
+- Preserve a missing NAV payment due date as missing instead of inventing an invoice-date fallback.
+- Add a supplier-invoice point-of-tax compatibility display for stock Dolibarr 23 and suppress it when the core already supports the field natively.
+
 ## 0.7.1 - development
 
 - Block invoice import when the matched Dolibarr third party has no country assigned, because Dolibarr needs the country for correct VAT handling on invoice lines.
