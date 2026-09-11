@@ -13,7 +13,7 @@ if (!$res) {
 dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
 dol_include_once('/navinvoice/class/navpartnercreation.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navpartner@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
