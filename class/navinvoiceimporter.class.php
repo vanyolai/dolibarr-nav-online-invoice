@@ -153,13 +153,12 @@ class NavInvoiceImporter
         }
 
         $dueDate = $this->dateToTimestampOrZero((string) ($preview['header']['due_date'] ?? ''));
-        if ($dueDate <= 0) {
-            $dueDate = $invoice->date;
-        }
-
         $id = $invoice->create($user, 0, $dueDate);
         if ($id <= 0) {
             throw new Exception('Dolibarr customer invoice creation failed: '.$this->objectError($invoice));
+        }
+        if ($dueDate <= 0) {
+            $this->clearCustomerDueDate((int) $id);
         }
         if ($invoice->fetch($id) <= 0) {
             throw new Exception('Created Dolibarr customer invoice could not be reloaded.');
@@ -178,10 +177,10 @@ class NavInvoiceImporter
         $invoice->socid = (int) $preview['partner']['id'];
         $invoice->type = FactureFournisseur::TYPE_STANDARD;
         $invoice->date = $this->dateToTimestamp((string) $preview['header']['invoice_date']);
-        $invoice->date_echeance = $this->dateToTimestampOrZero((string) ($preview['header']['due_date'] ?? ''));
-        if ($invoice->date_echeance <= 0) {
-            $invoice->date_echeance = $invoice->date;
-        }
+        $pointOfTaxDate = $this->dateToTimestampOrZero((string) ($preview['header']['delivery_date'] ?? ''));
+        $invoice->date_pointoftax = $pointOfTaxDate;
+        $dueDate = $this->dateToTimestampOrZero((string) ($preview['header']['due_date'] ?? ''));
+        $invoice->date_echeance = $dueDate > 0 ? $dueDate : null;
         $invoice->ref_supplier = (string) $preview['invoice_number'];
         $invoice->ref_ext = (string) $preview['external_key'];
         $invoice->mode_reglement_id = $this->paymentModeId((string) ($preview['header']['payment_method'] ?? ''));
@@ -221,11 +220,48 @@ class NavInvoiceImporter
         if ($id <= 0) {
             throw new Exception('Dolibarr supplier invoice creation failed: '.$this->objectError($invoice));
         }
+        $this->persistSupplierPointOfTax((int) $id, $pointOfTaxDate);
         if ($invoice->fetch($id) <= 0) {
             throw new Exception('Created Dolibarr supplier invoice could not be reloaded.');
         }
 
         return array('id' => (int) $id, 'object' => $invoice);
+    }
+
+    /**
+     * Dolibarr 23 exposes facture_fourn.date_pointoftax in the data model but
+     * FactureFournisseur::create() does not persist it. Keep the NAV delivery
+     * date in the native core column so accounting/reporting can use it later.
+     */
+    private function persistSupplierPointOfTax(int $invoiceId, int $timestamp): void
+    {
+        if ($timestamp <= 0) {
+            return;
+        }
+
+        $sql = 'UPDATE '.MAIN_DB_PREFIX.'facture_fourn';
+        $sql .= " SET date_pointoftax = '".$this->db->idate($timestamp)."'";
+        $sql .= ' WHERE rowid = '.$invoiceId;
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception('Failed to store supplier invoice point-of-tax date: '.$this->db->lasterror());
+        }
+    }
+
+    /**
+     * Facture::create() derives a due date from payment terms when no forced
+     * date is supplied. NAV imports must not invent data that the source did
+     * not provide, so clear that derived value when NAV has no payment date.
+     */
+    private function clearCustomerDueDate(int $invoiceId): void
+    {
+        $sql = 'UPDATE '.MAIN_DB_PREFIX.'facture';
+        $sql .= ' SET date_lim_reglement = NULL';
+        $sql .= ' WHERE rowid = '.$invoiceId;
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception('Failed to preserve missing NAV due date: '.$this->db->lasterror());
+        }
     }
 
     private function reconcileRoundingWithNav($invoice, array $preview, bool $inbound): void
