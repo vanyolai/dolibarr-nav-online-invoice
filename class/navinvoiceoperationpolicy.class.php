@@ -41,6 +41,7 @@ class NavInvoiceOperationPolicy
             'source_invoice_id' => 0,
             'relation' => null,
             'authoritative_chain' => null,
+            'authoritative_chain_error' => '',
             'chain_comparison' => null,
             'blockers' => array(),
             'warnings' => array(),
@@ -88,7 +89,7 @@ class NavInvoiceOperationPolicy
             }
         } catch (Throwable $e) {
             $result['blockers'][] = 'authoritative_chain_unavailable';
-            $result['warnings'][] = 'authoritative_chain_error:'.$e->getMessage();
+            $result['authoritative_chain_error'] = $e->getMessage();
         }
 
         $gross = $this->numeric($parsed['totals']['gross'] ?? null);
