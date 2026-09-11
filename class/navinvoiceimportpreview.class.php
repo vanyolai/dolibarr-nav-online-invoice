@@ -265,13 +265,29 @@ class NavInvoiceImportPreview
             }
         }
 
+        // Supplier reference priority:
+        // 1) NAV productCodes/OWN = issuer's own product code.
+        // 2) conventionalLineInfo/itemNumbers/itemNumber = conventional item id.
+        // Other code categories (GTIN/VTSZ/TESZOR/etc.) are not supplier refs.
         $supplierRef = '';
+        $supplierRefSource = '';
         foreach (($line['product_codes'] ?? array()) as $productCode) {
             $codeCategory = strtoupper(trim((string) ($productCode['category'] ?? '')));
             $codeValue = trim((string) ($productCode['value'] ?? ''));
             if ($codeCategory === 'OWN' && $codeValue !== '') {
                 $supplierRef = $codeValue;
+                $supplierRefSource = 'own';
                 break;
+            }
+        }
+        if ($supplierRef === '') {
+            foreach (($line['item_numbers'] ?? array()) as $itemNumber) {
+                $itemNumber = trim((string) $itemNumber);
+                if ($itemNumber !== '') {
+                    $supplierRef = $itemNumber;
+                    $supplierRefSource = 'item_number';
+                    break;
+                }
             }
         }
 
@@ -296,7 +312,9 @@ class NavInvoiceImportPreview
             'unit_price_derived' => $unitPriceDerived,
             'unit_price_adjusted' => $adjusted,
             'supplier_ref' => $supplierRef,
+            'supplier_ref_source' => $supplierRefSource,
             'product_codes' => is_array($line['product_codes'] ?? null) ? $line['product_codes'] : array(),
+            'item_numbers' => is_array($line['item_numbers'] ?? null) ? $line['item_numbers'] : array(),
             'vat_rate' => $vatRate,
             'vat_content' => $kind === 'content' ? $value : null,
             'vat_label' => (string) ($vat['label'] ?? ''),
