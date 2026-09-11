@@ -180,7 +180,9 @@ if ($rows) {
             : (string) ($record->supplier_name ?? '');
         $currency = (string) ($preview['header']['currency'] ?? $record->currency ?? $baseCurrency);
         $gross = $preview['totals']['gross'] ?? null;
-        $importUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $record->rowid;
+        $rowUrl = $ready
+            ? dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $record->rowid
+            : dol_buildpath('/navinvoice/detail.php', 1).'?id='.(int) $record->rowid;
 
         $issues = array();
         foreach (($preview['blockers'] ?? array()) as $code) {
@@ -205,7 +207,7 @@ if ($rows) {
         }
         print '</td>';
         print '<td>'.$stateHtml($state).'</td>';
-        print '<td><a href="'.dol_escape_htmltag($importUrl).'">'.dol_escape_htmltag((string) $record->invoice_number).'</a></td>';
+        print '<td><a href="'.dol_escape_htmltag($rowUrl).'">'.dol_escape_htmltag((string) $record->invoice_number).'</a></td>';
         print '<td>'.($supplier !== '' ? dol_escape_htmltag($supplier) : '<span class="opacitymedium">—</span>').'</td>';
         print '<td>'.dol_escape_htmltag((string) ($preview['header']['invoice_date'] ?? $record->invoice_issue_date ?? '')).'</td>';
         print '<td>'.dol_escape_htmltag((string) ($preview['header']['delivery_date'] ?? '')).'</td>';
