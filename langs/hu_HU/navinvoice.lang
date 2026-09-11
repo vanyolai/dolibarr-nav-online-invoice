@@ -29,5 +29,7 @@ SyncFailed=A szinkronizálás sikertelen
 Operation=Művelet
 XmlDownloaded=XML letöltve
 LastSync=Utolsó szinkron
+NavInvoiceNumber=Számlaszám
+PrivatePerson=Magánszemély
 NavInvoiceScheduledSync=NAV kimenő számlák szinkronizálása
 NavInvoiceScheduledSyncDesc=A NAV Online Számla kimenő számlák rendszeres lekérdezése
