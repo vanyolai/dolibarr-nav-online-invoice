@@ -33,11 +33,11 @@ class NavInvoiceImporter
      */
     public function importDraft(array $preview, $record, User $user): array
     {
-        if (($preview['state'] ?? '') !== 'ready') {
-            throw new Exception('NAV invoice import preview is not in ready state.');
-        }
         if (!empty($preview['blockers'])) {
             throw new Exception('NAV invoice import is blocked by preview validation.');
+        }
+        if (!in_array((string) ($preview['state'] ?? ''), array('ready', 'review'), true)) {
+            throw new Exception('NAV invoice import preview is not importable.');
         }
         if (!is_array($preview['partner'] ?? null) || empty($preview['partner']['id'])) {
             throw new Exception('A confirmed Dolibarr third party is required for import.');
@@ -242,8 +242,20 @@ class NavInvoiceImporter
         $sql .= ' AND ('.$field.' IS NULL OR '.$field.' = 0)';
         $sql .= ' AND ('.$otherField.' IS NULL OR '.$otherField.' = 0)';
         $resql = $this->db->query($sql);
-        if (!$resql || $this->db->affected_rows($resql) !== 1) {
-            throw new Exception('Failed to link the created Dolibarr invoice to the NAV mirror record.');
+        if (!$resql) {
+            throw new Exception('Failed to link the created Dolibarr invoice to the NAV mirror record: '.$this->db->lasterror());
+        }
+
+        $sql = 'SELECT '.$field.' AS linked_id FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
+        $sql .= ' WHERE rowid = '.$mirrorId.' AND entity = '.$this->entity;
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception('Failed to verify NAV mirror link: '.$this->db->lasterror());
+        }
+        $obj = $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        if (!$obj || (int) $obj->linked_id !== $invoiceId) {
+            throw new Exception('The NAV mirror record was not linked to the created Dolibarr invoice.');
         }
     }
 
