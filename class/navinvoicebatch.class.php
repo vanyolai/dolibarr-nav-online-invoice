@@ -197,8 +197,13 @@ class NavInvoiceBatchService
     }
 
     /**
-     * Move deterministic, audit-only messages out of REVIEW status. They are
-     * still shown to the user, but they do not require a human decision.
+     * Move deterministic, audit-only messages out of REVIEW/BLOCKED status.
+     * They are still shown to the user, but they do not require a human decision.
+     *
+     * NORMAL NAV invoices may legitimately contain independently rounded line,
+     * VAT-summary and invoice-summary amounts. A line/header totals mismatch is
+     * therefore informational here; the importer reconciles the authoritative
+     * NAV summary after first trying Dolibarr's native calculation modes.
      *
      * @param array<string,mixed> $preview
      * @return array<string,mixed>
@@ -211,7 +216,7 @@ class NavInvoiceBatchService
         );
 
         $warnings = array_values(array_unique(array_map('strval', $preview['warnings'] ?? array())));
-        $notices = array();
+        $notices = array_values(array_unique(array_map('strval', $preview['notices'] ?? array())));
         foreach ($warnings as $key => $warning) {
             if (in_array($warning, $informational, true)) {
                 $notices[] = $warning;
@@ -221,6 +226,11 @@ class NavInvoiceBatchService
         $warnings = array_values($warnings);
 
         $blockers = array_values(array_unique(array_map('strval', $preview['blockers'] ?? array())));
+        if (strtoupper((string) ($preview['category'] ?? '')) === 'NORMAL' && in_array('totals_mismatch', $blockers, true)) {
+            $blockers = array_values(array_diff($blockers, array('totals_mismatch')));
+            $notices[] = 'totals_mismatch';
+        }
+
         $imported = $this->isImportedMirrorLink($preview);
         if ($imported) {
             $blockers = array_values(array_diff($blockers, array('duplicate')));
@@ -228,7 +238,7 @@ class NavInvoiceBatchService
 
         $preview['blockers'] = $blockers;
         $preview['warnings'] = $warnings;
-        $preview['notices'] = array_values(array_unique(array_merge($preview['notices'] ?? array(), $notices)));
+        $preview['notices'] = array_values(array_unique($notices));
 
         if ($imported) {
             $preview['state'] = 'imported';
