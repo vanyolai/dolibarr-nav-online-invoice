@@ -4,7 +4,7 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
+ * any later version.
  */
 
 include_once DOL_DOCUMENT_ROOT.'/core/modules/DolibarrModules.class.php';
@@ -25,7 +25,7 @@ class modNavInvoice extends DolibarrModules
         $this->descriptionlong = 'ModuleNavInvoiceDesc';
         $this->editor_name = 'vanyolai';
         $this->editor_url = 'https://github.com/vanyolai/dolibarr-nav-online-invoice';
-        $this->version = '0.2.0';
+        $this->version = '0.3.0';
         $this->const_name = 'MAIN_MODULE_'.strtoupper($this->name);
         $this->picto = 'file-invoice';
 
