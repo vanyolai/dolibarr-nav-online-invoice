@@ -12,6 +12,7 @@ if (!$res) {
 
 dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
+dol_include_once('/navinvoice/class/navpartnerenrichmentpreview.class.php');
 $langs->loadLangs(array('navinvoice@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
@@ -53,12 +54,23 @@ $isInbound = $direction === 'INBOUND';
 $externalPartyKey = $isInbound ? 'supplier' : 'customer';
 $partnerMatch = null;
 $partnerMatchError = '';
+$partnerEnrichment = null;
+$partnerEnrichmentError = '';
 if ($parsed) {
     try {
         $matcher = new NavPartnerMatcher($db, (int) $conf->entity);
         $partnerMatch = $matcher->match($parsed[$externalPartyKey], $externalPartyKey);
     } catch (Throwable $e) {
         $partnerMatchError = $e->getMessage();
+    }
+
+    if ($partnerMatchError === '' && $partnerMatch !== null) {
+        try {
+            $enrichment = new NavPartnerEnrichmentPreview($db, (int) $conf->entity);
+            $partnerEnrichment = $enrichment->build($parsed[$externalPartyKey], $partnerMatch, $externalPartyKey);
+        } catch (Throwable $e) {
+            $partnerEnrichmentError = $e->getMessage();
+        }
     }
 }
 
@@ -169,6 +181,21 @@ $partnerMatchDisplay = static function (?array $result, string $error = '') use 
 
     return '<span class="opacitymedium">'.$langs->trans('PartnerMatchNone').'</span>';
 };
+$enrichmentValue = static function (string $field, $value) use ($langs, $display): string {
+    if ($field === 'fournisseur') {
+        return $langs->trans(((int) $value) === 1 ? 'Yes' : 'No');
+    }
+    if ($field === 'client') {
+        $map = array(
+            0 => $langs->trans('No'),
+            1 => $langs->trans('Customer'),
+            2 => $langs->trans('Prospect'),
+            3 => $langs->trans('Customer').' + '.$langs->trans('Prospect'),
+        );
+        return $map[(int) $value] ?? $display($value);
+    }
+    return $display($value);
+};
 
 llxHeader('', $langs->trans('NavInvoiceDetails'));
 
@@ -185,6 +212,9 @@ if ($parseError !== '') {
 }
 if (empty($record->invoice_data)) {
     setEventMessages($langs->trans('FullXmlNotAvailable'), null, 'warnings');
+}
+if ($partnerEnrichmentError !== '') {
+    setEventMessages($langs->trans('PartnerEnrichmentFailed').': '.$partnerEnrichmentError, null, 'warnings');
 }
 
 print '<div class="fichehalfleft">';
@@ -255,6 +285,37 @@ if ($parsed) {
         print '</div>';
     }
     print '<div class="clearboth"></div><br>';
+
+    if (is_array($partnerEnrichment) && !empty($partnerEnrichment['available']) && !empty($partnerEnrichment['items'])) {
+        print load_fiche_titre($langs->trans('PartnerEnrichmentPreview'), '', 'company');
+        if (empty($partnerEnrichment['strong_match'])) {
+            print '<div class="warning marginbottomonly">'.img_picto('', 'warning').' '.$langs->trans('PartnerEnrichmentWeakMatchNotice').'</div>';
+        } else {
+            print '<div class="opacitymedium marginbottomonly">'.$langs->trans('PartnerEnrichmentReadOnlyNotice').'</div>';
+        }
+        print '<div class="div-table-responsive">';
+        print '<table class="noborder centpercent">';
+        print '<tr class="liste_titre"><td>'.$langs->trans('Field').'</td><td>'.$langs->trans('CurrentDolibarrValue').'</td><td>'.$langs->trans('NavValue').'</td><td>'.$langs->trans('ProposalStatus').'</td></tr>';
+        foreach ($partnerEnrichment['items'] as $item) {
+            $status = (string) $item['status'];
+            if ($status === 'different') {
+                $statusDisplay = img_picto('', 'warning').' <span class="warning">'.$langs->trans('EnrichmentDifferentNoOverwrite').'</span>';
+            } elseif ($status === 'separate_review') {
+                $statusDisplay = img_picto('', 'warning').' '.$langs->trans('EnrichmentSeparateReview');
+            } elseif (!empty($item['safe'])) {
+                $statusDisplay = img_picto('', 'tick').' '.$langs->trans('EnrichmentCanFill');
+            } else {
+                $statusDisplay = img_picto('', 'warning').' '.$langs->trans('EnrichmentNeedsConfirmedMatch');
+            }
+            print '<tr class="oddeven">';
+            print '<td>'.$langs->trans((string) $item['label']).'</td>';
+            print '<td>'.$enrichmentValue((string) $item['field'], $item['current']).'</td>';
+            print '<td>'.$enrichmentValue((string) $item['field'], $item['proposed']).'</td>';
+            print '<td>'.$statusDisplay.'</td>';
+            print '</tr>';
+        }
+        print '</table></div><br>';
+    }
 
     $showLineNature = false;
     foreach ($parsed['lines'] as $line) {
