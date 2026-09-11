@@ -21,7 +21,7 @@ class NavInvoiceApi
         $this->signingKey = trim($this->readSecret('NAVINVOICE_SIGNING_KEY'));
         $this->environment = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === 'production' ? 'production' : 'test';
         $this->softwareId = trim((string) getDolGlobalString('NAVINVOICE_SOFTWARE_ID', 'DOLIBARRNAVSYNC001'));
-        $this->softwareVersion = '0.6.0';
+        $this->softwareVersion = '0.6.2';
     }
 
     public function isConfigured(): bool
