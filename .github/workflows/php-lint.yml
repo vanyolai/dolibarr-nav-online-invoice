@@ -22,4 +22,4 @@ jobs:
           set -euo pipefail
           while IFS= read -r -d '' file; do
             php -l "$file"
-          done < <(find navinvoice -type f -name '*.php' -print0)
+          done < <(find . -type f -name '*.php' -not -path './vendor/*' -print0)
