@@ -44,7 +44,7 @@ class NavPartnerEnrichmentPreview
         $items = array();
 
         $navTax = $this->fullTaxNumber($party);
-        $this->compareField($items, 'tva_intra', 'TaxNumber', (string) $partner['tva_intra'], $navTax, $strongMatch);
+        $this->compareTaxNumber($items, (string) $partner['tva_intra'], $navTax, $strongMatch);
 
         $address = is_array($party['address'] ?? null) ? $party['address'] : array();
         $navStreet = $this->streetAddress($address);
@@ -179,6 +179,85 @@ class NavPartnerEnrichmentPreview
             return null;
         }
         return array('rowid' => (int) $obj->rowid, 'code' => (string) $obj->code, 'label' => (string) $obj->label);
+    }
+
+    /**
+     * Compare Hungarian tax numbers by taxpayer core first.
+     *
+     * The first 8 digits identify the taxpayer. A stored 8-digit value and a
+     * full NAV tax number therefore describe the same taxpayer and the latter
+     * may safely complete the former after a strong partner match. If both
+     * sides contain suffix digits and those differ, keep the discrepancy for
+     * review because an invoice can contain historical tax-status data.
+     *
+     * @param array<int,array<string,mixed>> $items
+     */
+    private function compareTaxNumber(array &$items, string $current, string $proposed, bool $strongMatch): void
+    {
+        $current = trim($current);
+        $proposed = trim($proposed);
+        if ($proposed === '') {
+            return;
+        }
+
+        if ($current === '') {
+            $items[] = array(
+                'field' => 'tva_intra',
+                'label' => 'TaxNumber',
+                'current' => '',
+                'proposed' => $proposed,
+                'status' => 'missing',
+                'safe' => $strongMatch,
+            );
+            return;
+        }
+
+        $currentDigits = (string) preg_replace('/\D+/', '', $current);
+        $proposedDigits = (string) preg_replace('/\D+/', '', $proposed);
+        $currentCore = strlen($currentDigits) >= 8 ? substr($currentDigits, 0, 8) : '';
+        $proposedCore = strlen($proposedDigits) >= 8 ? substr($proposedDigits, 0, 8) : '';
+
+        if ($currentCore !== '' && $proposedCore !== '' && $currentCore === $proposedCore) {
+            // Exact value or Dolibarr already contains at least as much tax data.
+            if ($currentDigits === $proposedDigits || strlen($currentDigits) > 8 && strlen($proposedDigits) === 8) {
+                return;
+            }
+
+            // Dolibarr only stores the taxpayer core; NAV has the complete form.
+            if (strlen($currentDigits) === 8 && strlen($proposedDigits) > 8) {
+                $items[] = array(
+                    'field' => 'tva_intra',
+                    'label' => 'TaxNumber',
+                    'current' => $current,
+                    'proposed' => $proposed,
+                    'status' => 'missing',
+                    'safe' => $strongMatch,
+                );
+                return;
+            }
+
+            // Same taxpayer core but different suffix: keep it visible for review.
+            $items[] = array(
+                'field' => 'tva_intra',
+                'label' => 'TaxNumber',
+                'current' => $current,
+                'proposed' => $proposed,
+                'status' => 'different',
+                'safe' => false,
+            );
+            return;
+        }
+
+        if ($this->normalize($current) !== $this->normalize($proposed)) {
+            $items[] = array(
+                'field' => 'tva_intra',
+                'label' => 'TaxNumber',
+                'current' => $current,
+                'proposed' => $proposed,
+                'status' => 'different',
+                'safe' => false,
+            );
+        }
     }
 
     /**
