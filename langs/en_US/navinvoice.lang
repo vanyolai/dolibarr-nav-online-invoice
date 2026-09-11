@@ -29,5 +29,7 @@ SyncFailed=Synchronization failed
 Operation=Operation
 XmlDownloaded=XML downloaded
 LastSync=Last synchronization
+NavInvoiceNumber=Invoice number
+PrivatePerson=Private person
 NavInvoiceScheduledSync=Synchronize NAV outbound invoices
 NavInvoiceScheduledSyncDesc=Periodically synchronize outbound invoices from NAV Online Invoice
