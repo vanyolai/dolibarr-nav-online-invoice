@@ -108,10 +108,11 @@ if ($resql) {
         $hasNetAmount = $obj->invoice_net_amount !== null && $obj->invoice_net_amount !== '';
         $hasVatAmount = $obj->invoice_vat_amount !== null && $obj->invoice_vat_amount !== '';
         $currency = trim((string) $obj->currency);
+        $detailUrl = dol_buildpath('/navinvoice/detail.php', 1).'?id='.(int) $obj->rowid;
 
         print '<tr class="oddeven">';
         print '<td>'.$langs->trans($isInbound ? 'DirectionInbound' : 'DirectionOutbound').'</td>';
-        print '<td>'.dol_escape_htmltag($obj->invoice_number).'</td>';
+        print '<td><a href="'.$detailUrl.'">'.dol_escape_htmltag($obj->invoice_number).'</a></td>';
         print '<td>'.dol_escape_htmltag($obj->invoice_issue_date).'</td>';
         print '<td>'.dol_escape_htmltag($obj->invoice_operation).'</td>';
         print '<td>'.($privatePerson ? '<span class="opacitymedium">'.$langs->trans('PrivatePerson').'</span>' : ($partnerName !== '' ? dol_escape_htmltag($partnerName) : '<span class="opacitymedium">—</span>')).'</td>';
