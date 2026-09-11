@@ -218,7 +218,7 @@ class NavInvoiceParser
     }
 
     /**
-     * @return array<string, string|null>
+     * @return array<string, mixed>
      */
     private function parseTotals(SimpleXMLElement $invoice): array
     {
@@ -229,6 +229,8 @@ class NavInvoiceParser
             'vat_huf' => null,
             'gross' => null,
             'gross_huf' => null,
+            'gross_derived' => false,
+            'gross_huf_derived' => false,
         );
 
         $summary = $this->node($invoice, './*[local-name()="invoiceSummary"]');
@@ -250,7 +252,22 @@ class NavInvoiceParser
             $result['gross_huf'] = $this->nullableText($grossData, './*[local-name()="invoiceGrossAmountHUF"]');
         }
 
-        if ($normal || $result['gross'] === null) {
+        if ($normal) {
+            // summaryGrossData is optional in NAV InvoiceData. For a normal
+            // invoice, net and VAT from summaryNormal are authoritative and
+            // make the gross amount deterministic when it is omitted.
+            if ($result['gross'] === null && $result['net'] !== null && $result['vat'] !== null) {
+                $result['gross'] = $this->decimal((float) $result['net'] + (float) $result['vat']);
+                $result['gross_derived'] = true;
+            }
+            if ($result['gross_huf'] === null && $result['net_huf'] !== null && $result['vat_huf'] !== null) {
+                $result['gross_huf'] = $this->decimal((float) $result['net_huf'] + (float) $result['vat_huf']);
+                $result['gross_huf_derived'] = true;
+            }
+            return $result;
+        }
+
+        if ($result['gross'] === null) {
             return $result;
         }
 
@@ -327,6 +344,10 @@ class NavInvoiceParser
             'vat_huf' => null,
             'gross' => null,
             'gross_huf' => null,
+            'vat_derived' => false,
+            'vat_huf_derived' => false,
+            'gross_derived' => false,
+            'gross_huf_derived' => false,
         );
         $vat = array('kind' => '', 'value' => '', 'label' => '');
 
@@ -338,6 +359,36 @@ class NavInvoiceParser
             $amounts['gross'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountData"]/*[local-name()="lineGrossAmountNormal"]');
             $amounts['gross_huf'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountData"]/*[local-name()="lineGrossAmountNormalHUF"]');
             $vat = $this->parseVatRate($this->node($normal, './*[local-name()="lineVatRate"]'), false);
+
+            // NAV may omit lineVatData and lineGrossAmountData even though line
+            // net and VAT rate are present. Keep the source net authoritative,
+            // and derive only the mathematically deterministic missing values.
+            if ($amounts['net'] !== null) {
+                if ($amounts['vat'] === null && $vat['kind'] === 'percentage') {
+                    $amounts['vat'] = $this->decimal((float) $amounts['net'] * (float) $vat['value']);
+                    $amounts['vat_derived'] = true;
+                } elseif ($amounts['vat'] === null && $vat['kind'] === 'zero') {
+                    $amounts['vat'] = '0';
+                    $amounts['vat_derived'] = true;
+                }
+                if ($amounts['gross'] === null && $amounts['vat'] !== null) {
+                    $amounts['gross'] = $this->decimal((float) $amounts['net'] + (float) $amounts['vat']);
+                    $amounts['gross_derived'] = true;
+                }
+            }
+            if ($amounts['net_huf'] !== null) {
+                if ($amounts['vat_huf'] === null && $vat['kind'] === 'percentage') {
+                    $amounts['vat_huf'] = $this->decimal((float) $amounts['net_huf'] * (float) $vat['value']);
+                    $amounts['vat_huf_derived'] = true;
+                } elseif ($amounts['vat_huf'] === null && $vat['kind'] === 'zero') {
+                    $amounts['vat_huf'] = '0';
+                    $amounts['vat_huf_derived'] = true;
+                }
+                if ($amounts['gross_huf'] === null && $amounts['vat_huf'] !== null) {
+                    $amounts['gross_huf'] = $this->decimal((float) $amounts['net_huf'] + (float) $amounts['vat_huf']);
+                    $amounts['gross_huf_derived'] = true;
+                }
+            }
         } elseif ($simplified) {
             $amounts['gross'] = $this->nullableText($simplified, './*[local-name()="lineGrossAmountSimplified"]');
             $amounts['gross_huf'] = $this->nullableText($simplified, './*[local-name()="lineGrossAmountSimplifiedHUF"]');
@@ -348,9 +399,11 @@ class NavInvoiceParser
                     $vatAmount = (float) $amounts['gross'] * (float) $vat['value'];
                     $amounts['vat'] = $this->decimal($vatAmount);
                     $amounts['net'] = $this->decimal((float) $amounts['gross'] - $vatAmount);
+                    $amounts['vat_derived'] = true;
                 } elseif ($vat['kind'] === 'zero') {
                     $amounts['vat'] = '0';
                     $amounts['net'] = $amounts['gross'];
+                    $amounts['vat_derived'] = true;
                 }
             }
             if ($amounts['gross_huf'] !== null) {
@@ -358,9 +411,11 @@ class NavInvoiceParser
                     $vatAmountHuf = (float) $amounts['gross_huf'] * (float) $vat['value'];
                     $amounts['vat_huf'] = $this->decimal($vatAmountHuf);
                     $amounts['net_huf'] = $this->decimal((float) $amounts['gross_huf'] - $vatAmountHuf);
+                    $amounts['vat_huf_derived'] = true;
                 } elseif ($vat['kind'] === 'zero') {
                     $amounts['vat_huf'] = '0';
                     $amounts['net_huf'] = $amounts['gross_huf'];
+                    $amounts['vat_huf_derived'] = true;
                 }
             }
         }
