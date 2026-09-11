@@ -269,14 +269,15 @@ class NavInvoiceImportPreview
             return null;
         }
 
+        // Do not use floating point values as PHP array keys: they are cast to int.
         $known = array(
-            0.0476 => 5.0,
-            0.1525 => 18.0,
-            0.2126 => 27.0,
+            array(0.0476, 5.0),
+            array(0.1525, 18.0),
+            array(0.2126, 27.0),
         );
-        foreach ($known as $ratio => $rate) {
-            if (abs($content - (float) $ratio) <= 0.00005) {
-                return $rate;
+        foreach ($known as $entry) {
+            if (abs($content - $entry[0]) <= 0.00005) {
+                return $entry[1];
             }
         }
 
