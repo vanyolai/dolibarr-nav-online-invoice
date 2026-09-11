@@ -68,18 +68,14 @@ class NavInvoiceImporter
             $invoiceId = (int) $result['id'];
             $invoice = $result['object'];
 
-            if ($inbound && $category === 'NORMAL') {
-                // Supplier invoice creation recalculates line totals from qty,
-                // unit price and VAT rate. Existing NAV invoices can legitimately
-                // carry authoritative line/header totals that differ from that
-                // recalculation because of source-system rounding. Restore those
-                // source totals through Dolibarr business objects before the final
-                // consistency check instead of accepting an arbitrary tolerance.
+            // Prefer Dolibarr's native calculation rules. First keep the result
+            // produced by create() when it already matches NAV, otherwise try the
+            // same Mode 1 / Mode 2 recalculations that are available on the invoice
+            // card. Only NORMAL supplier invoices get an authoritative NAV-total
+            // fallback when neither native mode can reproduce the issued invoice.
+            $matchedByNativeRounding = $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
+            if (!$matchedByNativeRounding && $inbound && $category === 'NORMAL') {
                 $this->preserveSupplierNavTotals($invoice, $preview, $user);
-            } else {
-                // For invoice types where we do not yet restore source line totals,
-                // try Dolibarr's two native rounding modes before rejecting import.
-                $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
             }
 
             $this->assertCreatedTotals($invoice, $preview);
@@ -274,12 +270,8 @@ class NavInvoiceImporter
     }
 
     /**
-     * Preserve authoritative NAV totals for a NORMAL supplier invoice.
-     *
-     * FactureFournisseur::create() recalculates line totals from unit price,
-     * quantity and VAT. That is correct for native Dolibarr invoices but can
-     * change the amounts of an already-issued external invoice. NAV line and
-     * invoice totals are therefore written back through Dolibarr object APIs.
+     * Preserve authoritative NAV totals for a NORMAL supplier invoice only when
+     * neither native Dolibarr calculation rule can reproduce the issued invoice.
      */
     private function preserveSupplierNavTotals(FactureFournisseur $invoice, array $preview, User $user): void
     {
@@ -378,10 +370,19 @@ class NavInvoiceImporter
         }
     }
 
-    private function reconcileRoundingWithNav($invoice, array $preview, bool $inbound): void
+    /**
+     * Try the native Dolibarr totals produced by create(), then the same two
+     * calculation rules exposed on the supplier invoice card:
+     * Mode 1 = total of rounded lines (update_price(..., '0', ...))
+     * Mode 2 = rounding of total      (update_price(..., '1', ...))
+     *
+     * @return bool True when a native Dolibarr representation matches NAV.
+     */
+    private function reconcileRoundingWithNav($invoice, array $preview, bool $inbound): bool
     {
         if ($this->totalsMatch($invoice, $preview)) {
-            return;
+            dol_syslog('NavInvoiceImporter matched NAV totals using Dolibarr create/default calculation', LOG_INFO);
+            return true;
         }
 
         global $mysoc;
@@ -394,7 +395,7 @@ class NavInvoiceImporter
             $seller = $invoice->thirdparty;
         }
 
-        foreach (array('1', '0') as $roundingMode) {
+        foreach (array('0', '1') as $roundingMode) {
             $result = $invoice->update_price(1, $roundingMode, 0, $seller);
             if ($result <= 0) {
                 throw new Exception('Dolibarr invoice rounding reconciliation failed in mode '.$roundingMode.': '.$this->objectError($invoice));
@@ -403,10 +404,17 @@ class NavInvoiceImporter
                 throw new Exception('Dolibarr invoice could not be reloaded after rounding reconciliation.');
             }
             if ($this->totalsMatch($invoice, $preview)) {
-                dol_syslog('NavInvoiceImporter matched NAV totals using Dolibarr rounding mode '.$roundingMode, LOG_INFO);
-                return;
+                $uiMode = $roundingMode === '0' ? '1' : '2';
+                dol_syslog('NavInvoiceImporter matched NAV totals using Dolibarr calculation Mode '.$uiMode, LOG_INFO);
+                return true;
             }
         }
+
+        dol_syslog(
+            'NavInvoiceImporter could not reproduce NAV totals with either native Dolibarr calculation mode',
+            LOG_INFO
+        );
+        return false;
     }
 
     private function totalsMatch($invoice, array $preview): bool
