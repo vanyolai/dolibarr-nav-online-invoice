@@ -268,6 +268,13 @@ class NavInvoiceImporter
         $decimals = in_array($currency, array('HUF', 'JPY'), true) ? 0 : 2;
         $expected = $preview['totals'];
 
+        if (strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED') {
+            // On simplified invoices NAV gross is the authoritative amount.
+            // Net/VAT are reconstructed from VAT content and may differ slightly
+            // from Dolibarr's inverse calculation because NAV vatContent is rounded.
+            return round((float) $invoice->total_ttc, $decimals) == round((float) $expected['gross'], $decimals);
+        }
+
         return round((float) $invoice->total_ht, $decimals) == round((float) $expected['net'], $decimals)
             && round((float) $invoice->total_tva, $decimals) == round((float) $expected['vat'], $decimals)
             && round((float) $invoice->total_ttc, $decimals) == round((float) $expected['gross'], $decimals);
@@ -275,14 +282,23 @@ class NavInvoiceImporter
 
     private function assertCreatedTotals($invoice, array $preview): void
     {
-        if (!$this->totalsMatch($invoice, $preview)) {
-            $expected = $preview['totals'];
+        if ($this->totalsMatch($invoice, $preview)) {
+            return;
+        }
+
+        $expected = $preview['totals'];
+        if (strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED') {
             throw new Exception(
-                'Created Dolibarr invoice totals differ from NAV totals: Dolibarr '
-                .$invoice->total_ht.'/'.$invoice->total_tva.'/'.$invoice->total_ttc
-                .' vs NAV '.$expected['net'].'/'.$expected['vat'].'/'.$expected['gross']
+                'Created Dolibarr simplified invoice gross differs from NAV gross: Dolibarr '
+                .$invoice->total_ttc.' vs NAV '.$expected['gross']
             );
         }
+
+        throw new Exception(
+            'Created Dolibarr invoice totals differ from NAV totals: Dolibarr '
+            .$invoice->total_ht.'/'.$invoice->total_tva.'/'.$invoice->total_ttc
+            .' vs NAV '.$expected['net'].'/'.$expected['vat'].'/'.$expected['gross']
+        );
     }
 
     /** @param array<string,mixed> $mapped */
