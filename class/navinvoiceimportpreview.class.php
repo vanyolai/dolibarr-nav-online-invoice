@@ -251,16 +251,27 @@ class NavInvoiceImportPreview
             } elseif ($sourceNet === null || $sourceNet === '') {
                 $blocker = $blocker ?: 'line_net_missing';
             } else {
-                // Normal-invoice NAV line net is authoritative. Derive the Dolibarr
-                // unit price from net / quantity to preserve exact NAV line totals.
-                $unitPrice = (float) $sourceNet / (float) $qty;
-                $unitPriceDerived = $quantityDerived || $navUnitPrice === null || $navUnitPrice === '';
+                // For NORMAL invoices preserve NAV's explicit unitPrice exactly.
+                // Reconstructing it from lineNetAmount / quantity loses source
+                // precision (for example 1129.527 becomes 1129.525). Only derive
+                // a technical unit price when NAV omitted unitPrice altogether.
                 if ($navUnitPrice !== null && $navUnitPrice !== '') {
-                    $adjusted = abs((float) $navUnitPrice - $unitPrice) > 0.000001;
-                    if ($adjusted) {
-                        $warning = 'unit_price_adjusted';
-                    }
+                    $unitPrice = (float) $navUnitPrice;
+                    $unitPriceDerived = false;
+                } else {
+                    $unitPrice = (float) $sourceNet / (float) $qty;
+                    $unitPriceDerived = true;
                 }
+            }
+        }
+
+        $supplierRef = '';
+        foreach (($line['product_codes'] ?? array()) as $productCode) {
+            $codeCategory = strtoupper(trim((string) ($productCode['category'] ?? '')));
+            $codeValue = trim((string) ($productCode['value'] ?? ''));
+            if ($codeCategory === 'OWN' && $codeValue !== '') {
+                $supplierRef = $codeValue;
+                break;
             }
         }
 
@@ -284,6 +295,8 @@ class NavInvoiceImportPreview
             'unit_price_ht' => $unitPrice,
             'unit_price_derived' => $unitPriceDerived,
             'unit_price_adjusted' => $adjusted,
+            'supplier_ref' => $supplierRef,
+            'product_codes' => is_array($line['product_codes'] ?? null) ? $line['product_codes'] : array(),
             'vat_rate' => $vatRate,
             'vat_content' => $kind === 'content' ? $value : null,
             'vat_label' => (string) ($vat['label'] ?? ''),
