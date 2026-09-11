@@ -41,7 +41,7 @@ htdocs/custom/navinvoice/
 └── index.php
 ```
 
-## Installation for development
+## Installation
 
 For a Git-managed Dolibarr checkout, using this repository as a submodule is recommended:
 
@@ -52,7 +52,9 @@ git submodule add -b feature/nav-sync-foundation \
   htdocs/custom/navinvoice
 ```
 
-For an existing checkout of the module repository, cloning it directly into `htdocs/custom/navinvoice` also works.
+While the module is still under development, the submodule tracks `feature/nav-sync-foundation`. After the first stable release, production should track `main` or a release tag instead.
+
+A direct clone into `htdocs/custom/navinvoice` also works, but a submodule lets the parent Dolibarr repository pin the exact module commit used in production.
 
 Then enable **NAV Online Invoice** in Dolibarr's module setup.
 
