@@ -24,4 +24,5 @@ BatchMessage=Üzenet
 BatchReconciliationDefault=Dolibarr alapértelmezett számításával egyezett
 BatchReconciliationMode1=Dolibarr 1. módszerével egyezett
 BatchReconciliationMode2=Dolibarr 2. módszerével egyezett
-BatchReconciliationNavFallback=NAV összegek megőrzése kellett (fallback)
+BatchReconciliationNavSummary=NAV számlaösszesítő kerekítése alkalmazva
+BatchReconciliationNavFallback=NAV autoritatív sor- és összesítőértékek alkalmazva
