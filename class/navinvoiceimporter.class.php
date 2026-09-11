@@ -60,6 +60,13 @@ class NavInvoiceImporter
 
             $invoiceId = (int) $result['id'];
             $invoice = $result['object'];
+
+            // Dolibarr can be configured either as "total of rounded lines" or
+            // "rounded total". Existing external invoices must reproduce the
+            // authoritative NAV totals, so if the default mode differs, try the
+            // two native Dolibarr rounding modes explicitly before rejecting the
+            // import. No global Dolibarr setting is changed by this operation.
+            $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
             $this->assertCreatedTotals($invoice, $preview);
             $this->linkMirrorRecord((int) $record->rowid, $direction, $invoiceId);
 
@@ -215,15 +222,55 @@ class NavInvoiceImporter
         return array('id' => (int) $id, 'object' => $invoice);
     }
 
-    private function assertCreatedTotals($invoice, array $preview): void
+    private function reconcileRoundingWithNav($invoice, array $preview, bool $inbound): void
+    {
+        if ($this->totalsMatch($invoice, $preview)) {
+            return;
+        }
+
+        global $mysoc;
+        $seller = $mysoc;
+        if ($inbound) {
+            $result = $invoice->fetch_thirdparty();
+            if ($result < 0 || !is_object($invoice->thirdparty)) {
+                throw new Exception('Could not load supplier for NAV rounding reconciliation.');
+            }
+            $seller = $invoice->thirdparty;
+        }
+
+        // Try Dolibarr's native "rounding of total" first. This is the common
+        // representation for NAV invoices whose decimal line totals add up to
+        // the authoritative whole-currency invoice total.
+        foreach (array('1', '0') as $roundingMode) {
+            $result = $invoice->update_price(1, $roundingMode, 0, $seller);
+            if ($result <= 0) {
+                throw new Exception('Dolibarr invoice rounding reconciliation failed in mode '.$roundingMode.': '.$this->objectError($invoice));
+            }
+            if ($invoice->fetch((int) $invoice->id) <= 0) {
+                throw new Exception('Dolibarr invoice could not be reloaded after rounding reconciliation.');
+            }
+            if ($this->totalsMatch($invoice, $preview)) {
+                dol_syslog('NavInvoiceImporter matched NAV totals using Dolibarr rounding mode '.$roundingMode, LOG_INFO);
+                return;
+            }
+        }
+    }
+
+    private function totalsMatch($invoice, array $preview): bool
     {
         $currency = strtoupper((string) $preview['header']['currency']);
         $decimals = in_array($currency, array('HUF', 'JPY'), true) ? 0 : 2;
         $expected = $preview['totals'];
 
-        if (round((float) $invoice->total_ht, $decimals) != round((float) $expected['net'], $decimals)
-            || round((float) $invoice->total_tva, $decimals) != round((float) $expected['vat'], $decimals)
-            || round((float) $invoice->total_ttc, $decimals) != round((float) $expected['gross'], $decimals)) {
+        return round((float) $invoice->total_ht, $decimals) == round((float) $expected['net'], $decimals)
+            && round((float) $invoice->total_tva, $decimals) == round((float) $expected['vat'], $decimals)
+            && round((float) $invoice->total_ttc, $decimals) == round((float) $expected['gross'], $decimals);
+    }
+
+    private function assertCreatedTotals($invoice, array $preview): void
+    {
+        if (!$this->totalsMatch($invoice, $preview)) {
+            $expected = $preview['totals'];
             throw new Exception(
                 'Created Dolibarr invoice totals differ from NAV totals: Dolibarr '
                 .$invoice->total_ht.'/'.$invoice->total_tva.'/'.$invoice->total_ttc
