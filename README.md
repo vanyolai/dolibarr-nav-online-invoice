@@ -27,13 +27,32 @@ External Dolibarr module for synchronizing outbound invoices from the Hungarian 
 - Optional hourly Scheduled Job
 - Hungarian and English UI strings
 
-## Installation for development
+## Repository layout
 
-Copy or mount the `navinvoice` directory into the Dolibarr custom modules directory:
+The repository root is the Dolibarr module root. It is intended to be installed directly as:
 
 ```text
-htdocs/custom/navinvoice
+htdocs/custom/navinvoice/
+├── admin/
+├── class/
+├── core/
+├── langs/
+├── sql/
+└── index.php
 ```
+
+## Installation for development
+
+For a Git-managed Dolibarr checkout, using this repository as a submodule is recommended:
+
+```bash
+cd /path/to/dolibarr
+git submodule add -b feature/nav-sync-foundation \
+  https://github.com/vanyolai/dolibarr-nav-online-invoice.git \
+  htdocs/custom/navinvoice
+```
+
+For an existing checkout of the module repository, cloning it directly into `htdocs/custom/navinvoice` also works.
 
 Then enable **NAV Online Invoice** in Dolibarr's module setup.
 
