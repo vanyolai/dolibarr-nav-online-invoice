@@ -1,6 +1,7 @@
 CREATE TABLE llx_navinvoice_invoice (
     rowid integer AUTO_INCREMENT PRIMARY KEY,
     entity integer NOT NULL DEFAULT 1,
+    invoice_direction varchar(8) NOT NULL DEFAULT 'OUTBOUND',
     invoice_number varchar(50) NOT NULL,
     batch_index integer NOT NULL DEFAULT 0,
     invoice_operation varchar(16) NULL,
@@ -32,6 +33,7 @@ CREATE TABLE llx_navinvoice_invoice (
     data_hash varchar(64) NULL,
     data_fetched smallint NOT NULL DEFAULT 0,
     fk_facture integer NULL,
+    fk_facture_fourn integer NULL,
     datec datetime NOT NULL,
     tms timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     last_sync datetime NULL
