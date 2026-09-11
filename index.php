@@ -55,15 +55,22 @@ $resql = $db->query($sql);
 
 print '<div class="div-table-responsive">';
 print '<table class="noborder centpercent">';
-print '<tr class="liste_titre"><td>'.$langs->trans('InvoiceNumber').'</td><td>'.$langs->trans('Date').'</td><td>'.$langs->trans('Operation').'</td><td>'.$langs->trans('Customer').'</td><td>'.$langs->trans('VATIntra').'</td><td class="right">'.$langs->trans('AmountHT').'</td><td class="right">'.$langs->trans('VAT').'</td><td>'.$langs->trans('XmlDownloaded').'</td><td>'.$langs->trans('LastSync').'</td></tr>';
+print '<tr class="liste_titre"><td>'.$langs->trans('NavInvoiceNumber').'</td><td>'.$langs->trans('Date').'</td><td>'.$langs->trans('Operation').'</td><td>'.$langs->trans('Customer').'</td><td>'.$langs->trans('VATIntra').'</td><td class="right">'.$langs->trans('AmountHT').'</td><td class="right">'.$langs->trans('VAT').'</td><td>'.$langs->trans('XmlDownloaded').'</td><td>'.$langs->trans('LastSync').'</td></tr>';
 if ($resql) {
     while ($obj = $db->fetch_object($resql)) {
+        $customerName = trim((string) $obj->customer_name);
+        $customerTaxNumber = trim((string) $obj->customer_tax_number);
+        // NAV Online Invoice v3 deliberately omits customer name, address and VAT data
+        // for PRIVATE_PERSON customers. In the digest this is observable as both name
+        // and tax number being absent; OTHER customers must still have a name.
+        $privatePerson = ($customerName === '' && $customerTaxNumber === '');
+
         print '<tr class="oddeven">';
         print '<td>'.dol_escape_htmltag($obj->invoice_number).'</td>';
         print '<td>'.dol_escape_htmltag($obj->invoice_issue_date).'</td>';
         print '<td>'.dol_escape_htmltag($obj->invoice_operation).'</td>';
-        print '<td>'.dol_escape_htmltag($obj->customer_name).'</td>';
-        print '<td>'.dol_escape_htmltag($obj->customer_tax_number).'</td>';
+        print '<td>'.($privatePerson ? '<span class="opacitymedium">'.$langs->trans('PrivatePerson').'</span>' : dol_escape_htmltag($customerName)).'</td>';
+        print '<td>'.($privatePerson ? '<span class="opacitymedium">—</span>' : dol_escape_htmltag($customerTaxNumber)).'</td>';
         print '<td class="right">'.price($obj->invoice_net_amount).' '.dol_escape_htmltag($obj->currency).'</td>';
         print '<td class="right">'.price($obj->invoice_vat_amount).' '.dol_escape_htmltag($obj->currency).'</td>';
         print '<td>'.($obj->data_fetched ? img_picto($langs->trans('Yes'), 'tick') : img_picto($langs->trans('No'), 'warning')).'</td>';
