@@ -73,9 +73,10 @@ class NavInvoiceImporter
             // same Mode 1 / Mode 2 recalculations that are available on the invoice
             // card. Only NORMAL supplier invoices get an authoritative NAV-total
             // fallback when neither native mode can reproduce the issued invoice.
-            $matchedByNativeRounding = $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
-            if (!$matchedByNativeRounding && $inbound && $category === 'NORMAL') {
+            $reconciliation = $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
+            if ($reconciliation === 'none' && $inbound && $category === 'NORMAL') {
                 $this->preserveSupplierNavTotals($invoice, $preview, $user);
+                $reconciliation = 'nav_fallback';
             }
 
             $this->assertCreatedTotals($invoice, $preview);
@@ -88,6 +89,7 @@ class NavInvoiceImporter
                 'url' => $inbound
                     ? DOL_URL_ROOT.'/fourn/facture/card.php?facid='.$invoiceId
                     : DOL_URL_ROOT.'/compta/facture/card.php?facid='.$invoiceId,
+                'reconciliation' => $reconciliation,
             );
         } catch (Throwable $e) {
             if ($invoiceId > 0 && is_object($invoice)) {
@@ -135,8 +137,8 @@ class NavInvoiceImporter
             $line->localtax2_tx = 0;
             $line->fk_product = 0;
             $line->remise_percent = 0;
-            $line->date_start = 0;
-            $line->date_end = 0;
+            $line->date_start = null;
+            $line->date_end = null;
             $line->fk_code_ventilation = 0;
             $line->info_bits = 0;
             $line->fk_remise_except = 0;
@@ -208,8 +210,8 @@ class NavInvoiceImporter
             $line->localtax2_tx = 0;
             $line->fk_product = 0;
             $line->remise_percent = 0;
-            $line->date_start = 0;
-            $line->date_end = 0;
+            $line->date_start = null;
+            $line->date_end = null;
             $line->info_bits = 0;
             $line->product_type = (int) $mapped['product_type'];
             $line->rang = ++$rank;
@@ -376,13 +378,13 @@ class NavInvoiceImporter
      * Mode 1 = total of rounded lines (update_price(..., '0', ...))
      * Mode 2 = rounding of total      (update_price(..., '1', ...))
      *
-     * @return bool True when a native Dolibarr representation matches NAV.
+     * @return string One of default, mode1, mode2, none.
      */
-    private function reconcileRoundingWithNav($invoice, array $preview, bool $inbound): bool
+    private function reconcileRoundingWithNav($invoice, array $preview, bool $inbound): string
     {
         if ($this->totalsMatch($invoice, $preview)) {
             dol_syslog('NavInvoiceImporter matched NAV totals using Dolibarr create/default calculation', LOG_INFO);
-            return true;
+            return 'default';
         }
 
         global $mysoc;
@@ -406,7 +408,7 @@ class NavInvoiceImporter
             if ($this->totalsMatch($invoice, $preview)) {
                 $uiMode = $roundingMode === '0' ? '1' : '2';
                 dol_syslog('NavInvoiceImporter matched NAV totals using Dolibarr calculation Mode '.$uiMode, LOG_INFO);
-                return true;
+                return $roundingMode === '0' ? 'mode1' : 'mode2';
             }
         }
 
@@ -414,7 +416,7 @@ class NavInvoiceImporter
             'NavInvoiceImporter could not reproduce NAV totals with either native Dolibarr calculation mode',
             LOG_INFO
         );
-        return false;
+        return 'none';
     }
 
     private function totalsMatch($invoice, array $preview): bool
