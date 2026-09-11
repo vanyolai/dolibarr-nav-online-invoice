@@ -12,7 +12,7 @@ if (!$res) {
 
 dol_include_once('/navinvoice/class/navinvoicesync.class.php');
 dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -57,6 +57,9 @@ if ($action === 'sync' && $user->hasRight('navinvoice', 'invoice', 'sync')) {
 
 llxHeader('', $langs->trans('NavOnlineInvoice'));
 print load_fiche_titre($langs->trans('NavOnlineInvoice'), '', 'file-invoice');
+print '<div class="tabsAction">';
+print '<a class="butAction" href="'.dol_buildpath('/navinvoice/batch.php', 1).'">'.$langs->trans('BatchImport').'</a>';
+print '</div>';
 
 if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
     $today = new DateTimeImmutable('today');
