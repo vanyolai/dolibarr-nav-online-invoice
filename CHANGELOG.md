@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.2 - development
+
+- Clear NAV mirror links automatically when linked Dolibarr customer or supplier invoices are deleted.
+- Self-heal stale `fk_facture` / `fk_facture_fourn` links when the NAV list or import preview detects that the referenced Dolibarr invoice no longer exists.
+- Allow a previously imported-and-deleted draft to be imported again without manual database cleanup.
+
+## 0.6.1 - development
+
+- Map NAV invoice units to active Dolibarr `llx_c_units` entries when `PRODUCT_USE_UNITS` is enabled.
+- Prefer stable Dolibarr unit codes over localized labels; use controlled aliases only as a fallback.
+- Leave unresolved or ambiguous units unassigned rather than guessing.
+- Show NAV and resolved Dolibarr units in the import preview.
+
 ## 0.6.0 - development
 
 - Add guarded manual import of NAV invoices into Dolibarr as draft customer or supplier invoices.
