@@ -116,6 +116,7 @@ if ($resql) {
         $currency = trim((string) $obj->currency);
         $detailUrl = dol_buildpath('/navinvoice/detail.php', 1).'?id='.(int) $obj->rowid;
         $importUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $obj->rowid;
+        $partnerUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.(int) $obj->rowid;
 
         try {
             $linkedId = $linkManager->resolve($obj, $direction);
@@ -129,8 +130,16 @@ if ($resql) {
         print '<td><a href="'.$detailUrl.'">'.dol_escape_htmltag($obj->invoice_number).'</a></td>';
         print '<td>'.dol_escape_htmltag($obj->invoice_issue_date).'</td>';
         print '<td>'.dol_escape_htmltag($obj->invoice_operation).'</td>';
-        print '<td>'.($privatePerson ? '<span class="opacitymedium">'.$langs->trans('PrivatePerson').'</span>' : ($partnerName !== '' ? dol_escape_htmltag($partnerName) : '<span class="opacitymedium">—</span>')).'</td>';
-        print '<td>'.($partnerTaxNumber !== '' ? dol_escape_htmltag($partnerTaxNumber) : '<span class="opacitymedium">—</span>').'</td>';
+        print '<td>';
+        if ($privatePerson) {
+            print '<span class="opacitymedium">'.$langs->trans('PrivatePerson').'</span>';
+        } elseif ($partnerName !== '') {
+            print '<a href="'.dol_escape_htmltag($partnerUrl).'" title="'.dol_escape_htmltag($langs->trans('NavPartnerResolution')).'">'.dol_escape_htmltag($partnerName).'</a>';
+        } else {
+            print '<a href="'.dol_escape_htmltag($partnerUrl).'" title="'.dol_escape_htmltag($langs->trans('NavPartnerResolution')).'"><span class="opacitymedium">—</span></a>';
+        }
+        print '</td>';
+        print '<td>'.($partnerTaxNumber !== '' ? '<a href="'.dol_escape_htmltag($partnerUrl).'">'.dol_escape_htmltag($partnerTaxNumber).'</a>' : '<span class="opacitymedium">—</span>').'</td>';
         print '<td class="right">'.($hasNetAmount ? price($obj->invoice_net_amount).' '.dol_escape_htmltag($currency) : '<span class="opacitymedium">—</span>').'</td>';
         print '<td class="right">'.($hasVatAmount ? price($obj->invoice_vat_amount).' '.dol_escape_htmltag($currency) : '<span class="opacitymedium">—</span>').'</td>';
         print '<td>'.($obj->data_fetched ? img_picto($langs->trans('Yes'), 'tick') : img_picto($langs->trans('No'), 'warning')).'</td>';
