@@ -219,7 +219,7 @@ class NavInvoiceImporter
             $line->array_options = array();
             $line->fk_unit = $this->resolveUnitId($mapped);
             $line->multicurrency_subprice = 0;
-            $line->ref_supplier = '';
+            $line->ref_supplier = (string) ($mapped['supplier_ref'] ?? '');
             $invoice->lines[] = $line;
         }
 
