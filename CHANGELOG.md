@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1 - development
+
+- Block invoice import when the matched Dolibarr third party has no country assigned, because Dolibarr needs the country for correct VAT handling on invoice lines.
+- Block import when the Dolibarr partner country conflicts with the country code reported in the NAV invoice, requiring manual review instead of guessing VAT treatment.
+- Keep NAV partner enrichment read-only; invoice import does not silently mutate third-party master data.
+
 ## 0.7.0 - development
 
 - Support `SIMPLIFIED` NAV invoices whose source amounts are expressed as gross values with VAT content instead of normal net/VAT amounts.
