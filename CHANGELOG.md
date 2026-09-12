@@ -4,6 +4,7 @@
 
 - Document git subtree as the preferred integration model; this repository is the authoritative module source and Dolibarr consumes it under `htdocs/custom/navinvoice`.
 - Promote `queryTaxpayer` into a reusable current taxpayer master-data service with namespace-independent parsing, tax-number normalization and HQ/site/branch address handling.
+- Normalize NAV taxpayer master-data fields that arrive entirely in uppercase for display and Dolibarr master-data creation, while preserving the exact raw NAV wording for diagnostics/audit.
 - Add a dedicated partner-resolution page that compares historical invoice party data with current NAV taxpayer master data.
 - Add controlled third-party creation from freshly queried NAV data, with duplicate-candidate blocking, country mapping and a second match check immediately before creation.
 - Create suppliers/customers with only the role implied by invoice direction and return to invoice import after successful creation.
@@ -12,6 +13,7 @@
 - Add a NAV relation resolver for CREATE/MODIFY/STORNO chains, including original mirror lookup, modification-index sequencing, `modifyWithoutMaster` handling and original Dolibarr invoice linkage.
 - Add `queryInvoiceChainDigest` support and compare the complete paginated authoritative NAV chain with the local mirror before permitting a non-CREATE import.
 - Add a relation-review page that exposes the local and authoritative chain state before import.
+- Add targeted authoritative chain synchronization so missing older master/modification invoices can be downloaded into the local mirror without manually widening date-based synchronization windows.
 - Add guarded MODIFY/STORNO draft import when the relation is deterministic: negative MODIFY and STORNO map to Dolibarr credit notes; positive MODIFY maps to a standard adjustment; all are linked to the original Dolibarr invoice.
 - Keep zero-value/non-financial MODIFY operations blocked instead of inventing a financial document, and block `modifyWithoutMaster` until a safe Dolibarr policy exists.
 - Require earlier modification indexes to be imported first and block source-partner mismatches, authoritative-chain mismatches and unsupported Dolibarr negative-line configurations.
