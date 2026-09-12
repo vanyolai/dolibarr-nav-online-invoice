@@ -67,13 +67,16 @@ try {
     $loadError = $e->getMessage();
 }
 
-$counts = array('ready' => 0, 'review' => 0, 'partner_required' => 0, 'blocked' => 0, 'imported' => 0);
+$counts = array('ready' => 0, 'review' => 0, 'partner_required' => 0, 'blocked' => 0, 'imported' => 0, 'dependency' => 0);
 foreach ($rows as $row) {
     $state = (string) ($row['state'] ?? 'blocked');
     if (isset($counts[$state])) {
         $counts[$state]++;
     } else {
         $counts['blocked']++;
+    }
+    if (!empty($row['record']->_nav_batch_dependency)) {
+        $counts['dependency']++;
     }
 }
 
@@ -112,10 +115,7 @@ $reconciliationLabel = static function (string $code) use ($langs): string {
         'nav_summary' => 'BatchReconciliationNavSummary',
         'nav_fallback' => 'BatchReconciliationNavFallback',
     );
-    if (!isset($keys[$code])) {
-        return '';
-    }
-    return $langs->trans($keys[$code]);
+    return isset($keys[$code]) ? $langs->trans($keys[$code]) : '';
 };
 
 llxHeader('', $langs->trans('BatchImport'));
@@ -127,30 +127,40 @@ print load_fiche_titre(
 
 print '<div class="info marginbottomonly">'.$langs->trans('BatchInboundOnlyNotice').'</div>';
 print '<div class="opacitymedium marginbottomonly">'.$langs->trans('BatchDraftOnlyNotice').'</div>';
+print '<div class="opacitymedium marginbottomonly">'.$langs->trans('BatchRangeAndDependenciesNotice').'</div>';
 
 print '<form method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'">';
-print '<div class="fichecenter">';
-print $langs->trans('DateFrom').' <input type="date" name="date_from" required value="'.dol_escape_htmltag($dateFrom).'"> ';
-print $langs->trans('DateTo').' <input type="date" name="date_to" required value="'.dol_escape_htmltag($dateTo).'"> ';
-print '<input class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'">';
-print '</div></form><br>';
+print '<table class="border" style="max-width:900px">';
+print '<tr>';
+print '<td class="titlefield">'.$langs->trans('DateFrom').'</td>';
+print '<td><input type="date" name="date_from" required value="'.dol_escape_htmltag($dateFrom).'"></td>';
+print '<td class="titlefield">'.$langs->trans('DateTo').'</td>';
+print '<td><input type="date" name="date_to" required value="'.dol_escape_htmltag($dateTo).'"></td>';
+print '<td><input class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'"></td>';
+print '</tr>';
+print '</table>';
+print '</form><br>';
 
 if ($loadError !== '') {
     print '<div class="error">'.img_picto('', 'error').' '.dol_escape_htmltag($loadError).'</div>';
 }
 
-print '<div class="fichecenter">';
-print '<div class="fichehalfleft"><table class="border centpercent">';
-print '<tr><td class="titlefield">'.$langs->trans('BatchTotal').'</td><td class="right">'.count($rows).'</td></tr>';
-print '<tr><td>'.$langs->trans('BatchReady').'</td><td class="right"><span class="ok">'.$counts['ready'].'</span></td></tr>';
-print '<tr><td>'.$langs->trans('BatchReview').'</td><td class="right"><span class="warning">'.$counts['review'].'</span></td></tr>';
-print '</table></div>';
-print '<div class="fichehalfright"><table class="border centpercent">';
-print '<tr><td class="titlefield">'.$langs->trans('BatchPartnerRequired').'</td><td class="right"><span class="warning">'.$counts['partner_required'].'</span></td></tr>';
-print '<tr><td>'.$langs->trans('BatchBlocked').'</td><td class="right"><span class="error">'.$counts['blocked'].'</span></td></tr>';
-print '<tr><td>'.$langs->trans('BatchAlreadyImported').'</td><td class="right">'.$counts['imported'].'</td></tr>';
-print '</table></div>';
-print '<div class="clearboth"></div></div><br>';
+print '<table class="border" style="max-width:1050px">';
+print '<tr>';
+print '<td class="titlefield">'.$langs->trans('BatchTotal').'</td><td class="right"><strong>'.count($rows).'</strong></td>';
+print '<td class="titlefield">'.$langs->trans('BatchReady').'</td><td class="right"><span class="ok"><strong>'.$counts['ready'].'</strong></span></td>';
+print '<td class="titlefield">'.$langs->trans('BatchAlreadyImported').'</td><td class="right">'.$counts['imported'].'</td>';
+print '</tr>';
+print '<tr>';
+print '<td class="titlefield">'.$langs->trans('BatchDependencies').'</td><td class="right">'.$counts['dependency'].'</td>';
+print '<td class="titlefield">'.$langs->trans('BatchPartnerRequired').'</td><td class="right"><span class="warning">'.$counts['partner_required'].'</span></td>';
+print '<td class="titlefield">'.$langs->trans('BatchBlocked').'</td><td class="right"><span class="error"><strong>'.$counts['blocked'].'</strong></span></td>';
+print '</tr>';
+print '<tr>';
+print '<td class="titlefield">'.$langs->trans('BatchReview').'</td><td class="right"><span class="warning">'.$counts['review'].'</span></td>';
+print '<td colspan="4"></td>';
+print '</tr>';
+print '</table><br>';
 
 if (is_array($batchResult)) {
     print load_fiche_titre($langs->trans('BatchResultTitle'), '', 'list');
@@ -194,6 +204,7 @@ if ($rows) {
         $preview = is_array($row['preview'] ?? null) ? $row['preview'] : array();
         $state = (string) ($row['state'] ?? 'blocked');
         $ready = $state === 'ready';
+        $dependency = !empty($record->_nav_batch_dependency);
         $operation = strtoupper(trim((string) ($preview['operation'] ?? $record->invoice_operation ?? 'CREATE')));
         $isNonCreate = $operation !== '' && $operation !== 'CREATE';
         $supplier = is_array($preview['partner'] ?? null)
@@ -213,6 +224,9 @@ if ($rows) {
         }
 
         $issues = array();
+        if ($dependency) {
+            $issues[] = img_picto('', 'history').' <span class="opacitymedium">'.$langs->trans('BatchDependencyIncluded').'</span>';
+        }
         if ($isNonCreate) {
             $issues[] = img_picto('', 'link').' <a href="'.dol_escape_htmltag($relationUrl).'">'.dol_escape_htmltag($langs->trans('ReviewRelation')).'</a>';
         }
