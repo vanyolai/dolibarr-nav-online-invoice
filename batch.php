@@ -11,7 +11,7 @@ if (!$res) {
 }
 
 dol_include_once('/navinvoice/class/navinvoicebatch.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice', 'navrelation@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice', 'navrelation@navinvoice', 'navinvoiceui@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -129,10 +129,28 @@ print '<div class="info marginbottomonly">'.$langs->trans('BatchInboundOnlyNotic
 print '<div class="opacitymedium marginbottomonly">'.$langs->trans('BatchDraftOnlyNotice').'</div>';
 print '<div class="opacitymedium marginbottomonly">'.$langs->trans('BatchRangeAndDependenciesNotice').'</div>';
 
-print '<form method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'"><table class="border" style="max-width:900px"><tr>';
-print '<td class="titlefield">'.$langs->trans('DateFrom').'</td><td><input type="date" name="date_from" required value="'.dol_escape_htmltag($dateFrom).'"></td>';
-print '<td class="titlefield">'.$langs->trans('DateTo').'</td><td><input type="date" name="date_to" required value="'.dol_escape_htmltag($dateTo).'"></td>';
-print '<td><input class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'"></td></tr></table></form><br>';
+$fromBefore = trim($langs->trans('SyncFromBefore'));
+$fromAfter = trim($langs->trans('SyncFromAfter'));
+$toBefore = trim($langs->trans('SyncToBefore'));
+$toAfter = trim($langs->trans('SyncToAfter'));
+print '<form method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin:10px 0">';
+print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+if ($fromBefore !== '') {
+    print '<span>'.$fromBefore.'</span>';
+}
+print '<input type="date" name="date_from" required value="'.dol_escape_htmltag($dateFrom).'">';
+if ($fromAfter !== '') {
+    print '<span>'.$fromAfter.'</span>';
+}
+if ($toBefore !== '') {
+    print '<span>'.$toBefore.'</span>';
+}
+print '<input type="date" name="date_to" required value="'.dol_escape_htmltag($dateTo).'">';
+if ($toAfter !== '') {
+    print '<span>'.$toAfter.'</span>';
+}
+print '<input class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'">';
+print '</div></form>';
 
 if ($loadError !== '') {
     print '<div class="error">'.img_picto('', 'error').' '.dol_escape_htmltag($loadError).'</div>';
