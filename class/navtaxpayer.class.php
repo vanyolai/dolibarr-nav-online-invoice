@@ -38,14 +38,21 @@ class NavTaxpayerService
      * Convert taxpayer master data to the same party shape used by the invoice
      * parser and partner matcher.
      *
+     * Prefer NAV's official short name for matching/display semantics when it
+     * exists. queryTaxpayer frequently returns the full registered name in all
+     * capitals while taxpayerShortName keeps the normal business spelling. The
+     * raw full name remains available separately in the master-data structure.
+     *
      * @param array<string,mixed> $master
      * @return array<string,mixed>
      */
     public function toParty(array $master): array
     {
         $address = is_array($master['primary_address'] ?? null) ? $master['primary_address'] : array();
+        $fullName = trim((string) ($master['name'] ?? ''));
+        $shortName = trim((string) ($master['short_name'] ?? ''));
         return array(
-            'name' => (string) ($master['name'] ?? ''),
+            'name' => $shortName !== '' ? $shortName : $fullName,
             'tax_number' => (string) ($master['tax_number'] ?? ''),
             'vat_code' => (string) ($master['vat_code'] ?? ''),
             'county_code' => (string) ($master['county_code'] ?? ''),
