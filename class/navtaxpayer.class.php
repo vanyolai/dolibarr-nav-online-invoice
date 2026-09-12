@@ -131,8 +131,8 @@ class NavTaxpayerService
             'info_date' => $infoDate,
             'name' => $name,
             'short_name' => $shortName,
-            // Keep the byte-level NAV wording available for diagnostics/audit,
-            // while the normal fields are presentation/master-data friendly.
+            // Keep the exact NAV wording available for diagnostics/audit, while
+            // normal fields are presentation/master-data friendly.
             'raw_name' => $rawName,
             'raw_short_name' => $rawShortName,
             'tax_number' => $taxpayerId,
@@ -239,7 +239,7 @@ class NavTaxpayerService
 
         // If the NAV short name deliberately contains an acronym (MÁV, OTP,
         // MOL, DSC, ...), preserve that spelling in the expanded legal name.
-        if ($shortName !== '' && function_exists('mb_strtoupper')) {
+        if ($shortName !== '') {
             preg_match_all('/(?<![\p{L}\p{N}])[\p{Lu}\p{N}]{2,}(?![\p{L}\p{N}])/u', $shortName, $matches);
             foreach (($matches[0] ?? array()) as $acronym) {
                 $normalized = preg_replace('/(?<![\p{L}\p{N}])'.preg_quote($acronym, '/').'(?![\p{L}\p{N}])/iu', $acronym, $normalized) ?? $normalized;
@@ -248,7 +248,6 @@ class NavTaxpayerService
 
         // Hungarian conjunction/articles inside a long legal name are normally
         // lowercase; generic title-case would capitalize them.
-        $normalized = preg_replace('/\s+(És|A|Az)\s+/u', static function_exists('mb_strtolower') ? ' ' : ' ', $normalized) ?? $normalized;
         $normalized = preg_replace_callback('/\s+(És|A|Az)\s+/u', static function (array $m): string {
             $word = function_exists('mb_strtolower') ? mb_strtolower($m[1], 'UTF-8') : strtolower($m[1]);
             return ' '.$word.' ';
@@ -268,12 +267,8 @@ class NavTaxpayerService
 
         // Restore Roman numerals that are commonly used in district/street
         // names (for example BUDAPEST XIII. KERÜLET).
-        preg_match_all('/(?<![\p{L}])[IVXLCDM]+\.? (?![\p{L}])/u', $value.' ', $matches);
-        foreach (($matches[0] ?? array()) as $romanWithSpace) {
-            $roman = rtrim($romanWithSpace);
-            if ($roman === '') {
-                continue;
-            }
+        preg_match_all('/(?<![\p{L}])[IVXLCDM]+\.?(?![\p{L}])/u', $value, $matches);
+        foreach (($matches[0] ?? array()) as $roman) {
             $normalized = preg_replace('/(?<![\p{L}])'.preg_quote($roman, '/').'(?![\p{L}])/iu', $roman, $normalized) ?? $normalized;
         }
 
