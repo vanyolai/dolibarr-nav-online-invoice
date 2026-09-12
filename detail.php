@@ -14,7 +14,7 @@ dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
 dol_include_once('/navinvoice/class/navpartnerenrichmentpreview.class.php');
 dol_include_once('/navinvoice/class/navpartnerenricher.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice', 'navrelation@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navrelation@navinvoice', 'navinvoiceui@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -473,10 +473,30 @@ if ($parsed) {
     }
 }
 
-if (!empty($record->invoice_data)) {
+if (getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1) && !empty($record->invoice_data)) {
+    $xmlDisplay = (string) $record->invoice_data;
+    if (class_exists('DOMDocument')) {
+        $previousLibxmlState = libxml_use_internal_errors(true);
+        try {
+            $dom = new DOMDocument('1.0', 'UTF-8');
+            $dom->preserveWhiteSpace = false;
+            $dom->formatOutput = true;
+            if (@$dom->loadXML($xmlDisplay, LIBXML_NOBLANKS)) {
+                $formattedXml = $dom->saveXML();
+                if (is_string($formattedXml) && trim($formattedXml) !== '') {
+                    $xmlDisplay = $formattedXml;
+                }
+            }
+        } catch (Throwable $e) {
+            // Presentation fallback: keep the original source text below.
+        }
+        libxml_clear_errors();
+        libxml_use_internal_errors($previousLibxmlState);
+    }
+
     print '<br><details><summary style="cursor:pointer;font-weight:600">'.$langs->trans('ShowNavXml').'</summary>';
-    print '<div class="opacitymedium small">'.$langs->trans('NavXmlOriginalNotice').'</div>';
-    print '<pre style="max-height:600px;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid var(--colortextlink);padding:10px">'.dol_escape_htmltag((string) $record->invoice_data).'</pre></details>';
+    print '<div class="opacitymedium small marginbottomonly">'.$langs->trans('NavXmlPrettyNotice').'</div>';
+    print '<pre style="max-height:700px;overflow:auto;white-space:pre;tab-size:2;border:1px solid var(--colortextlink);padding:10px">'.dol_escape_htmltag($xmlDisplay).'</pre></details>';
 }
 
 print '</div>';
