@@ -175,13 +175,25 @@ if ($relationError !== '') {
             $localMap[$identity($localItem)] = $localItem;
         }
 
-        if (is_array($chainComparison) && !empty($chainComparison['complete'])) {
+        $chainMatches = is_array($chainComparison) && !empty($chainComparison['complete']);
+        if ($chainMatches) {
             print '<div class="info marginbottomonly">'.img_picto('', 'tick').' '.$langs->trans('AuthoritativeNavChainMatchesLocal', (string) count($navElements)).'</div>';
         } else {
             $missingCount = is_array($chainComparison['missing_local'] ?? null) ? count($chainComparison['missing_local']) : 0;
             $localOnlyCount = is_array($chainComparison['local_only'] ?? null) ? count($chainComparison['local_only']) : 0;
             $mismatchCount = is_array($chainComparison['mismatches'] ?? null) ? count($chainComparison['mismatches']) : 0;
             print '<div class="warning marginbottomonly">'.img_picto('', 'warning').' '.$langs->trans('AuthoritativeNavChainDiffersLocal', $missingCount, $localOnlyCount, $mismatchCount).'</div>';
+
+            if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
+                print '<div class="info marginbottomonly">'.img_picto('', 'info').' '.$langs->trans('SyncNavInvoiceChainHelp').'</div>';
+                print '<form method="POST" action="'.dol_buildpath('/navinvoice/chainsync.php', 1).'">';
+                print '<input type="hidden" name="token" value="'.newToken().'">';
+                print '<input type="hidden" name="action" value="sync_chain">';
+                print '<input type="hidden" name="id" value="'.$id.'">';
+                print '<div class="tabsAction">';
+                print '<input type="submit" class="butAction" value="'.dol_escape_htmltag($langs->trans('SyncNavInvoiceChain')).'" onclick="return confirm(\''.dol_escape_js($langs->trans('SyncNavInvoiceChainConfirm')).'\');">';
+                print '</div></form>';
+            }
         }
 
         print '<div class="div-table-responsive"><table class="noborder centpercent">';
