@@ -1,0 +1,13 @@
+SyncPanelTitle=Synchronization
+SyncFromBefore=From
+SyncFromAfter=
+SyncToBefore=To
+SyncToAfter=
+SyncSummaryScanned=Scanned
+SyncSummaryImported=Imported
+SyncSummaryLookback=Overlap
+SyncSummaryDays=days
+NavDisplayConfiguration=Display and diagnostics
+ShowTechnicalNavXml=Show technical NAV XML
+ShowTechnicalNavXmlHelp=Show a collapsible, structured NAV XML section on invoice details. Useful for development and troubleshooting.
+NavXmlPrettyNotice=The following is the original NAV invoice data formatted for readability; the stored source data is not modified.
