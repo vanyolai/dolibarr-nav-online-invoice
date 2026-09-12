@@ -109,8 +109,12 @@ class NavInvoiceApi
         return $this->request('queryInvoiceChainDigest', 'QueryInvoiceChainDigestRequest', $body);
     }
 
-    public function queryInvoiceData(string $invoiceNumber, int $batchIndex = 0, string $direction = 'OUTBOUND'): string
-    {
+    public function queryInvoiceData(
+        string $invoiceNumber,
+        int $batchIndex = 0,
+        string $direction = 'OUTBOUND',
+        ?string $supplierTaxNumber = null
+    ): string {
         if ($invoiceNumber === '') {
             throw new Exception('Invoice number is required.');
         }
@@ -121,6 +125,13 @@ class NavInvoiceApi
             .'<invoiceDirection>'.$direction.'</invoiceDirection>';
         if ($batchIndex > 0) {
             $body .= '<batchIndex>'.$batchIndex.'</batchIndex>';
+        }
+        if ($supplierTaxNumber !== null && trim($supplierTaxNumber) !== '') {
+            $normalizedSupplierTaxNumber = $this->normalizeTaxNumber($supplierTaxNumber);
+            if (strlen($normalizedSupplierTaxNumber) !== 8) {
+                throw new Exception('NAV supplier tax number must contain the first 8 digits of the Hungarian tax number.');
+            }
+            $body .= '<supplierTaxNumber>'.$this->xml($normalizedSupplierTaxNumber).'</supplierTaxNumber>';
         }
         $body .= '</invoiceNumberQuery>';
 
