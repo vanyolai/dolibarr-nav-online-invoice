@@ -14,7 +14,7 @@ dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
 dol_include_once('/navinvoice/class/navpartnerenrichmentpreview.class.php');
 dol_include_once('/navinvoice/class/navpartnerenricher.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navrelation@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -52,6 +52,18 @@ if (!empty($record->invoice_data)) {
 
 $direction = strtoupper((string) $record->invoice_direction);
 $isInbound = $direction === 'INBOUND';
+$operation = strtoupper(trim((string) $record->invoice_operation));
+$isNonCreate = $operation !== '' && $operation !== 'CREATE';
+$linkedId = $isInbound ? (int) $record->fk_facture_fourn : (int) $record->fk_facture;
+$linkedUrl = '';
+if ($linkedId > 0) {
+    $linkedUrl = $isInbound
+        ? DOL_URL_ROOT.'/fourn/facture/card.php?facid='.$linkedId
+        : DOL_URL_ROOT.'/compta/facture/card.php?facid='.$linkedId;
+}
+$importUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.$id;
+$relationUrl = dol_buildpath('/navinvoice/relation.php', 1).'?id='.$id;
+
 $externalPartyKey = $isInbound ? 'supplier' : 'customer';
 $partnerMatch = null;
 $partnerMatchError = '';
@@ -86,9 +98,6 @@ if ($action === 'apply_partner_enrichment') {
         setEventMessages($langs->trans('PartnerEnrichmentApplyFailed'), null, 'errors');
     } else {
         try {
-            // The proposal is rebuilt from the current NAV XML and current
-            // Dolibarr third party on every request. No values from the browser
-            // are trusted for the actual master-data update.
             $enricher = new NavPartnerEnricher($db, (int) $conf->entity);
             $applied = $enricher->apply($partnerEnrichment, $user);
             if ($applied) {
@@ -158,11 +167,7 @@ $vatRateFromContent = static function ($value): ?float {
     if ($content < 0 || $content >= 1) {
         return null;
     }
-    $known = array(
-        array(0.0476, 5.0),
-        array(0.1525, 18.0),
-        array(0.2126, 27.0),
-    );
+    $known = array(array(0.0476, 5.0), array(0.1525, 18.0), array(0.2126, 27.0));
     foreach ($known as $entry) {
         if (abs($content - $entry[0]) <= 0.00005) {
             return $entry[1];
@@ -176,13 +181,11 @@ $addressDisplay = static function (string $partyKey, array $party, string $xml) 
     if (!empty($party['address']['formatted'])) {
         return $display($party['address']['formatted']);
     }
-
     $tag = $partyKey === 'supplier' ? 'supplierAddress' : 'customerAddress';
     $pattern = '/<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?'.preg_quote($tag, '/').'\b/i';
     if ($xml !== '' && preg_match($pattern, $xml)) {
         return '<span class="warning">'.$langs->trans('AddressPresentButNotParsed').'</span>';
     }
-
     return '<span class="opacitymedium">'.$langs->trans('AddressNotInNavXml').'</span>';
 };
 $partnerMatchDisplay = static function (?array $result, string $error = '') use ($langs, $display): string {
@@ -192,10 +195,8 @@ $partnerMatchDisplay = static function (?array $result, string $error = '') use 
     if ($result === null) {
         return $display(null);
     }
-
     $status = (string) ($result['status'] ?? 'none');
     $match = $result['match'] ?? null;
-
     if (is_array($match)) {
         $url = DOL_URL_ROOT.'/societe/card.php?socid='.(int) $match['id'];
         $link = '<a href="'.dol_escape_htmltag($url).'">'.dol_escape_htmltag((string) $match['name']).'</a>';
@@ -209,13 +210,11 @@ $partnerMatchDisplay = static function (?array $result, string $error = '') use 
             $similarity = isset($match['name_similarity']) && $match['name_similarity'] !== null ? ' '.round((float) $match['name_similarity']).'%' : '';
             $text = img_picto('', 'warning').' '.$link.' <span class="opacitymedium">('.$langs->trans('PartnerMatchCandidate').$similarity.')</span>';
         }
-
         if (!empty($result['can_fill_tax_number'])) {
             $text .= '<br><span class="small warning">'.$langs->trans('PartnerTaxCanBeFilledFromNav').'</span>';
         }
         return $text;
     }
-
     if ($status === 'ambiguous') {
         $parts = array();
         foreach (array_slice($result['candidates'] ?? array(), 0, 3) as $candidate) {
@@ -228,7 +227,6 @@ $partnerMatchDisplay = static function (?array $result, string $error = '') use 
     if ($status === 'unavailable') {
         return '<span class="opacitymedium">'.$langs->trans('PartnerMatchUnavailable').'</span>';
     }
-
     return '<span class="opacitymedium">'.$langs->trans('PartnerMatchNone').'</span>';
 };
 $enrichmentValue = static function (string $field, $value) use ($langs, $display): string {
@@ -236,19 +234,13 @@ $enrichmentValue = static function (string $field, $value) use ($langs, $display
         return $langs->trans(((int) $value) === 1 ? 'Yes' : 'No');
     }
     if ($field === 'client') {
-        $map = array(
-            0 => $langs->trans('No'),
-            1 => $langs->trans('Customer'),
-            2 => $langs->trans('Prospect'),
-            3 => $langs->trans('Customer').' + '.$langs->trans('Prospect'),
-        );
+        $map = array(0 => $langs->trans('No'), 1 => $langs->trans('Customer'), 2 => $langs->trans('Prospect'), 3 => $langs->trans('Customer').' + '.$langs->trans('Prospect'));
         return $map[(int) $value] ?? $display($value);
     }
     return $display($value);
 };
 
 llxHeader('', $langs->trans('NavInvoiceDetails'));
-
 print '<div class="fichecenter">';
 print '<div class="underbanner clearboth"></div>';
 print load_fiche_titre(
@@ -267,8 +259,7 @@ if ($partnerEnrichmentError !== '') {
     setEventMessages($langs->trans('PartnerEnrichmentFailed').': '.$partnerEnrichmentError, null, 'warnings');
 }
 
-print '<div class="fichehalfleft">';
-print '<table class="border centpercent">';
+print '<div class="fichehalfleft"><table class="border centpercent">';
 print '<tr><td class="titlefield">'.$langs->trans('NavInvoiceNumber').'</td><td>'.$display($record->invoice_number).'</td></tr>';
 print '<tr><td>'.$langs->trans('InvoiceDirection').'</td><td>'.$langs->trans($isInbound ? 'DirectionInbound' : 'DirectionOutbound').'</td></tr>';
 print '<tr><td>'.$langs->trans('Operation').'</td><td>'.$navEnum('Operation', $record->invoice_operation).'</td></tr>';
@@ -290,13 +281,11 @@ if (!empty($record->original_invoice_number) || ($parsed && !empty($parsed['refe
     print '<tr><td>'.$langs->trans('OriginalInvoiceNumber').'</td><td>'.$display($parsed && $parsed['reference']['original_invoice_number'] !== '' ? $parsed['reference']['original_invoice_number'] : $record->original_invoice_number).'</td></tr>';
     print '<tr><td>'.$langs->trans('ModificationIndex').'</td><td>'.$display($parsed && $parsed['reference']['modification_index'] !== '' ? $parsed['reference']['modification_index'] : $record->modification_index).'</td></tr>';
 }
-print '</table>';
-print '</div>';
+print '</table></div>';
 
 $derivedMarker = $isSimplified ? ' <span class="opacitymedium">*</span>' : '';
-print '<div class="fichehalfright">';
-print '<table class="border centpercent">';
 $grossDerived = $parsed && !empty($parsed['totals']['gross_derived']);
+print '<div class="fichehalfright"><table class="border centpercent">';
 print '<tr><td class="titlefield">'.$langs->trans('AmountHT').$derivedMarker.'</td><td class="right">'.$money($parsed ? $parsed['totals']['net'] : $record->invoice_net_amount, $currency).'</td></tr>';
 print '<tr><td>'.$langs->trans('VAT').$derivedMarker.'</td><td class="right">'.$money($parsed ? $parsed['totals']['vat'] : $record->invoice_vat_amount, $currency).'</td></tr>';
 print '<tr><td>'.$langs->trans('AmountTTC').($grossDerived ? ' <span class="opacitymedium">*</span>' : '').'</td><td class="right">'.$money($parsed ? $parsed['totals']['gross'] : null, $currency).'</td></tr>';
@@ -307,15 +296,31 @@ if ($currency !== 'HUF' && $parsed) {
 }
 print '<tr><td>'.$langs->trans('XmlDownloaded').'</td><td>'.($record->data_fetched ? img_picto($langs->trans('Yes'), 'tick').' '.$langs->trans('Yes') : img_picto($langs->trans('No'), 'warning').' '.$langs->trans('No')).'</td></tr>';
 print '<tr><td>'.$langs->trans('LastSync').'</td><td>'.$display($record->last_sync).'</td></tr>';
-print '</table>';
-print '</div>';
+print '<tr><td>'.$langs->trans('ProposalStatus').'</td><td>';
+if ($linkedId > 0) {
+    print img_picto('', 'tick').' <a href="'.dol_escape_htmltag($linkedUrl).'">'.$langs->trans('AlreadyImported').'</a>';
+} else {
+    print img_picto('', 'warning').' <span class="warning">'.$langs->trans('ImportStateReady').': '.$langs->trans('No').'</span>';
+}
+print '</td></tr>';
+print '</table></div>';
 print '<div class="clearboth"></div>';
 if ($isSimplified) {
     print '<div class="opacitymedium small marginbottomonly">* '.$langs->trans('SimplifiedDerivedAmountsHelp').'</div>';
 } elseif ($grossDerived) {
     print '<div class="opacitymedium small marginbottomonly">* '.$langs->trans('DerivedInvoiceGrossHelp').'</div>';
 }
-print '<br>';
+
+print '<div class="tabsAction">';
+if ($linkedId > 0) {
+    print '<a class="butAction" href="'.dol_escape_htmltag($linkedUrl).'">'.$langs->trans('OpenDolibarrInvoice').'</a>';
+} else {
+    print '<a class="butAction" href="'.dol_escape_htmltag($importUrl).'">'.$langs->trans('ImportPreview').'</a>';
+}
+if ($isNonCreate) {
+    print '<a class="butAction" href="'.dol_escape_htmltag($relationUrl).'">'.$langs->trans('ReviewRelation').'</a>';
+}
+print '</div><br>';
 
 if ($parsed) {
     foreach (array('supplier' => 'Supplier', 'customer' => 'Customer') as $partyKey => $labelKey) {
@@ -339,8 +344,7 @@ if ($parsed) {
         if ($partyKey === $externalPartyKey) {
             print '<tr><td>'.$langs->trans('DolibarrPartner').'</td><td>'.$partnerMatchDisplay($partnerMatch, $partnerMatchError).'</td></tr>';
         }
-        print '</table>';
-        print '</div>';
+        print '</table></div>';
     }
     print '<div class="clearboth"></div><br>';
 
@@ -353,7 +357,6 @@ if ($parsed) {
                 break;
             }
         }
-
         if (empty($partnerEnrichment['strong_match'])) {
             print '<div class="warning marginbottomonly">'.img_picto('', 'warning').' '.$langs->trans('PartnerEnrichmentWeakMatchNotice').'</div>';
         } elseif ($hasAutoApplicable) {
@@ -361,8 +364,7 @@ if ($parsed) {
         } else {
             print '<div class="opacitymedium marginbottomonly">'.$langs->trans('PartnerEnrichmentNothingToApply').'</div>';
         }
-        print '<div class="div-table-responsive">';
-        print '<table class="noborder centpercent">';
+        print '<div class="div-table-responsive"><table class="noborder centpercent">';
         print '<tr class="liste_titre"><td>'.$langs->trans('Field').'</td><td>'.$langs->trans('CurrentDolibarrValue').'</td><td>'.$langs->trans('NavValue').'</td><td>'.$langs->trans('ProposalStatus').'</td></tr>';
         foreach ($partnerEnrichment['items'] as $item) {
             $status = (string) $item['status'];
@@ -377,12 +379,7 @@ if ($parsed) {
             } else {
                 $statusDisplay = img_picto('', 'warning').' '.$langs->trans('EnrichmentNeedsConfirmedMatch');
             }
-            print '<tr class="oddeven">';
-            print '<td>'.$langs->trans((string) $item['label']).'</td>';
-            print '<td>'.$enrichmentValue($field, $item['current']).'</td>';
-            print '<td>'.$enrichmentValue($field, $item['proposed']).'</td>';
-            print '<td>'.$statusDisplay.'</td>';
-            print '</tr>';
+            print '<tr class="oddeven"><td>'.$langs->trans((string) $item['label']).'</td><td>'.$enrichmentValue($field, $item['current']).'</td><td>'.$enrichmentValue($field, $item['proposed']).'</td><td>'.$statusDisplay.'</td></tr>';
         }
         print '</table></div>';
 
@@ -392,9 +389,7 @@ if ($parsed) {
                 print '<input type="hidden" name="token" value="'.newToken().'">';
                 print '<input type="hidden" name="action" value="apply_partner_enrichment">';
                 print '<input type="hidden" name="id" value="'.$id.'">';
-                print '<div class="center tabsAction">';
-                print '<input type="submit" class="button button-save" value="'.dol_escape_htmltag($langs->trans('ApplySafePartnerEnrichment')).'" onclick="return confirm(\''.dol_escape_js($langs->trans('ApplySafePartnerEnrichmentConfirm')).'\');">';
-                print '</div>';
+                print '<div class="center tabsAction"><input type="submit" class="button button-save" value="'.dol_escape_htmltag($langs->trans('ApplySafePartnerEnrichment')).'" onclick="return confirm(\''.dol_escape_js($langs->trans('ApplySafePartnerEnrichmentConfirm')).'\');"></div>';
                 print '</form>';
             } else {
                 print '<div class="warning marginbottomonly">'.img_picto('', 'warning').' '.$langs->trans('PartnerEnrichmentPermissionMissing').'</div>';
@@ -412,22 +407,12 @@ if ($parsed) {
     }
 
     print load_fiche_titre($langs->trans('InvoiceLines'), '', 'list');
-    print '<div class="div-table-responsive">';
-    print '<table class="noborder centpercent">';
-    print '<tr class="liste_titre">';
-    print '<td class="right">#</td>';
-    print '<td>'.$langs->trans('Description').'</td>';
+    print '<div class="div-table-responsive"><table class="noborder centpercent">';
+    print '<tr class="liste_titre"><td class="right">#</td><td>'.$langs->trans('Description').'</td>';
     if ($showLineNature) {
         print '<td>'.$langs->trans('LineNature').'</td>';
     }
-    print '<td class="right">'.$langs->trans('Qty').'</td>';
-    print '<td>'.$langs->trans('Unit').'</td>';
-    print '<td class="right">'.$langs->trans($isSimplified ? 'UnitPriceGross' : 'UnitPriceHT').'</td>';
-    print '<td>'.$langs->trans('VAT').'</td>';
-    print '<td class="right">'.$langs->trans('AmountHT').($isSimplified ? ' *' : '').'</td>';
-    print '<td class="right">'.$langs->trans('VAT').($isSimplified ? ' *' : '').'</td>';
-    print '<td class="right">'.$langs->trans('AmountTTC').'</td>';
-    print '</tr>';
+    print '<td class="right">'.$langs->trans('Qty').'</td><td>'.$langs->trans('Unit').'</td><td class="right">'.$langs->trans($isSimplified ? 'UnitPriceGross' : 'UnitPriceHT').'</td><td>'.$langs->trans('VAT').'</td><td class="right">'.$langs->trans('AmountHT').($isSimplified ? ' *' : '').'</td><td class="right">'.$langs->trans('VAT').($isSimplified ? ' *' : '').'</td><td class="right">'.$langs->trans('AmountTTC').'</td></tr>';
 
     $hasDerivedLineAmounts = false;
     $hasNonExpressionNormalization = false;
@@ -443,21 +428,16 @@ if ($parsed) {
         if ($extras) {
             $description .= '<br><span class="opacitymedium small">'.dol_escape_htmltag(implode(' · ', $extras)).'</span>';
         }
-
         $unitDisplay = $line['unit_own'] !== '' ? $display($line['unit_own']) : $navEnum('Unit', $line['unit']);
         $vatLabel = $line['vat']['label'];
         if ($line['vat']['kind'] === 'content') {
             $effectiveRate = $vatRateFromContent($line['vat']['value']);
-            $vatLabel = $effectiveRate !== null
-                ? rtrim(rtrim(number_format($effectiveRate, 2, '.', ''), '0'), '.').'%'
-                : $langs->trans('VatContent');
+            $vatLabel = $effectiveRate !== null ? rtrim(rtrim(number_format($effectiveRate, 2, '.', ''), '0'), '.').'%' : $langs->trans('VatContent');
         }
-
         $amounts = $line['amounts'];
         $lineVatDerived = !empty($amounts['vat_derived']);
         $lineGrossDerived = !empty($amounts['gross_derived']);
         $hasDerivedLineAmounts = $hasDerivedLineAmounts || $lineVatDerived || $lineGrossDerived;
-
         $quantityDisplay = $line['quantity'];
         $unitPriceDisplay = $line['unit_price'];
         $nonExpressionNormalized = false;
@@ -469,23 +449,15 @@ if ($parsed) {
             $nonExpressionNormalized = true;
             $hasNonExpressionNormalization = true;
         }
-
-        print '<tr class="oddeven">';
-        print '<td class="right">'.$display($line['number']).'</td>';
-        print '<td>'.$description.'</td>';
+        print '<tr class="oddeven"><td class="right">'.$display($line['number']).'</td><td>'.$description.'</td>';
         if ($showLineNature) {
             print '<td>'.$navEnum('LineNature', $line['nature']).'</td>';
         }
         print '<td class="right">'.$display($quantityDisplay).($nonExpressionNormalized ? ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>' : '').'</td>';
         print '<td>'.$unitDisplay.'</td>';
         print '<td class="right">'.$money($unitPriceDisplay, $currency).($nonExpressionNormalized ? ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>' : '').'</td>';
-        print '<td>'.$display($vatLabel).'</td>';
-        print '<td class="right">'.$money($amounts['net'], $currency).'</td>';
-        print '<td class="right">'.$money($amounts['vat'], $currency).($lineVatDerived ? ' <span class="opacitymedium">*</span>' : '').'</td>';
-        print '<td class="right">'.$money($amounts['gross'], $currency).($lineGrossDerived ? ' <span class="opacitymedium">*</span>' : '').'</td>';
-        print '</tr>';
+        print '<td>'.$display($vatLabel).'</td><td class="right">'.$money($amounts['net'], $currency).'</td><td class="right">'.$money($amounts['vat'], $currency).($lineVatDerived ? ' <span class="opacitymedium">*</span>' : '').'</td><td class="right">'.$money($amounts['gross'], $currency).($lineGrossDerived ? ' <span class="opacitymedium">*</span>' : '').'</td></tr>';
     }
-
     if (empty($parsed['lines'])) {
         print '<tr><td colspan="'.($showLineNature ? '10' : '9').'" class="opacitymedium">'.$langs->trans('NoInvoiceLinesInNavXml').'</td></tr>';
     }
@@ -502,11 +474,9 @@ if ($parsed) {
 }
 
 if (!empty($record->invoice_data)) {
-    print '<br><details>';
-    print '<summary style="cursor:pointer;font-weight:600">'.$langs->trans('ShowNavXml').'</summary>';
+    print '<br><details><summary style="cursor:pointer;font-weight:600">'.$langs->trans('ShowNavXml').'</summary>';
     print '<div class="opacitymedium small">'.$langs->trans('NavXmlOriginalNotice').'</div>';
-    print '<pre style="max-height:600px;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid var(--colortextlink);padding:10px">'.dol_escape_htmltag((string) $record->invoice_data).'</pre>';
-    print '</details>';
+    print '<pre style="max-height:600px;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid var(--colortextlink);padding:10px">'.dol_escape_htmltag((string) $record->invoice_data).'</pre></details>';
 }
 
 print '</div>';
