@@ -55,33 +55,92 @@ if ($action === 'sync' && $user->hasRight('navinvoice', 'invoice', 'sync')) {
     }
 }
 
+$dashboard = array('last_sync' => '', 'total' => 0, 'inbound' => 0, 'outbound' => 0, 'imported' => 0);
+$sql = 'SELECT MAX(last_sync) AS last_sync, COUNT(*) AS total,';
+$sql .= " SUM(CASE WHEN invoice_direction = 'INBOUND' THEN 1 ELSE 0 END) AS inbound,";
+$sql .= " SUM(CASE WHEN invoice_direction = 'OUTBOUND' THEN 1 ELSE 0 END) AS outbound,";
+$sql .= ' SUM(CASE WHEN COALESCE(fk_facture, 0) > 0 OR COALESCE(fk_facture_fourn, 0) > 0 THEN 1 ELSE 0 END) AS imported';
+$sql .= ' FROM '.MAIN_DB_PREFIX.'navinvoice_invoice WHERE entity = '.((int) $conf->entity);
+$resDashboard = $db->query($sql);
+if ($resDashboard && ($objDashboard = $db->fetch_object($resDashboard))) {
+    $dashboard['last_sync'] = trim((string) $objDashboard->last_sync);
+    $dashboard['total'] = (int) $objDashboard->total;
+    $dashboard['inbound'] = (int) $objDashboard->inbound;
+    $dashboard['outbound'] = (int) $objDashboard->outbound;
+    $dashboard['imported'] = (int) $objDashboard->imported;
+    $db->free($resDashboard);
+}
+
+$today = new DateTimeImmutable('today');
+$lookback = max(1, min(35, getDolGlobalInt('NAVINVOICE_SYNC_LOOKBACK_DAYS', 7)));
+$syncAnchor = $today;
+if ($dashboard['last_sync'] !== '') {
+    try {
+        $candidate = new DateTimeImmutable($dashboard['last_sync']);
+        $candidate = $candidate->setTime(0, 0, 0);
+        if ($candidate <= $today) {
+            $syncAnchor = $candidate;
+        }
+    } catch (Throwable $e) {
+        // Keep today's safe fallback.
+    }
+}
+$defaultFrom = $syncAnchor->modify('-'.($lookback - 1).' days')->format('Y-m-d');
+$defaultTo = $today->format('Y-m-d');
+$dateFrom = trim((string) GETPOST('date_from', 'alphanohtml')) ?: $defaultFrom;
+$dateTo = trim((string) GETPOST('date_to', 'alphanohtml')) ?: $defaultTo;
+
 llxHeader('', $langs->trans('NavOnlineInvoice'));
 print load_fiche_titre($langs->trans('NavOnlineInvoice'), '', 'file-invoice');
+
 print '<div class="tabsAction">';
 print '<a class="butAction" href="'.dol_buildpath('/navinvoice/batch.php', 1).'">'.$langs->trans('BatchImport').'</a>';
 print '</div>';
 
+print load_fiche_titre($langs->trans('RunNavSync'), '', 'refresh');
+print '<div class="fichecenter">';
+print '<div class="fichehalfleft">';
+print '<table class="border centpercent">';
+print '<tr><td class="titlefield">'.$langs->trans('LastSync').'</td><td>'.($dashboard['last_sync'] !== '' ? dol_escape_htmltag($dashboard['last_sync']) : '<span class="opacitymedium">—</span>').'</td></tr>';
+print '<tr><td>'.$langs->trans('DirectionInbound').'</td><td class="right">'.$dashboard['inbound'].'</td></tr>';
+print '<tr><td>'.$langs->trans('DirectionOutbound').'</td><td class="right">'.$dashboard['outbound'].'</td></tr>';
+print '</table>';
+print '</div>';
+print '<div class="fichehalfright">';
+print '<table class="border centpercent">';
+print '<tr><td class="titlefield">'.$langs->trans('BatchTotal').'</td><td class="right">'.$dashboard['total'].'</td></tr>';
+print '<tr><td>'.$langs->trans('BatchAlreadyImported').'</td><td class="right">'.$dashboard['imported'].'</td></tr>';
+print '<tr><td>'.$langs->trans('SyncLookbackDays').'</td><td class="right">'.$lookback.'</td></tr>';
+print '</table>';
+print '</div>';
+print '<div class="clearboth"></div>';
+print '</div><br>';
+
 if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
-    $today = new DateTimeImmutable('today');
-    $defaultFrom = $today->modify('-6 days')->format('Y-m-d');
     print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'">';
     print '<input type="hidden" name="token" value="'.newToken().'">';
     print '<input type="hidden" name="action" value="sync">';
-    print '<div class="fichecenter">';
-    print $langs->trans('DateFrom').' <input type="date" name="date_from" required value="'.dol_escape_htmltag(GETPOST('date_from', 'alphanohtml') ?: $defaultFrom).'"> ';
-    print $langs->trans('DateTo').' <input type="date" name="date_to" required value="'.dol_escape_htmltag(GETPOST('date_to', 'alphanohtml') ?: $today->format('Y-m-d')).'"> ';
-    print $langs->trans('InvoiceDirection').' <select name="direction">';
+    print '<table class="border" style="max-width:1100px">';
+    print '<tr>';
+    print '<td class="titlefield">'.$langs->trans('DateFrom').'</td>';
+    print '<td><input type="date" name="date_from" required value="'.dol_escape_htmltag($dateFrom).'"></td>';
+    print '<td class="titlefield">'.$langs->trans('DateTo').'</td>';
+    print '<td><input type="date" name="date_to" required value="'.dol_escape_htmltag($dateTo).'"></td>';
+    print '<td class="titlefield">'.$langs->trans('InvoiceDirection').'</td>';
+    print '<td><select name="direction">';
     foreach (array('BOTH' => 'DirectionBoth', 'OUTBOUND' => 'DirectionOutbound', 'INBOUND' => 'DirectionInbound') as $value => $label) {
         print '<option value="'.$value.'"'.($syncDirection === $value ? ' selected' : '').'>'.$langs->trans($label).'</option>';
     }
-    print '</select> ';
-    print '<input class="button" type="submit" value="'.$langs->trans('RunNavSync').'">';
-    print '</div></form><br>';
+    print '</select></td>';
+    print '<td><input class="button" type="submit" value="'.$langs->trans('RunNavSync').'"></td>';
+    print '</tr>';
+    print '</table>';
+    print '</form><br>';
 }
 
 $sql = 'SELECT rowid, invoice_direction, invoice_number, invoice_operation, invoice_issue_date,';
 $sql .= ' supplier_name, supplier_tax_number, customer_name, customer_tax_number,';
-$sql .= ' currency, invoice_net_amount, invoice_vat_amount, data_fetched, fk_facture, fk_facture_fourn, last_sync';
+$sql .= ' currency, invoice_net_amount, invoice_vat_amount, data_fetched, fk_facture, fk_facture_fourn';
 $sql .= ' FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
 $sql .= ' WHERE entity = '.((int) $conf->entity);
 $sql .= ' ORDER BY invoice_issue_date DESC, rowid DESC';
@@ -101,7 +160,6 @@ print '<td class="right">'.$langs->trans('AmountHT').'</td>';
 print '<td class="right">'.$langs->trans('VAT').'</td>';
 print '<td>'.$langs->trans('XmlDownloaded').'</td>';
 print '<td>'.$langs->trans('DolibarrInvoice').'</td>';
-print '<td>'.$langs->trans('LastSync').'</td>';
 print '</tr>';
 
 if ($resql) {
@@ -128,15 +186,20 @@ if ($resql) {
             $linkedId = $isInbound ? (int) $obj->fk_facture_fourn : (int) $obj->fk_facture;
         }
 
+        $operationLabel = $operation !== '' ? $langs->trans('NavOperation_'.$operation) : '';
+        if ($operationLabel === 'NavOperation_'.$operation) {
+            $operationLabel = $operation;
+        }
+
         print '<tr class="oddeven">';
         print '<td>'.$langs->trans($isInbound ? 'DirectionInbound' : 'DirectionOutbound').'</td>';
         print '<td><a href="'.$detailUrl.'">'.dol_escape_htmltag($obj->invoice_number).'</a></td>';
         print '<td>'.dol_escape_htmltag($obj->invoice_issue_date).'</td>';
         print '<td>';
         if ($isNonCreate) {
-            print '<a href="'.dol_escape_htmltag($relationUrl).'" title="'.dol_escape_htmltag($langs->trans('ReviewRelation')).'">'.dol_escape_htmltag($operation).'</a>';
+            print '<a href="'.dol_escape_htmltag($relationUrl).'" title="'.dol_escape_htmltag($langs->trans('ReviewRelation')).'">'.dol_escape_htmltag($operationLabel).'</a>';
         } else {
-            print dol_escape_htmltag($operation !== '' ? $operation : (string) $obj->invoice_operation);
+            print dol_escape_htmltag($operationLabel);
         }
         print '</td>';
         print '<td>';
@@ -164,12 +227,11 @@ if ($resql) {
             print '<a href="'.dol_escape_htmltag($importUrl).'">'.img_picto('', 'file-invoice').' '.$langs->trans('ImportPreview').'</a>';
         }
         print '</td>';
-        print '<td>'.dol_escape_htmltag($obj->last_sync).'</td>';
         print '</tr>';
     }
     $db->free($resql);
 } else {
-    print '<tr><td colspan="11" class="error">'.dol_escape_htmltag($db->lasterror()).'</td></tr>';
+    print '<tr><td colspan="10" class="error">'.dol_escape_htmltag($db->lasterror()).'</td></tr>';
 }
 print '</table></div>';
 
