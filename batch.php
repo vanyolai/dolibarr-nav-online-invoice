@@ -11,7 +11,7 @@ if (!$res) {
 }
 
 dol_include_once('/navinvoice/class/navinvoicebatch.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice', 'navrelation@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -194,13 +194,18 @@ if ($rows) {
         $preview = is_array($row['preview'] ?? null) ? $row['preview'] : array();
         $state = (string) ($row['state'] ?? 'blocked');
         $ready = $state === 'ready';
+        $operation = strtoupper(trim((string) ($preview['operation'] ?? $record->invoice_operation ?? 'CREATE')));
+        $isNonCreate = $operation !== '' && $operation !== 'CREATE';
         $supplier = is_array($preview['partner'] ?? null)
             ? (string) $preview['partner']['name']
             : (string) ($record->supplier_name ?? '');
         $currency = (string) ($preview['header']['currency'] ?? $record->currency ?? $baseCurrency);
         $gross = $preview['totals']['gross'] ?? null;
+        $relationUrl = dol_buildpath('/navinvoice/relation.php', 1).'?id='.(int) $record->rowid;
         if ($state === 'partner_required') {
             $rowUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.(int) $record->rowid;
+        } elseif ($isNonCreate && !$ready) {
+            $rowUrl = $relationUrl;
         } elseif ($ready) {
             $rowUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $record->rowid;
         } else {
@@ -208,6 +213,9 @@ if ($rows) {
         }
 
         $issues = array();
+        if ($isNonCreate) {
+            $issues[] = img_picto('', 'link').' <a href="'.dol_escape_htmltag($relationUrl).'">'.dol_escape_htmltag($langs->trans('ReviewRelation')).'</a>';
+        }
         if ($state === 'partner_required') {
             $partnerUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.(int) $record->rowid;
             $issues[] = img_picto('', 'company').' <a href="'.dol_escape_htmltag($partnerUrl).'">'.dol_escape_htmltag($langs->trans('BatchResolvePartner')).'</a>';
