@@ -14,12 +14,18 @@
 - Add `queryInvoiceChainDigest` support and compare the complete paginated authoritative NAV chain with the local mirror before permitting a non-CREATE import.
 - Add a relation-review page that exposes the local and authoritative chain state before import.
 - Add targeted authoritative chain synchronization so missing older master/modification invoices can be downloaded into the local mirror without manually widening date-based synchronization windows.
+- Treat optional fields omitted by `queryInvoiceChainDigest` as unknown rather than mismatches, while still blocking genuine values that conflict with the full locally mirrored InvoiceData.
 - Add guarded MODIFY/STORNO draft import when the relation is deterministic: negative MODIFY and STORNO map to Dolibarr credit notes; positive MODIFY maps to a standard adjustment; all are linked to the original Dolibarr invoice.
 - Keep zero-value/non-financial MODIFY operations blocked instead of inventing a financial document, and block `modifyWithoutMaster` until a safe Dolibarr policy exists.
 - Require earlier modification indexes to be imported first and block source-partner mismatches, authoritative-chain mismatches and unsupported Dolibarr negative-line configurations.
 - Apply the same non-CREATE operation policy to single-invoice and batch preflight/import paths.
+- Revamp the module dashboard: move last-sync information out of every list row, add compact synchronization/status panels, and derive the suggested synchronization range from the most recent mirror refresh with the configured lookback overlap.
+- Revamp batch import with compact filters/status counters, direct relation-resolution links, and clear indication of prerequisites pulled in from outside the selected date range.
+- Automatically include required older master invoices and prior modifications in batch preflight when a selected MODIFY/STORNO depends on them, even when they fall outside the requested date range.
+- Allow chain members blocked only by not-yet-imported prerequisites to be selected together; batch execution processes the selected chain in dependency order and re-runs preflight before each import.
+- Show Dolibarr import/link status and direct Import Preview / Relation Review actions on the individual NAV invoice detail page.
 - Add Hungarian and English UI strings for taxpayer, partner, relation and non-CREATE import workflows.
-- Keep product/supplier-product matching as the next major development block after controlled non-CREATE import.
+- Keep product/supplier-product matching as the next major development block after controlled non-CREATE import and workflow validation.
 
 ## 0.7.2 - development
 
