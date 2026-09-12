@@ -12,7 +12,7 @@ if (!$res) {
 
 dol_include_once('/navinvoice/class/navinvoicesync.class.php');
 dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice', 'navpartner@navinvoice', 'navrelation@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoicebatch@navinvoice', 'navpartner@navinvoice', 'navrelation@navinvoice', 'navinvoiceui@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -97,46 +97,55 @@ print '<div class="tabsAction">';
 print '<a class="butAction" href="'.dol_buildpath('/navinvoice/batch.php', 1).'">'.$langs->trans('BatchImport').'</a>';
 print '</div>';
 
-print load_fiche_titre($langs->trans('RunNavSync'), '', 'refresh');
-print '<div class="fichecenter">';
-print '<div class="fichehalfleft">';
+print '<div style="max-width:1200px">';
 print '<table class="border centpercent">';
-print '<tr><td class="titlefield">'.$langs->trans('LastSync').'</td><td>'.($dashboard['last_sync'] !== '' ? dol_escape_htmltag($dashboard['last_sync']) : '<span class="opacitymedium">—</span>').'</td></tr>';
-print '<tr><td>'.$langs->trans('DirectionInbound').'</td><td class="right">'.$dashboard['inbound'].'</td></tr>';
-print '<tr><td>'.$langs->trans('DirectionOutbound').'</td><td class="right">'.$dashboard['outbound'].'</td></tr>';
+print '<tr class="liste_titre"><td colspan="6">'.img_picto('', 'refresh').' '.$langs->trans('SyncPanelTitle').'</td></tr>';
+print '<tr>';
+print '<td class="titlefield">'.$langs->trans('LastSync').'</td><td>'.($dashboard['last_sync'] !== '' ? dol_escape_htmltag($dashboard['last_sync']) : '<span class="opacitymedium">—</span>').'</td>';
+print '<td>'.$langs->trans('DirectionInbound').'</td><td class="right">'.$dashboard['inbound'].'</td>';
+print '<td>'.$langs->trans('DirectionOutbound').'</td><td class="right">'.$dashboard['outbound'].'</td>';
+print '</tr>';
+print '<tr>';
+print '<td class="titlefield">'.$langs->trans('SyncSummaryScanned').'</td><td>'.$dashboard['total'].'</td>';
+print '<td>'.$langs->trans('SyncSummaryImported').'</td><td class="right">'.$dashboard['imported'].'</td>';
+print '<td>'.$langs->trans('SyncSummaryLookback').'</td><td class="right">'.$lookback.' '.$langs->trans('SyncSummaryDays').'</td>';
+print '</tr>';
 print '</table>';
-print '</div>';
-print '<div class="fichehalfright">';
-print '<table class="border centpercent">';
-print '<tr><td class="titlefield">'.$langs->trans('BatchTotal').'</td><td class="right">'.$dashboard['total'].'</td></tr>';
-print '<tr><td>'.$langs->trans('BatchAlreadyImported').'</td><td class="right">'.$dashboard['imported'].'</td></tr>';
-print '<tr><td>'.$langs->trans('SyncLookbackDays').'</td><td class="right">'.$lookback.'</td></tr>';
-print '</table>';
-print '</div>';
-print '<div class="clearboth"></div>';
-print '</div><br>';
 
 if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
-    print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'">';
+    $fromBefore = trim($langs->trans('SyncFromBefore'));
+    $fromAfter = trim($langs->trans('SyncFromAfter'));
+    $toBefore = trim($langs->trans('SyncToBefore'));
+    $toAfter = trim($langs->trans('SyncToAfter'));
+
+    print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin-top:10px">';
     print '<input type="hidden" name="token" value="'.newToken().'">';
     print '<input type="hidden" name="action" value="sync">';
-    print '<table class="border" style="max-width:1100px">';
-    print '<tr>';
-    print '<td class="titlefield">'.$langs->trans('DateFrom').'</td>';
-    print '<td><input type="date" name="date_from" required value="'.dol_escape_htmltag($dateFrom).'"></td>';
-    print '<td class="titlefield">'.$langs->trans('DateTo').'</td>';
-    print '<td><input type="date" name="date_to" required value="'.dol_escape_htmltag($dateTo).'"></td>';
-    print '<td class="titlefield">'.$langs->trans('InvoiceDirection').'</td>';
-    print '<td><select name="direction">';
+    print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+    if ($fromBefore !== '') {
+        print '<span>'.$fromBefore.'</span>';
+    }
+    print '<input type="date" name="date_from" required value="'.dol_escape_htmltag($dateFrom).'">';
+    if ($fromAfter !== '') {
+        print '<span>'.$fromAfter.'</span>';
+    }
+    if ($toBefore !== '') {
+        print '<span>'.$toBefore.'</span>';
+    }
+    print '<input type="date" name="date_to" required value="'.dol_escape_htmltag($dateTo).'">';
+    if ($toAfter !== '') {
+        print '<span>'.$toAfter.'</span>';
+    }
+    print '<span>'.$langs->trans('InvoiceDirection').'</span>';
+    print '<select name="direction">';
     foreach (array('BOTH' => 'DirectionBoth', 'OUTBOUND' => 'DirectionOutbound', 'INBOUND' => 'DirectionInbound') as $value => $label) {
         print '<option value="'.$value.'"'.($syncDirection === $value ? ' selected' : '').'>'.$langs->trans($label).'</option>';
     }
-    print '</select></td>';
-    print '<td><input class="button" type="submit" value="'.$langs->trans('RunNavSync').'"></td>';
-    print '</tr>';
-    print '</table>';
-    print '</form><br>';
+    print '</select>';
+    print '<input class="button" type="submit" value="'.$langs->trans('RunNavSync').'">';
+    print '</div></form>';
 }
+print '</div><br>';
 
 $sql = 'SELECT rowid, invoice_direction, invoice_number, invoice_operation, invoice_issue_date,';
 $sql .= ' supplier_name, supplier_tax_number, customer_name, customer_tax_number,';
