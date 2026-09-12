@@ -63,9 +63,21 @@ $navChainError = '';
 if (is_array($relation)) {
     try {
         $chainService = new NavInvoiceChainService();
+        $chainInvoiceNumber = trim((string) ($relation['original_invoice_number'] ?? ''));
+        if ($chainInvoiceNumber === '') {
+            throw new Exception('Original invoice number is required for NAV invoice-chain lookup.');
+        }
+        $chainTaxNumber = null;
+        if (strtoupper((string) $record->invoice_direction) === 'INBOUND' && is_array($parsed)) {
+            $supplierTaxNumber = trim((string) ($parsed['supplier']['tax_number'] ?? ''));
+            if ($supplierTaxNumber !== '') {
+                $chainTaxNumber = $supplierTaxNumber;
+            }
+        }
         $navChain = $chainService->fetch(
-            (string) $record->invoice_number,
-            (string) $record->invoice_direction
+            $chainInvoiceNumber,
+            (string) $record->invoice_direction,
+            $chainTaxNumber
         );
         $chainComparison = $chainService->compareToLocal(
             is_array($navChain['elements'] ?? null) ? $navChain['elements'] : array(),
