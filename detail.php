@@ -476,14 +476,19 @@ if ($parsed) {
 if (getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1) && !empty($record->invoice_data)) {
     $xmlDisplay = (string) $record->invoice_data;
 
-    // Some NAV payloads reach the mirror with presentation whitespace escaped
-    // as literal backslash sequences (for example "\\n<InvoiceData>"). Decode
-    // only these whitespace escapes for display; the stored source is untouched.
-    $xmlDisplay = str_replace(
-        array('\\r\\n', '\\n', '\\r', '\\t'),
-        array("\r\n", "\n", "\r", "\t"),
-        $xmlDisplay
-    );
+    // Decode only presentation whitespace escapes. Repeat so payloads that
+    // arrived double-escaped are also made readable; stored source is untouched.
+    for ($i = 0; $i < 4; $i++) {
+        $decodedXml = str_replace(
+            array('\\r\\n', '\\n', '\\r', '\\t'),
+            array("\r\n", "\n", "\r", "\t"),
+            $xmlDisplay
+        );
+        if ($decodedXml === $xmlDisplay) {
+            break;
+        }
+        $xmlDisplay = $decodedXml;
+    }
     $xmlDisplay = preg_replace('/^\xEF\xBB\xBF/', '', $xmlDisplay) ?? $xmlDisplay;
 
     if (class_exists('DOMDocument')) {
@@ -505,9 +510,12 @@ if (getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1) && !empty($record->invoi
         libxml_use_internal_errors($previousLibxmlState);
     }
 
-    print '<br><details><summary style="cursor:pointer;font-weight:600">'.$langs->trans('ShowNavXml').'</summary>';
+    print '<br><div style="display:block;width:100%;max-width:100%;min-width:0;overflow:hidden;box-sizing:border-box">';
+    print '<details style="display:block;width:100%;max-width:100%;min-width:0;overflow:hidden;box-sizing:border-box">';
+    print '<summary style="cursor:pointer;font-weight:600">'.$langs->trans('ShowNavXml').'</summary>';
     print '<div class="opacitymedium small marginbottomonly">'.$langs->trans('NavXmlPrettyNotice').'</div>';
-    print '<pre style="max-height:700px;overflow:auto;white-space:pre;tab-size:2;border:1px solid var(--colortextlink);padding:10px;font-family:monospace">'.dol_escape_htmltag($xmlDisplay).'</pre></details>';
+    print '<pre style="display:block;width:100%;max-width:100%;min-width:0;max-height:700px;overflow:auto;box-sizing:border-box;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;tab-size:2;border:1px solid var(--colortextlink);padding:10px;font-family:monospace">'.dol_escape_htmltag($xmlDisplay).'</pre>';
+    print '</details></div>';
 }
 
 print '</div>';
