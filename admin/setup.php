@@ -13,7 +13,7 @@ if (!$res) {
 require_once DOL_DOCUMENT_ROOT.'/core/lib/admin.lib.php';
 dol_include_once('/navinvoice/class/navapi.class.php');
 
-$langs->loadLangs(array('admin', 'navinvoice@navinvoice'));
+$langs->loadLangs(array('admin', 'navinvoice@navinvoice', 'navinvoiceui@navinvoice'));
 if (!$user->admin) {
     accessforbidden();
 }
@@ -31,6 +31,7 @@ $formTaxNumber = $isConfigPost
 $formLookbackDays = $isConfigPost ? max(1, min(35, GETPOSTINT('lookback_days'))) : getDolGlobalInt('NAVINVOICE_SYNC_LOOKBACK_DAYS', 7);
 $formSyncEnabled = $isConfigPost ? (bool) GETPOSTINT('sync_enabled') : (bool) getDolGlobalInt('NAVINVOICE_SYNC_ENABLED');
 $formFetchFullData = $isConfigPost ? (bool) GETPOSTINT('fetch_full_data') : (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1);
+$formShowTechnicalXml = $isConfigPost ? (bool) GETPOSTINT('show_technical_xml') : (bool) getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1);
 
 if ($isConfigPost) {
     $password = GETPOST('password', 'none');
@@ -59,6 +60,7 @@ if ($isConfigPost) {
         dolibarr_set_const($db, 'NAVINVOICE_SYNC_ENABLED', $formSyncEnabled ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_FETCH_FULL_DATA', $formFetchFullData ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_SYNC_LOOKBACK_DAYS', (string) $formLookbackDays, 'chaine', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_SHOW_TECHNICAL_XML', $formShowTechnicalXml ? '1' : '0', 'yesno', 0, '', $conf->entity);
 
         if ($password !== '') {
             dolibarr_set_const($db, 'NAVINVOICE_PASSWORD', $password, 'chaine', 0, '', $conf->entity);
@@ -121,6 +123,9 @@ print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavSigning
 print '<tr class="oddeven"><td>'.$langs->trans('ScheduledSync').'</td><td><input type="checkbox" name="sync_enabled" value="1"'.($formSyncEnabled ? ' checked' : '').'></td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('SyncLookbackDays').'</td><td><input type="number" min="1" max="35" name="lookback_days" value="'.((int) $formLookbackDays).'"></td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('DownloadFullInvoiceXml').'</td><td><input type="checkbox" name="fetch_full_data" value="1"'.($formFetchFullData ? ' checked' : '').'></td></tr>';
+
+print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavDisplayConfiguration').'</td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('ShowTechnicalNavXml').'</td><td><input type="checkbox" name="show_technical_xml" value="1"'.($formShowTechnicalXml ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('ShowTechnicalNavXmlHelp').'</span></td></tr>';
 print '</table>';
 print '<div class="center">';
 print '<button class="button button-save" type="submit" name="action" value="save">'.$langs->trans('Save').'</button> ';
