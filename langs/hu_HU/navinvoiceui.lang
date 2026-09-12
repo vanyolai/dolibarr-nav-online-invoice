@@ -1,11 +1,10 @@
 SyncPanelTitle=Szinkronizálás
-SyncFromBefore=
-SyncFromAfter=-tól
-SyncToBefore=
-SyncToAfter=-ig
-SyncSummaryScanned=Vizsgált
+SyncFromLabel=-tól
+SyncToLabel=-ig
+SyncSummaryScanned=Vizsgált számlák
 SyncSummaryImported=Importálva
-SyncSummaryLookback=Átfedés
+SyncSummaryLookback=Újraellenőrzés
+SyncSummaryLookbackHelp=A szinkron ennyi napot ismételten lekérdez, hogy a később bekerült vagy módosult NAV rekordok se maradjanak ki.
 SyncSummaryDays=nap
 NavDisplayConfiguration=Megjelenítés és diagnosztika
 ShowTechnicalNavXml=Technikai NAV XML megjelenítése
