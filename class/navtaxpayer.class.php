@@ -40,8 +40,7 @@ class NavTaxpayerService
      *
      * Prefer NAV's official short name for matching/display semantics when it
      * exists. queryTaxpayer frequently returns the full registered name in all
-     * capitals while taxpayerShortName keeps the normal business spelling. The
-     * raw full name remains available separately in the master-data structure.
+     * capitals while taxpayerShortName keeps the normal business spelling.
      *
      * @param array<string,mixed> $master
      * @return array<string,mixed>
@@ -78,6 +77,8 @@ class NavTaxpayerService
                 'info_date' => $infoDate,
                 'name' => '',
                 'short_name' => '',
+                'raw_name' => '',
+                'raw_short_name' => '',
                 'tax_number' => $requestedCore,
                 'vat_code' => '',
                 'county_code' => '',
@@ -96,6 +97,11 @@ class NavTaxpayerService
         $taxpayerId = $this->normalizeTaxNumber($taxpayerId) ?: $requestedCore;
         $vatCode = $taxDetail ? $this->xpathValue($taxDetail, './*[local-name()="vatCode"]') : '';
         $countyCode = $taxDetail ? $this->xpathValue($taxDetail, './*[local-name()="countyCode"]') : '';
+
+        $rawName = $this->xpathValue($data, './*[local-name()="taxpayerName"]');
+        $rawShortName = $this->xpathValue($data, './*[local-name()="taxpayerShortName"]');
+        $name = $this->normalizeCompanyName($rawName, $rawShortName);
+        $shortName = $this->normalizeCompanyName($rawShortName, $rawShortName);
 
         $addresses = array();
         $addressItems = $data->xpath('.//*[local-name()="taxpayerAddressItem"]');
@@ -123,8 +129,12 @@ class NavTaxpayerService
             'requested_tax_number' => $requestedCore,
             'valid' => $valid,
             'info_date' => $infoDate,
-            'name' => $this->xpathValue($data, './*[local-name()="taxpayerName"]'),
-            'short_name' => $this->xpathValue($data, './*[local-name()="taxpayerShortName"]'),
+            'name' => $name,
+            'short_name' => $shortName,
+            // Keep the byte-level NAV wording available for diagnostics/audit,
+            // while the normal fields are presentation/master-data friendly.
+            'raw_name' => $rawName,
+            'raw_short_name' => $rawShortName,
             'tax_number' => $taxpayerId,
             'vat_code' => $vatCode,
             'county_code' => $countyCode,
@@ -144,7 +154,7 @@ class NavTaxpayerService
         $addressNodes = $item->xpath('./*[local-name()="taxpayerAddress"]');
         $address = $addressNodes ? $addressNodes[0] : $item;
 
-        $result = array(
+        $raw = array(
             'type' => $this->xpathValue($item, './*[local-name()="taxpayerAddressType"]'),
             'country_code' => $this->xpathValue($address, './/*[local-name()="countryCode"]'),
             'postal_code' => $this->xpathValue($address, './/*[local-name()="postalCode"]'),
@@ -159,7 +169,15 @@ class NavTaxpayerService
             'lot_number' => $this->xpathValue($address, './/*[local-name()="lotNumber"]'),
             'additional_detail' => $this->xpathValue($address, './/*[local-name()="additionalAddressDetail"]'),
         );
+
+        $result = $raw;
+        $result['city'] = $this->normalizeProperText((string) $raw['city']);
+        $result['street_name'] = $this->normalizeProperText((string) $raw['street_name']);
+        $result['public_place_category'] = $this->normalizeCommonNoun((string) $raw['public_place_category']);
+        $result['additional_detail'] = $this->normalizeProperText((string) $raw['additional_detail']);
         $result['formatted'] = $this->formatAddress($result);
+        $result['raw_formatted'] = $this->formatAddress($raw);
+        $result['raw'] = $raw;
         return $result;
     }
 
@@ -198,6 +216,94 @@ class NavTaxpayerService
         return trim(implode(', ', array_filter(array($locality, trim($street.($extras ? ', '.implode(', ', $extras) : ''))), static function (string $value): bool {
             return $value !== '';
         })));
+    }
+
+    /**
+     * Normalize only values that are genuinely all-caps. Mixed-case values from
+     * NAV are presumed intentional and are kept verbatim.
+     */
+    private function normalizeCompanyName(string $value, string $shortName = ''): string
+    {
+        $value = trim($value);
+        if ($value === '' || !$this->isAllCaps($value)) {
+            return $value;
+        }
+
+        $normalized = $this->titleCase($value);
+
+        // Domain-like fragments in company names look better as Gamers.eu than
+        // Gamers.Eu after generic Unicode title-casing.
+        $normalized = preg_replace_callback('/\.([\p{L}]{2,6})\b/u', static function (array $m): string {
+            return '.'.(function_exists('mb_strtolower') ? mb_strtolower($m[1], 'UTF-8') : strtolower($m[1]));
+        }, $normalized) ?? $normalized;
+
+        // If the NAV short name deliberately contains an acronym (MÁV, OTP,
+        // MOL, DSC, ...), preserve that spelling in the expanded legal name.
+        if ($shortName !== '' && function_exists('mb_strtoupper')) {
+            preg_match_all('/(?<![\p{L}\p{N}])[\p{Lu}\p{N}]{2,}(?![\p{L}\p{N}])/u', $shortName, $matches);
+            foreach (($matches[0] ?? array()) as $acronym) {
+                $normalized = preg_replace('/(?<![\p{L}\p{N}])'.preg_quote($acronym, '/').'(?![\p{L}\p{N}])/iu', $acronym, $normalized) ?? $normalized;
+            }
+        }
+
+        // Hungarian conjunction/articles inside a long legal name are normally
+        // lowercase; generic title-case would capitalize them.
+        $normalized = preg_replace('/\s+(És|A|Az)\s+/u', static function_exists('mb_strtolower') ? ' ' : ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace_callback('/\s+(És|A|Az)\s+/u', static function (array $m): string {
+            $word = function_exists('mb_strtolower') ? mb_strtolower($m[1], 'UTF-8') : strtolower($m[1]);
+            return ' '.$word.' ';
+        }, $normalized) ?? $normalized;
+
+        return $normalized;
+    }
+
+    private function normalizeProperText(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '' || !$this->isAllCaps($value)) {
+            return $value;
+        }
+
+        $normalized = $this->titleCase($value);
+
+        // Restore Roman numerals that are commonly used in district/street
+        // names (for example BUDAPEST XIII. KERÜLET).
+        preg_match_all('/(?<![\p{L}])[IVXLCDM]+\.? (?![\p{L}])/u', $value.' ', $matches);
+        foreach (($matches[0] ?? array()) as $romanWithSpace) {
+            $roman = rtrim($romanWithSpace);
+            if ($roman === '') {
+                continue;
+            }
+            $normalized = preg_replace('/(?<![\p{L}])'.preg_quote($roman, '/').'(?![\p{L}])/iu', $roman, $normalized) ?? $normalized;
+        }
+
+        return $normalized;
+    }
+
+    private function normalizeCommonNoun(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '' || !$this->isAllCaps($value)) {
+            return $value;
+        }
+        return function_exists('mb_strtolower') ? mb_strtolower($value, 'UTF-8') : strtolower($value);
+    }
+
+    private function titleCase(string $value): string
+    {
+        if (function_exists('mb_convert_case')) {
+            return mb_convert_case(mb_strtolower($value, 'UTF-8'), MB_CASE_TITLE, 'UTF-8');
+        }
+        return ucwords(strtolower($value));
+    }
+
+    private function isAllCaps(string $value): bool
+    {
+        if (function_exists('mb_strtoupper') && function_exists('mb_strtolower')) {
+            return mb_strtoupper($value, 'UTF-8') === $value
+                && mb_strtolower($value, 'UTF-8') !== $value;
+        }
+        return strtoupper($value) === $value && strtolower($value) !== $value;
     }
 
     private function normalizeTaxNumber(string $value): string
