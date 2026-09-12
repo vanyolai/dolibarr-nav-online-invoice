@@ -475,6 +475,17 @@ if ($parsed) {
 
 if (getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1) && !empty($record->invoice_data)) {
     $xmlDisplay = (string) $record->invoice_data;
+
+    // Some NAV payloads reach the mirror with presentation whitespace escaped
+    // as literal backslash sequences (for example "\\n<InvoiceData>"). Decode
+    // only these whitespace escapes for display; the stored source is untouched.
+    $xmlDisplay = str_replace(
+        array('\\r\\n', '\\n', '\\r', '\\t'),
+        array("\r\n", "\n", "\r", "\t"),
+        $xmlDisplay
+    );
+    $xmlDisplay = preg_replace('/^\xEF\xBB\xBF/', '', $xmlDisplay) ?? $xmlDisplay;
+
     if (class_exists('DOMDocument')) {
         $previousLibxmlState = libxml_use_internal_errors(true);
         try {
@@ -488,7 +499,7 @@ if (getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1) && !empty($record->invoi
                 }
             }
         } catch (Throwable $e) {
-            // Presentation fallback: keep the original source text below.
+            // Presentation fallback: keep the whitespace-decoded source text.
         }
         libxml_clear_errors();
         libxml_use_internal_errors($previousLibxmlState);
@@ -496,7 +507,7 @@ if (getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1) && !empty($record->invoi
 
     print '<br><details><summary style="cursor:pointer;font-weight:600">'.$langs->trans('ShowNavXml').'</summary>';
     print '<div class="opacitymedium small marginbottomonly">'.$langs->trans('NavXmlPrettyNotice').'</div>';
-    print '<pre style="max-height:700px;overflow:auto;white-space:pre;tab-size:2;border:1px solid var(--colortextlink);padding:10px">'.dol_escape_htmltag($xmlDisplay).'</pre></details>';
+    print '<pre style="max-height:700px;overflow:auto;white-space:pre;tab-size:2;border:1px solid var(--colortextlink);padding:10px;font-family:monospace">'.dol_escape_htmltag($xmlDisplay).'</pre></details>';
 }
 
 print '</div>';
