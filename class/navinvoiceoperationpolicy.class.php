@@ -42,6 +42,7 @@ class NavInvoiceOperationPolicy
             'relation' => null,
             'authoritative_chain' => null,
             'authoritative_chain_error' => '',
+            'chain_query_invoice_number' => '',
             'chain_comparison' => null,
             'blockers' => array(),
             'warnings' => array(),
@@ -67,6 +68,16 @@ class NavInvoiceOperationPolicy
         $result['source_invoice_id'] = (int) ($relation['original_dolibarr_invoice_id'] ?? 0);
 
         try {
+            // queryInvoiceChainDigest is keyed by the master/original invoice
+            // number. The queried document may itself be a MODIFY/STORNO, but
+            // NAV's interface specification explicitly requires the referenced
+            // base invoice number in invoiceChainQuery/invoiceNumber.
+            $chainInvoiceNumber = trim((string) ($relation['original_invoice_number'] ?? ''));
+            $result['chain_query_invoice_number'] = $chainInvoiceNumber;
+            if ($chainInvoiceNumber === '') {
+                throw new Exception('Original invoice number is required for NAV invoice-chain lookup.');
+            }
+
             // Inbound invoice numbers are issuer-local and may collide across
             // suppliers. NAV's optional taxNumber query field disambiguates the
             // authoritative chain, so use the supplier's 8-digit taxpayer ID
@@ -79,7 +90,7 @@ class NavInvoiceOperationPolicy
                 }
             }
 
-            $navChain = $this->chainService->fetch($invoiceNumber, $direction, $chainTaxNumber);
+            $navChain = $this->chainService->fetch($chainInvoiceNumber, $direction, $chainTaxNumber);
             $result['authoritative_chain'] = $navChain;
             $comparison = $this->chainService->compareToLocal(
                 is_array($navChain['elements'] ?? null) ? $navChain['elements'] : array(),
