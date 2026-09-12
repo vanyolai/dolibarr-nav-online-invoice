@@ -105,6 +105,8 @@ class NavInvoiceChainService
                 'invoice_number' => $this->xpathValue($digest, './*[local-name()="invoiceNumber"]'),
                 'batch_index' => $batchIndex,
                 'invoice_operation' => strtoupper($this->xpathValue($digest, './*[local-name()="invoiceOperation"]')),
+                // InvoiceChainDigestType intentionally contains much less data
+                // than InvoiceDigestType. These values may therefore remain empty.
                 'invoice_category' => $this->xpathValue($digest, './*[local-name()="invoiceCategory"]'),
                 'invoice_issue_date' => $this->xpathValue($digest, './*[local-name()="invoiceIssueDate"]'),
                 'supplier_tax_number' => $this->xpathValue($digest, './*[local-name()="supplierTaxNumber"]'),
@@ -126,6 +128,11 @@ class NavInvoiceChainService
 
     /**
      * Compare normalized NAV chain elements with normalized local mirror items.
+     *
+     * queryInvoiceChainDigest is authoritative for chain membership and the
+     * operation type, but some metadata is optional in its schema. A NAV value
+     * that is omitted must therefore be treated as unknown, not as evidence that
+     * a richer value recovered from queryInvoiceData is wrong.
      *
      * @param array<int,array<string,mixed>> $authoritative
      * @param array<int,array<string,mixed>> $local
@@ -167,11 +174,28 @@ class NavInvoiceChainService
                 continue;
             }
             $localItem = $localMap[$key];
+            $navOperation = strtoupper((string) ($navItem['invoice_operation'] ?? ''));
             $localOperation = strtoupper((string) ($localItem['operation'] ?? $localItem['invoice_operation'] ?? ''));
-            $localModificationIndex = $localItem['modification_index'] ?? null;
-            if ($localOperation !== strtoupper((string) ($navItem['invoice_operation'] ?? ''))
-                || $this->nullableIntValue($localModificationIndex) !== $this->nullableIntValue($navItem['modification_index'] ?? null)) {
-                $mismatches[] = array('nav' => $navItem, 'local' => $localItem);
+            $navModificationIndex = $this->nullableIntValue($navItem['modification_index'] ?? null);
+            $localModificationIndex = $this->nullableIntValue($localItem['modification_index'] ?? null);
+
+            $fields = array();
+            if ($navOperation !== $localOperation) {
+                $fields[] = 'invoice_operation';
+            }
+            // invoiceReferenceData is optional in queryInvoiceChainDigest. Only a
+            // modification index actually supplied by NAV may contradict local
+            // full-XML data; null means "not supplied", not "no modification".
+            if ($navModificationIndex !== null && $navModificationIndex !== $localModificationIndex) {
+                $fields[] = 'modification_index';
+            }
+
+            if ($fields) {
+                $mismatches[] = array(
+                    'nav' => $navItem,
+                    'local' => $localItem,
+                    'fields' => $fields,
+                );
             }
         }
 
