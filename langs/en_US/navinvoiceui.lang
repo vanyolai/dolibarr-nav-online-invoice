@@ -1,11 +1,10 @@
 SyncPanelTitle=Synchronization
-SyncFromBefore=From
-SyncFromAfter=
-SyncToBefore=To
-SyncToAfter=
-SyncSummaryScanned=Scanned
+SyncFromLabel=From
+SyncToLabel=To
+SyncSummaryScanned=Mirrored invoices
 SyncSummaryImported=Imported
-SyncSummaryLookback=Overlap
+SyncSummaryLookback=Recheck window
+SyncSummaryLookbackHelp=Each synchronization queries this many days again so late or modified NAV records are not missed.
 SyncSummaryDays=days
 NavDisplayConfiguration=Display and diagnostics
 ShowTechnicalNavXml=Show technical NAV XML
