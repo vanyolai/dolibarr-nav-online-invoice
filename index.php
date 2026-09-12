@@ -93,48 +93,60 @@ $dateTo = trim((string) GETPOST('date_to', 'alphanohtml')) ?: $defaultTo;
 llxHeader('', $langs->trans('NavOnlineInvoice'));
 print load_fiche_titre($langs->trans('NavOnlineInvoice'), '', 'file-invoice');
 
-print '<div class="tabsAction">';
-print '<a class="butAction" href="'.dol_buildpath('/navinvoice/batch.php', 1).'">'.$langs->trans('BatchImport').'</a>';
-print '</div>';
+$dashboardCell = static function (string $label, string $value, string $title = ''): string {
+    $titleAttr = $title !== '' ? ' title="'.dol_escape_htmltag($title).'"' : '';
+    return '<td style="width:33.333%;vertical-align:middle">'
+        .'<div style="display:flex;align-items:center;justify-content:space-between;gap:18px;min-width:0">'
+        .'<span'.$titleAttr.'>'.dol_escape_htmltag($label).'</span>'
+        .'<strong style="white-space:nowrap">'.$value.'</strong>'
+        .'</div></td>';
+};
 
-print '<div style="max-width:1200px">';
-print '<table class="border centpercent">';
-print '<tr class="liste_titre"><td colspan="6">'.img_picto('', 'refresh').' '.$langs->trans('SyncPanelTitle').'</td></tr>';
+$lastSyncDisplay = $dashboard['last_sync'] !== ''
+    ? dol_escape_htmltag($dashboard['last_sync'])
+    : '<span class="opacitymedium">—</span>';
+$lookbackHelp = $langs->trans('SyncSummaryLookbackHelp');
+
+print '<div style="max-width:980px">';
+print '<table class="noborder centpercent" style="table-layout:fixed">';
+print '<tr class="liste_titre"><td colspan="3">';
+print '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">';
+print '<span>'.img_picto('', 'refresh').' '.$langs->trans('SyncPanelTitle').'</span>';
+print '<a class="button" href="'.dol_buildpath('/navinvoice/batch.php', 1).'">'.$langs->trans('BatchImport').'</a>';
+print '</div></td></tr>';
 print '<tr>';
-print '<td class="titlefield">'.$langs->trans('LastSync').'</td><td>'.($dashboard['last_sync'] !== '' ? dol_escape_htmltag($dashboard['last_sync']) : '<span class="opacitymedium">—</span>').'</td>';
-print '<td>'.$langs->trans('DirectionInbound').'</td><td class="right">'.$dashboard['inbound'].'</td>';
-print '<td>'.$langs->trans('DirectionOutbound').'</td><td class="right">'.$dashboard['outbound'].'</td>';
-print '</tr>';
-print '<tr>';
-print '<td class="titlefield">'.$langs->trans('SyncSummaryScanned').'</td><td>'.$dashboard['total'].'</td>';
-print '<td>'.$langs->trans('SyncSummaryImported').'</td><td class="right">'.$dashboard['imported'].'</td>';
-print '<td>'.$langs->trans('SyncSummaryLookback').'</td><td class="right">'.$lookback.' '.$langs->trans('SyncSummaryDays').'</td>';
+print $dashboardCell($langs->trans('LastSync'), $lastSyncDisplay);
+print $dashboardCell($langs->trans('DirectionInbound'), (string) $dashboard['inbound']);
+print $dashboardCell($langs->trans('DirectionOutbound'), (string) $dashboard['outbound']);
+print '</tr><tr>';
+print $dashboardCell($langs->trans('SyncSummaryScanned'), (string) $dashboard['total']);
+print $dashboardCell($langs->trans('SyncSummaryImported'), (string) $dashboard['imported']);
+print $dashboardCell($langs->trans('SyncSummaryLookback'), $lookback.' '.dol_escape_htmltag($langs->trans('SyncSummaryDays')), $lookbackHelp);
 print '</tr>';
 print '</table>';
 
 if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
-    $fromBefore = trim($langs->trans('SyncFromBefore'));
-    $fromAfter = trim($langs->trans('SyncFromAfter'));
-    $toBefore = trim($langs->trans('SyncToBefore'));
-    $toAfter = trim($langs->trans('SyncToAfter'));
+    $isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu';
+    $fromLabel = $langs->trans('SyncFromLabel');
+    $toLabel = $langs->trans('SyncToLabel');
 
     print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin-top:10px">';
     print '<input type="hidden" name="token" value="'.newToken().'">';
     print '<input type="hidden" name="action" value="sync">';
     print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
-    if ($fromBefore !== '') {
-        print '<span>'.$fromBefore.'</span>';
+    if (!$isHungarianUi) {
+        print '<span>'.dol_escape_htmltag($fromLabel).'</span>';
     }
     print '<input type="date" name="date_from" required value="'.dol_escape_htmltag($dateFrom).'">';
-    if ($fromAfter !== '') {
-        print '<span>'.$fromAfter.'</span>';
+    if ($isHungarianUi) {
+        print '<span>'.dol_escape_htmltag($fromLabel).'</span>';
     }
-    if ($toBefore !== '') {
-        print '<span>'.$toBefore.'</span>';
+    if (!$isHungarianUi) {
+        print '<span>'.dol_escape_htmltag($toLabel).'</span>';
     }
     print '<input type="date" name="date_to" required value="'.dol_escape_htmltag($dateTo).'">';
-    if ($toAfter !== '') {
-        print '<span>'.$toAfter.'</span>';
+    if ($isHungarianUi) {
+        print '<span>'.dol_escape_htmltag($toLabel).'</span>';
     }
     print '<span>'.$langs->trans('InvoiceDirection').'</span>';
     print '<select name="direction">';
