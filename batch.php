@@ -125,29 +125,29 @@ $reconciliationLabel = static function (string $code) use ($langs): string {
 
 llxHeader('', $langs->trans('BatchImport'));
 print load_fiche_titre($langs->trans('BatchImport'), '<a href="'.dol_buildpath('/navinvoice/index.php', 1).'">'.$langs->trans('BackToNavInvoiceList').'</a>', 'file-invoice');
+print '<div style="max-width:1200px">';
 print '<div class="info marginbottomonly">'.$langs->trans('BatchInboundOnlyNotice').'</div>';
 print '<div class="opacitymedium marginbottomonly">'.$langs->trans('BatchDraftOnlyNotice').'</div>';
 print '<div class="opacitymedium marginbottomonly">'.$langs->trans('BatchRangeAndDependenciesNotice').'</div>';
 
-$fromBefore = trim($langs->trans('SyncFromBefore'));
-$fromAfter = trim($langs->trans('SyncFromAfter'));
-$toBefore = trim($langs->trans('SyncToBefore'));
-$toAfter = trim($langs->trans('SyncToAfter'));
-print '<form method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin:10px 0">';
+$isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu';
+$fromLabel = $langs->trans('SyncFromLabel');
+$toLabel = $langs->trans('SyncToLabel');
+print '<form method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin:12px 0">';
 print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
-if ($fromBefore !== '') {
-    print '<span>'.$fromBefore.'</span>';
+if (!$isHungarianUi) {
+    print '<span>'.dol_escape_htmltag($fromLabel).'</span>';
 }
 print '<input type="date" name="date_from" required value="'.dol_escape_htmltag($dateFrom).'">';
-if ($fromAfter !== '') {
-    print '<span>'.$fromAfter.'</span>';
+if ($isHungarianUi) {
+    print '<span>'.dol_escape_htmltag($fromLabel).'</span>';
 }
-if ($toBefore !== '') {
-    print '<span>'.$toBefore.'</span>';
+if (!$isHungarianUi) {
+    print '<span>'.dol_escape_htmltag($toLabel).'</span>';
 }
 print '<input type="date" name="date_to" required value="'.dol_escape_htmltag($dateTo).'">';
-if ($toAfter !== '') {
-    print '<span>'.$toAfter.'</span>';
+if ($isHungarianUi) {
+    print '<span>'.dol_escape_htmltag($toLabel).'</span>';
 }
 print '<input class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'">';
 print '</div></form>';
@@ -156,16 +156,31 @@ if ($loadError !== '') {
     print '<div class="error">'.img_picto('', 'error').' '.dol_escape_htmltag($loadError).'</div>';
 }
 
-print '<table class="border" style="max-width:1100px">';
-print '<tr><td class="titlefield">'.$langs->trans('BatchTotal').'</td><td class="right"><strong>'.count($rows).'</strong></td>';
-print '<td class="titlefield">'.$langs->trans('BatchReady').'</td><td class="right"><span class="ok"><strong>'.$counts['ready'].'</strong></span></td>';
-print '<td class="titlefield">'.$langs->trans('BatchAlreadyImported').'</td><td class="right">'.$counts['imported'].'</td></tr>';
-print '<tr><td class="titlefield">'.$langs->trans('BatchDependencies').'</td><td class="right">'.$counts['dependency'].'</td>';
-print '<td class="titlefield">'.$langs->trans('BatchChainPending').'</td><td class="right"><span class="warning">'.$counts['chain_pending'].'</span></td>';
-print '<td class="titlefield">'.$langs->trans('BatchBlocked').'</td><td class="right"><span class="error"><strong>'.$counts['blocked'].'</strong></span></td></tr>';
-print '<tr><td class="titlefield">'.$langs->trans('BatchPartnerRequired').'</td><td class="right"><span class="warning">'.$counts['partner_required'].'</span></td>';
-print '<td class="titlefield">'.$langs->trans('BatchReview').'</td><td class="right"><span class="warning">'.$counts['review'].'</span></td><td colspan="2"></td></tr>';
+$summaryCell = static function (string $label, string $value, string $class = ''): string {
+    $valueClass = $class !== '' ? ' class="'.$class.'"' : '';
+    return '<td style="width:33.333%;vertical-align:middle">'
+        .'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;min-width:0">'
+        .'<span style="min-width:0">'.dol_escape_htmltag($label).'</span>'
+        .'<strong'.$valueClass.' style="white-space:nowrap">'.$value.'</strong>'
+        .'</div></td>';
+};
+
+print '<table class="noborder centpercent" style="max-width:1100px;table-layout:fixed">';
+print '<tr>';
+print $summaryCell($langs->trans('BatchTotal'), (string) count($rows));
+print $summaryCell($langs->trans('BatchReady'), (string) $counts['ready'], 'ok');
+print $summaryCell($langs->trans('BatchAlreadyImported'), (string) $counts['imported']);
+print '</tr><tr>';
+print $summaryCell($langs->trans('BatchDependencies'), (string) $counts['dependency']);
+print $summaryCell($langs->trans('BatchChainPending'), (string) $counts['chain_pending'], 'warning');
+print $summaryCell($langs->trans('BatchBlocked'), (string) $counts['blocked'], 'error');
+print '</tr><tr>';
+print $summaryCell($langs->trans('BatchPartnerRequired'), (string) $counts['partner_required'], 'warning');
+print $summaryCell($langs->trans('BatchReview'), (string) $counts['review'], 'warning');
+print '<td></td>';
+print '</tr>';
 print '</table><br>';
+print '</div>';
 
 if (is_array($batchResult)) {
     print load_fiche_titre($langs->trans('BatchResultTitle'), '', 'list');
