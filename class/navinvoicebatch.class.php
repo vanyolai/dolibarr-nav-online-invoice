@@ -73,10 +73,12 @@ class NavInvoiceBatchService
 
         $records = array();
         while ($obj = $this->db->fetch_object($resql)) {
+            $obj->_nav_batch_dependency = false;
             $records[] = $obj;
         }
         $this->db->free($resql);
-        return $records;
+
+        return $this->expandRelationDependencies($records, $limit);
     }
 
     /** @return array<string,mixed> */
@@ -134,6 +136,10 @@ class NavInvoiceBatchService
      * Import selected READY inbound invoices. Each invoice is isolated: one
      * failure is reported and processing continues with the remaining rows.
      *
+     * Selected records are processed in accounting dependency order. This is
+     * important when a batch contains an older CREATE invoice pulled in as a
+     * dependency of a newer MODIFY/STORNO invoice.
+     *
      * @param array<int,int> $ids
      * @param User $user
      * @return array<string,mixed>
@@ -154,15 +160,41 @@ class NavInvoiceBatchService
             'errors' => array(),
         );
 
+        $records = array();
         foreach ($ids as $id) {
-            $record = null;
             try {
                 $record = $this->loadRecord($id);
                 if ($record === null) {
                     $result['errors'][] = array('id' => $id, 'invoice_number' => '', 'message' => 'NAV mirror record not found.');
                     continue;
                 }
+                $records[] = $record;
+            } catch (Throwable $e) {
+                $result['errors'][] = array('id' => $id, 'invoice_number' => '', 'message' => $e->getMessage());
+            }
+        }
 
+        usort($records, static function ($a, $b): int {
+            $dateCompare = strcmp((string) ($a->invoice_issue_date ?? ''), (string) ($b->invoice_issue_date ?? ''));
+            if ($dateCompare !== 0) {
+                return $dateCompare;
+            }
+            $aOperation = strtoupper((string) ($a->invoice_operation ?? 'CREATE'));
+            $bOperation = strtoupper((string) ($b->invoice_operation ?? 'CREATE'));
+            if (($aOperation === 'CREATE') !== ($bOperation === 'CREATE')) {
+                return $aOperation === 'CREATE' ? -1 : 1;
+            }
+            $aIndex = (int) ($a->modification_index ?? 0);
+            $bIndex = (int) ($b->modification_index ?? 0);
+            if ($aIndex !== $bIndex) {
+                return $aIndex <=> $bIndex;
+            }
+            return ((int) ($a->rowid ?? 0)) <=> ((int) ($b->rowid ?? 0));
+        });
+
+        foreach ($records as $record) {
+            $id = (int) ($record->rowid ?? 0);
+            try {
                 $preflight = $this->preflightRecord($record);
                 $preview = is_array($preflight['preview'] ?? null) ? $preflight['preview'] : null;
                 if (($preflight['state'] ?? '') !== 'ready' || $preview === null) {
@@ -188,13 +220,102 @@ class NavInvoiceBatchService
             } catch (Throwable $e) {
                 $result['errors'][] = array(
                     'id' => $id,
-                    'invoice_number' => is_object($record) ? (string) ($record->invoice_number ?? '') : '',
+                    'invoice_number' => (string) ($record->invoice_number ?? ''),
                     'message' => $e->getMessage(),
                 );
             }
         }
 
         return $result;
+    }
+
+    /**
+     * Include the prerequisite members of any non-CREATE chain found inside the
+     * requested date range. This makes an old master invoice visible/importable
+     * without forcing the user to widen the batch date filter manually.
+     *
+     * @param array<int,object> $records
+     * @return array<int,object>
+     */
+    private function expandRelationDependencies(array $records, int $limit): array
+    {
+        $byId = array();
+        foreach ($records as $record) {
+            $byId[(int) $record->rowid] = $record;
+        }
+
+        foreach ($records as $record) {
+            $operation = strtoupper(trim((string) ($record->invoice_operation ?? 'CREATE')));
+            if ($operation === '' || $operation === 'CREATE') {
+                continue;
+            }
+
+            $root = trim((string) ($record->original_invoice_number ?? ''));
+            if ($root === '') {
+                continue;
+            }
+            $currentIndex = ($record->modification_index ?? null) !== null
+                ? (int) $record->modification_index
+                : null;
+
+            $sql = 'SELECT * FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
+            $sql .= ' WHERE entity = '.$this->entity;
+            $sql .= " AND invoice_direction = 'INBOUND'";
+            $sql .= " AND (invoice_number = '".$this->db->escape($root)."'";
+            $sql .= " OR original_invoice_number = '".$this->db->escape($root)."')";
+            $sql .= ' ORDER BY invoice_issue_date ASC, modification_index ASC, rowid ASC';
+            $resql = $this->db->query($sql);
+            if (!$resql) {
+                throw new Exception($this->db->lasterror());
+            }
+
+            while ($candidate = $this->db->fetch_object($resql)) {
+                $candidateId = (int) $candidate->rowid;
+                if (isset($byId[$candidateId])) {
+                    continue;
+                }
+
+                $candidateNumber = trim((string) ($candidate->invoice_number ?? ''));
+                $candidateIndex = ($candidate->modification_index ?? null) !== null
+                    ? (int) $candidate->modification_index
+                    : null;
+                $isMaster = $candidateNumber === $root;
+
+                if (!$isMaster) {
+                    if ($currentIndex === null || $currentIndex <= 0) {
+                        continue;
+                    }
+                    if ($candidateIndex === null || $candidateIndex <= 0 || $candidateIndex >= $currentIndex) {
+                        continue;
+                    }
+                }
+
+                $candidate->_nav_batch_dependency = true;
+                $candidate->_nav_batch_dependency_for = (string) ($record->invoice_number ?? '');
+                $byId[$candidateId] = $candidate;
+
+                if (count($byId) >= $limit) {
+                    break 2;
+                }
+            }
+            $this->db->free($resql);
+        }
+
+        $expanded = array_values($byId);
+        usort($expanded, static function ($a, $b): int {
+            $aDependency = !empty($a->_nav_batch_dependency);
+            $bDependency = !empty($b->_nav_batch_dependency);
+            if ($aDependency !== $bDependency) {
+                return $aDependency ? -1 : 1;
+            }
+            $dateCompare = strcmp((string) ($b->invoice_issue_date ?? ''), (string) ($a->invoice_issue_date ?? ''));
+            if ($dateCompare !== 0) {
+                return $dateCompare;
+            }
+            return ((int) ($b->rowid ?? 0)) <=> ((int) ($a->rowid ?? 0));
+        });
+
+        return $expanded;
     }
 
     /**
