@@ -296,7 +296,9 @@ class NavPartnerCreationService
             'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ö' => 'o', 'ő' => 'o',
             'ú' => 'u', 'ü' => 'u', 'ű' => 'u',
         ));
-        $value = preg_replace('/\s+/u', ' ', $value);
+        // Ignore presentation-only punctuation/casing differences from the NAV
+        // registry (for example "Vasút utca 15." vs "VASÚT UTCA 15").
+        $value = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $value);
         return trim((string) $value);
     }
 
