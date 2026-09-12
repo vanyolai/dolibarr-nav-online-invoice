@@ -222,18 +222,29 @@ class NavInvoiceChainSyncService
             'customer_tax_number', 'customer_name', 'payment_method', 'invoice_appearance',
             'source', 'currency', 'transaction_id', 'original_invoice_number'
         ) as $key) {
-            $set[] = $key." = '".$this->db->escape((string) ($data[$key] ?? ''))."'";
+            $value = trim((string) ($data[$key] ?? ''));
+            if ($inserted || $value !== '') {
+                $set[] = $key." = '".$this->db->escape($value)."'";
+            }
         }
         foreach (array('invoice_issue_date', 'payment_date', 'invoice_delivery_date') as $key) {
             $value = trim((string) ($data[$key] ?? ''));
-            $set[] = $key.' = '.($value !== '' ? "'".$this->db->escape($value)."'" : 'NULL');
+            if ($inserted || $value !== '') {
+                $set[] = $key.' = '.($value !== '' ? "'".$this->db->escape($value)."'" : 'NULL');
+            }
         }
         foreach (array('invoice_net_amount', 'invoice_net_amount_huf', 'invoice_vat_amount', 'invoice_vat_amount_huf') as $key) {
             $value = $data[$key] ?? null;
-            $set[] = $key.' = '.($value !== null ? "'".$this->db->escape((string) $value)."'" : 'NULL');
+            if ($inserted || $value !== null) {
+                $set[] = $key.' = '.($value !== null ? "'".$this->db->escape((string) $value)."'" : 'NULL');
+            }
         }
-        $set[] = 'transaction_index = '.($data['transaction_index'] !== null ? (int) $data['transaction_index'] : 'NULL');
-        $set[] = 'modification_index = '.($data['modification_index'] !== null ? (int) $data['modification_index'] : 'NULL');
+        if ($inserted || $data['transaction_index'] !== null) {
+            $set[] = 'transaction_index = '.($data['transaction_index'] !== null ? (int) $data['transaction_index'] : 'NULL');
+        }
+        if ($inserted || $data['modification_index'] !== null) {
+            $set[] = 'modification_index = '.($data['modification_index'] !== null ? (int) $data['modification_index'] : 'NULL');
+        }
         $set[] = 'completeness_indicator = '.((int) ($data['completeness_indicator'] ?? 0));
         if ($inserted) {
             $set[] = "raw_digest = '".$this->db->escape((string) $data['raw_digest'])."'";
