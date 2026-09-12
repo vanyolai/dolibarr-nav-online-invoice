@@ -27,10 +27,27 @@ try {
 }
 
 $action = GETPOST('action', 'aZ09');
-$syncDirection = strtoupper(GETPOST('direction', 'alpha'));
+$syncDirection = strtoupper((string) GETPOST('sync_direction', 'alpha'));
+if ($syncDirection === '' && $action === 'sync') {
+    // Backward compatibility for links/forms generated before the dedicated
+    // sync_direction field was introduced.
+    $syncDirection = strtoupper((string) GETPOST('direction', 'alpha'));
+}
 if (!in_array($syncDirection, array('BOTH', 'OUTBOUND', 'INBOUND'), true)) {
     $syncDirection = 'BOTH';
 }
+
+$listDirection = strtoupper((string) GETPOST('filter_direction', 'alpha'));
+if (!in_array($listDirection, array('BOTH', 'OUTBOUND', 'INBOUND'), true)) {
+    $listDirection = 'BOTH';
+}
+$todoOnly = ((int) GETPOST('todo', 'int')) > 0;
+$allowedPageSizes = array(25, 50, 100, 200);
+$pageSize = (int) GETPOST('limit', 'int');
+if (!in_array($pageSize, $allowedPageSizes, true)) {
+    $pageSize = 50;
+}
+$page = max(0, (int) GETPOST('page', 'int'));
 
 if ($action === 'sync' && $user->hasRight('navinvoice', 'invoice', 'sync')) {
     $from = GETPOST('date_from', 'alphanohtml');
@@ -133,6 +150,9 @@ if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
     print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin-top:10px">';
     print '<input type="hidden" name="token" value="'.newToken().'">';
     print '<input type="hidden" name="action" value="sync">';
+    print '<input type="hidden" name="filter_direction" value="'.dol_escape_htmltag($listDirection).'">';
+    print '<input type="hidden" name="todo" value="'.($todoOnly ? '1' : '0').'">';
+    print '<input type="hidden" name="limit" value="'.$pageSize.'">';
     print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
     if (!$isHungarianUi) {
         print '<span>'.dol_escape_htmltag($fromLabel).'</span>';
@@ -149,7 +169,7 @@ if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
         print '<span>'.dol_escape_htmltag($toLabel).'</span>';
     }
     print '<span>'.$langs->trans('InvoiceDirection').'</span>';
-    print '<select name="direction">';
+    print '<select name="sync_direction">';
     foreach (array('BOTH' => 'DirectionBoth', 'OUTBOUND' => 'DirectionOutbound', 'INBOUND' => 'DirectionInbound') as $value => $label) {
         print '<option value="'.$value.'"'.($syncDirection === $value ? ' selected' : '').'>'.$langs->trans($label).'</option>';
     }
@@ -159,13 +179,115 @@ if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
 }
 print '</div><br>';
 
+$listWhere = array('entity = '.((int) $conf->entity));
+if ($listDirection !== 'BOTH') {
+    $listWhere[] = "invoice_direction = '".$listDirection."'";
+}
+if ($todoOnly) {
+    // Keep this list filter local and deterministic: "to do" means a NAV
+    // record that is not yet linked to any Dolibarr invoice. More detailed
+    // partner/relation checks remain available from the row actions and batch
+    // preflight without triggering expensive API work for every list row.
+    $listWhere[] = '(COALESCE(fk_facture, 0) <= 0 AND COALESCE(fk_facture_fourn, 0) <= 0)';
+}
+$whereSql = implode(' AND ', $listWhere);
+
+$countSql = 'SELECT COUNT(*) AS nb FROM '.MAIN_DB_PREFIX.'navinvoice_invoice WHERE '.$whereSql;
+$resCount = $db->query($countSql);
+$totalRows = 0;
+if ($resCount && ($countObj = $db->fetch_object($resCount))) {
+    $totalRows = (int) $countObj->nb;
+    $db->free($resCount);
+}
+$totalPages = max(1, (int) ceil($totalRows / $pageSize));
+if ($page >= $totalPages) {
+    $page = $totalPages - 1;
+}
+$offset = $page * $pageSize;
+
+$listBaseParams = array(
+    'filter_direction' => $listDirection,
+    'todo' => $todoOnly ? 1 : 0,
+    'limit' => $pageSize,
+);
+$buildListUrl = static function (array $overrides = array()) use ($listBaseParams): string {
+    $params = array_merge($listBaseParams, $overrides);
+    foreach ($params as $key => $value) {
+        if ($value === null || $value === '') {
+            unset($params[$key]);
+        }
+    }
+    return dol_buildpath('/navinvoice/index.php', 1).'?'.http_build_query($params);
+};
+
+print '<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:8px 0 10px 0">';
+print '<form method="GET" action="'.dol_buildpath('/navinvoice/index.php', 1).'">';
+print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+print '<strong>'.$langs->trans('InvoiceListFilters').'</strong>';
+print '<label>'.$langs->trans('InvoiceListDirection').' <select name="filter_direction">';
+foreach (array('BOTH' => 'DirectionBoth', 'INBOUND' => 'DirectionInbound', 'OUTBOUND' => 'DirectionOutbound') as $value => $label) {
+    print '<option value="'.$value.'"'.($listDirection === $value ? ' selected' : '').'>'.$langs->trans($label).'</option>';
+}
+print '</select></label>';
+print '<label title="'.dol_escape_htmltag($langs->trans('InvoiceListTodoHelp')).'">';
+print '<input type="checkbox" name="todo" value="1"'.($todoOnly ? ' checked' : '').'> '.$langs->trans('InvoiceListTodoOnly').'</label>';
+print '<label>'.$langs->trans('InvoiceListPerPage').' <select name="limit">';
+foreach ($allowedPageSizes as $allowedSize) {
+    print '<option value="'.$allowedSize.'"'.($pageSize === $allowedSize ? ' selected' : '').'>'.$allowedSize.'</option>';
+}
+print '</select></label>';
+print '<button class="button" type="submit">'.$langs->trans('InvoiceListApplyFilters').'</button>';
+if ($listDirection !== 'BOTH' || $todoOnly || $pageSize !== 50) {
+    print '<a href="'.dol_buildpath('/navinvoice/index.php', 1).'">'.$langs->trans('InvoiceListResetFilters').'</a>';
+}
+print '</div></form>';
+print '<div class="opacitymedium">'.$langs->trans('InvoiceListResults', $totalRows).'</div>';
+print '</div>';
+
+$printPagination = static function () use ($page, $totalPages, $buildListUrl, $langs): void {
+    if ($totalPages <= 1) {
+        return;
+    }
+    print '<div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap;margin:8px 0">';
+    if ($page > 0) {
+        print '<a class="button" href="'.dol_escape_htmltag($buildListUrl(array('page' => $page - 1))).'">'.$langs->trans('InvoiceListPrevious').'</a>';
+    }
+    $first = max(0, $page - 2);
+    $last = min($totalPages - 1, $page + 2);
+    if ($first > 0) {
+        print '<a href="'.dol_escape_htmltag($buildListUrl(array('page' => 0))).'">1</a>';
+        if ($first > 1) {
+            print '<span class="opacitymedium">…</span>';
+        }
+    }
+    for ($p = $first; $p <= $last; $p++) {
+        if ($p === $page) {
+            print '<strong style="padding:0 4px">'.($p + 1).'</strong>';
+        } else {
+            print '<a href="'.dol_escape_htmltag($buildListUrl(array('page' => $p))).'">'.($p + 1).'</a>';
+        }
+    }
+    if ($last < $totalPages - 1) {
+        if ($last < $totalPages - 2) {
+            print '<span class="opacitymedium">…</span>';
+        }
+        print '<a href="'.dol_escape_htmltag($buildListUrl(array('page' => $totalPages - 1))).'">'.$totalPages.'</a>';
+    }
+    if ($page < $totalPages - 1) {
+        print '<a class="button" href="'.dol_escape_htmltag($buildListUrl(array('page' => $page + 1))).'">'.$langs->trans('InvoiceListNext').'</a>';
+    }
+    print '</div>';
+};
+
+$printPagination();
+
 $sql = 'SELECT rowid, invoice_direction, invoice_number, invoice_operation, invoice_issue_date,';
 $sql .= ' supplier_name, supplier_tax_number, customer_name, customer_tax_number,';
 $sql .= ' currency, invoice_net_amount, invoice_vat_amount, data_fetched, fk_facture, fk_facture_fourn';
 $sql .= ' FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
-$sql .= ' WHERE entity = '.((int) $conf->entity);
+$sql .= ' WHERE '.$whereSql;
 $sql .= ' ORDER BY invoice_issue_date DESC, rowid DESC';
-$sql .= ' LIMIT 300';
+$sql .= ' LIMIT '.$pageSize.' OFFSET '.$offset;
 $resql = $db->query($sql);
 
 print '<div class="div-table-responsive">';
@@ -255,6 +377,8 @@ if ($resql) {
     print '<tr><td colspan="10" class="error">'.dol_escape_htmltag($db->lasterror()).'</td></tr>';
 }
 print '</table></div>';
+
+$printPagination();
 
 llxFooter();
 $db->close();
