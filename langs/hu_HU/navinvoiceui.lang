@@ -1,0 +1,13 @@
+SyncPanelTitle=Szinkronizálás
+SyncFromBefore=
+SyncFromAfter=-tól
+SyncToBefore=
+SyncToAfter=-ig
+SyncSummaryScanned=Vizsgált
+SyncSummaryImported=Importálva
+SyncSummaryLookback=Átfedés
+SyncSummaryDays=nap
+NavDisplayConfiguration=Megjelenítés és diagnosztika
+ShowTechnicalNavXml=Technikai NAV XML megjelenítése
+ShowTechnicalNavXmlHelp=A számlarészleteknél összecsukható, strukturált NAV XML megjelenítése. Fejlesztéshez és hibakereséshez hasznos.
+NavXmlPrettyNotice=Az alábbi az eredeti NAV számlaadat olvasható, strukturált formázásban; a tárolt forrásadat nem módosul.
