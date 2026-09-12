@@ -28,10 +28,6 @@ if ($action !== 'sync_chain') {
     accessforbidden();
 }
 
-if (!checkToken()) {
-    accessforbidden();
-}
-
 $sql = 'SELECT * FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
 $sql .= ' WHERE rowid = '.$id.' AND entity = '.((int) $conf->entity);
 $resql = $db->query($sql);
