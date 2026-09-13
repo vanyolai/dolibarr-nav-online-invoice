@@ -116,6 +116,88 @@
         });
     }
 
+    function isAllCaps(value) {
+        var text = String(value || '').trim();
+        if (!text) {
+            return false;
+        }
+        var upper = text.toLocaleUpperCase('hu-HU');
+        var lower = text.toLocaleLowerCase('hu-HU');
+        return text === upper && text !== lower;
+    }
+
+    function titleCaseHungarian(value) {
+        var text = String(value || '').toLocaleLowerCase('hu-HU');
+        return text.replace(/(^|[\s,./()\-])([\p{L}])/gu, function (_, prefix, letter) {
+            return prefix + letter.toLocaleUpperCase('hu-HU');
+        });
+    }
+
+    function normalizeAllCapsPartyText(value) {
+        var original = String(value || '').trim();
+        if (!isAllCaps(original)) {
+            return original;
+        }
+
+        var normalized = titleCaseHungarian(original);
+
+        // Hungarian public-place categories are common nouns inside an address.
+        [
+            'Utca', 'Út', 'Körút', 'Köz', 'Tér', 'Rakpart', 'Sugárút', 'Sétány',
+            'Sor', 'Dűlő', 'Lejtő', 'Liget', 'Park'
+        ].forEach(function (word) {
+            var re = new RegExp('(^|[^\\p{L}])' + word + '(?=$|[^\\p{L}])', 'gu');
+            normalized = normalized.replace(re, function (match, prefix) {
+                return prefix + word.toLocaleLowerCase('hu-HU');
+            });
+        });
+
+        // Preserve only a conservative set of established acronyms when the
+        // source was all-caps. Do not infer arbitrary short words as acronyms.
+        ['MÁV', 'OTP', 'MOL', 'DSC', 'IBM', 'SAP'].forEach(function (acronym) {
+            var re = new RegExp('(^|[^\\p{L}\\p{N}])' + acronym + '(?=$|[^\\p{L}\\p{N}])', 'giu');
+            normalized = normalized.replace(re, function (match, prefix) {
+                return prefix + acronym;
+            });
+        });
+
+        return normalized;
+    }
+
+    function normalizeInvoicePartyCards() {
+        if (window.location.pathname.indexOf('/navinvoice/detail.php') === -1) {
+            return;
+        }
+
+        document.querySelectorAll('.fichehalfleft table.border, .fichehalfright table.border').forEach(function (table) {
+            var titleRow = table.querySelector('tr.liste_titre');
+            if (!titleRow) {
+                return;
+            }
+
+            table.querySelectorAll('tr').forEach(function (row) {
+                if (row.classList.contains('liste_titre')) {
+                    return;
+                }
+                var cells = row.querySelectorAll(':scope > td');
+                if (cells.length < 2) {
+                    return;
+                }
+                var valueCell = cells[1];
+                // Do not rewrite links/status widgets. This is presentation-only
+                // normalization for plain historical NAV text.
+                if (valueCell.children.length) {
+                    return;
+                }
+                var raw = String(valueCell.textContent || '').trim();
+                var normalized = normalizeAllCapsPartyText(raw);
+                if (normalized !== raw) {
+                    valueCell.textContent = normalized;
+                }
+            });
+        });
+    }
+
     function element(tag, text, className) {
         var node = document.createElement(tag);
         if (className) {
@@ -311,6 +393,7 @@
     function init() {
         enhanceTechnicalXml();
         removeRedundantInvoiceAction();
+        normalizeInvoicePartyCards();
         loadImportStatus();
         loadProductRelations();
     }
