@@ -89,7 +89,11 @@
                 bar.max = 1;
                 bar.value = 1;
             } else if (state === 'error') {
-                bar.removeAttribute('value');
+                // Keep the terminal error state determinate. Removing the value
+                // attribute would put the native progress element back into its
+                // indeterminate ("Knight Rider") animation even though work has stopped.
+                bar.max = 1;
+                bar.value = 0;
             } else {
                 bar.removeAttribute('value');
             }
@@ -148,6 +152,14 @@
 
             var finished = false;
             var reloadScheduled = false;
+            var pollTimer = null;
+
+            function stopPolling() {
+                if (pollTimer !== null) {
+                    window.clearInterval(pollTimer);
+                    pollTimer = null;
+                }
+            }
 
             function unlock() {
                 form.dataset.navinvoiceSyncRunning = '0';
@@ -156,6 +168,7 @@
                     setButtonLabel(button, originalButtonLabel);
                 }
                 window.clearInterval(elapsedTimer);
+                stopPolling();
             }
 
             function scheduleReload() {
@@ -203,7 +216,7 @@
                     });
             }
 
-            var pollTimer = window.setInterval(poll, 750);
+            pollTimer = window.setInterval(poll, 750);
             window.setTimeout(poll, 150);
 
             fetch(executeUrl(), {
@@ -247,7 +260,7 @@
                     unlock();
                 })
                 .finally(function () {
-                    window.clearInterval(pollTimer);
+                    stopPolling();
                 });
         });
     }
