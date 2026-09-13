@@ -123,31 +123,17 @@ $lastSyncDisplay = $dashboard['last_sync'] !== ''
     ? dol_escape_htmltag($dashboard['last_sync'])
     : '<span class="opacitymedium">—</span>';
 $lookbackHelp = $langs->trans('SyncSummaryLookbackHelp');
+$isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu';
+$fromLabel = $langs->trans('SyncFromLabel');
+$toLabel = $langs->trans('SyncToLabel');
 
-print '<div style="max-width:980px">';
+print '<div style="max-width:1180px">';
 print '<table class="noborder centpercent" style="table-layout:fixed">';
 print '<tr class="liste_titre"><td colspan="3">';
-print '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">';
+print '<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">';
 print '<span>'.img_picto('', 'refresh').' '.$langs->trans('SyncPanelTitle').'</span>';
-print '<a class="button" href="'.dol_buildpath('/navinvoice/batch.php', 1).'">'.$langs->trans('BatchImport').'</a>';
-print '</div></td></tr>';
-print '<tr>';
-print $dashboardCell($langs->trans('LastSync'), $lastSyncDisplay);
-print $dashboardCell($langs->trans('DirectionInbound'), (string) $dashboard['inbound']);
-print $dashboardCell($langs->trans('DirectionOutbound'), (string) $dashboard['outbound']);
-print '</tr><tr>';
-print $dashboardCell($langs->trans('SyncSummaryScanned'), (string) $dashboard['total']);
-print $dashboardCell($langs->trans('SyncSummaryImported'), (string) $dashboard['imported']);
-print $dashboardCell($langs->trans('SyncSummaryLookback'), $lookback.' '.dol_escape_htmltag($langs->trans('SyncSummaryDays')), $lookbackHelp);
-print '</tr>';
-print '</table>';
-
 if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
-    $isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu';
-    $fromLabel = $langs->trans('SyncFromLabel');
-    $toLabel = $langs->trans('SyncToLabel');
-
-    print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin-top:10px">';
+    print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin:0">';
     print '<input type="hidden" name="token" value="'.newToken().'">';
     print '<input type="hidden" name="action" value="sync">';
     print '<input type="hidden" name="filter_direction" value="'.dol_escape_htmltag($listDirection).'">';
@@ -177,6 +163,20 @@ if ($user->hasRight('navinvoice', 'invoice', 'sync')) {
     print '<input class="button" type="submit" value="'.$langs->trans('RunNavSync').'">';
     print '</div></form>';
 }
+print '</div></td></tr>';
+print '<tr>';
+print $dashboardCell($langs->trans('LastSync'), $lastSyncDisplay);
+print $dashboardCell($langs->trans('DirectionInbound'), (string) $dashboard['inbound']);
+print $dashboardCell($langs->trans('DirectionOutbound'), (string) $dashboard['outbound']);
+print '</tr><tr>';
+print $dashboardCell($langs->trans('SyncSummaryScanned'), (string) $dashboard['total']);
+print $dashboardCell($langs->trans('SyncSummaryImported'), (string) $dashboard['imported']);
+print $dashboardCell($langs->trans('SyncSummaryLookback'), $lookback.' '.dol_escape_htmltag($langs->trans('SyncSummaryDays')), $lookbackHelp);
+print '</tr>';
+print '</table>';
+print '<div style="margin-top:10px">';
+print '<a class="button" href="'.dol_buildpath('/navinvoice/batch.php', 1).'">'.$langs->trans('BatchImport').'</a>';
+print '</div>';
 print '</div><br>';
 
 $listWhere = array('entity = '.((int) $conf->entity));
