@@ -51,10 +51,13 @@ try {
     $availablePage = (int) ($state['available_page'] ?? 0);
     $recordIndex = (int) ($state['record_index'] ?? 0);
     $recordTotal = (int) ($state['record_total'] ?? 0);
+    $preparing = in_array($stage, array('starting', 'preparing'), true);
 
     $progressFraction = null;
     if ($status === 'done') {
         $progressFraction = 1.0;
+    } elseif ($status === 'running' && $preparing) {
+        $progressFraction = 0.0;
     } elseif ($chunkIndex > 0 && $chunkTotal > 0) {
         $withinChunk = 0.0;
         if ($stage === 'chunk_done') {
@@ -85,6 +88,19 @@ try {
         );
     } elseif ($status === 'error') {
         $message = $langs->transnoentities('SyncProgressError').': '.(string) $state['message'];
+    } elseif ($preparing) {
+        $parts = array($langs->transnoentities('SyncProgressPreparing'));
+        if ($chunkTotal > 0) {
+            $parts[] = $langs->transnoentities('SyncProgressPlannedChunks', $chunkTotal);
+        }
+        $parts[] = $langs->transnoentities('SyncProgressApiRequests', (int) $state['api_requests']);
+        $parts[] = $langs->transnoentities('SyncProgressXmlDownloaded', (int) $state['downloaded']);
+
+        $lastUpdate = strtotime((string) $state['updated_at']);
+        if ((int) $state['api_requests'] === 0 && $lastUpdate !== false && (time() - $lastUpdate) >= 15) {
+            $parts[] = $langs->transnoentities('SyncProgressPreparingDelayed');
+        }
+        $message = implode(' · ', $parts);
     } else {
         $parts = array($langs->transnoentities('SyncProgressRunningShort'));
         if ($chunkIndex > 0 && $chunkTotal > 0) {
