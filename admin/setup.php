@@ -32,6 +32,7 @@ $formLookbackDays = $isConfigPost ? max(1, min(35, GETPOSTINT('lookback_days')))
 $formSyncEnabled = $isConfigPost ? (bool) GETPOSTINT('sync_enabled') : (bool) getDolGlobalInt('NAVINVOICE_SYNC_ENABLED');
 $formFetchFullData = $isConfigPost ? (bool) GETPOSTINT('fetch_full_data') : (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1);
 $formAutoValidateInbound = $isConfigPost ? (bool) GETPOSTINT('auto_validate_inbound') : (bool) getDolGlobalInt('NAVINVOICE_AUTO_VALIDATE_INBOUND');
+$formPurchaseWorkbench = $isConfigPost ? (bool) GETPOSTINT('purchase_workbench_enabled') : (bool) getDolGlobalInt('NAVINVOICE_PURCHASE_WORKBENCH_ENABLED');
 $formShowTechnicalXml = $isConfigPost ? (bool) GETPOSTINT('show_technical_xml') : (bool) getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1);
 
 if ($isConfigPost) {
@@ -62,6 +63,7 @@ if ($isConfigPost) {
         dolibarr_set_const($db, 'NAVINVOICE_FETCH_FULL_DATA', $formFetchFullData ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_SYNC_LOOKBACK_DAYS', (string) $formLookbackDays, 'chaine', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_AUTO_VALIDATE_INBOUND', $formAutoValidateInbound ? '1' : '0', 'yesno', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_PURCHASE_WORKBENCH_ENABLED', $formPurchaseWorkbench ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_SHOW_TECHNICAL_XML', $formShowTechnicalXml ? '1' : '0', 'yesno', 0, '', $conf->entity);
 
         if ($password !== '') {
@@ -133,6 +135,7 @@ if ($stockValidationNeedsWarehouse) {
     print '<br><span class="warning">'.img_picto('', 'warning').' '.$langs->trans('AutoValidateInboundStockWarning').'</span>';
 }
 print '</td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('PurchaseWorkbenchEnabled').'</td><td><input type="checkbox" name="purchase_workbench_enabled" value="1"'.($formPurchaseWorkbench ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('PurchaseWorkbenchEnabledHelp').'</span></td></tr>';
 
 print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavDisplayConfiguration').'</td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('ShowTechnicalNavXml').'</td><td><input type="checkbox" name="show_technical_xml" value="1"'.($formShowTechnicalXml ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('ShowTechnicalNavXmlHelp').'</span></td></tr>';
