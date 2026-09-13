@@ -37,7 +37,7 @@ class modNavInvoice extends DolibarrModules
             'tpl' => 0,
             'models' => 0,
             'css' => array(),
-            'js' => array('/navinvoice/js/navinvoice-ui.js'),
+            'js' => array('/navinvoice/js/navinvoice-ui.js', '/navinvoice/js/navinvoice-sync-progress.js'),
             'hooks' => array('invoicesuppliercard'),
             'moduleforexternal' => 0,
         );
