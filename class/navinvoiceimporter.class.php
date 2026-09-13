@@ -3,11 +3,13 @@
 dol_include_once('/navinvoice/class/navunitresolver.class.php');
 
 /**
- * Import a validated NAV import preview into Dolibarr as a draft invoice.
+ * Import a validated NAV import preview into Dolibarr.
  *
- * The importer deliberately creates drafts only. Outbound NAV invoice numbers
- * are stored as customer reference and can later be used as the forced Dolibarr
- * invoice number when the draft is explicitly validated.
+ * Invoices are always created and reconciled as drafts first. Inbound supplier
+ * invoices may then be validated through Dolibarr's native validation flow when
+ * the module setting allows it and the preflight state is fully READY.
+ * Outbound NAV invoice numbers are stored as customer reference and remain
+ * drafts until an explicit outbound validation policy is implemented.
  */
 class NavInvoiceImporter
 {
@@ -108,6 +110,12 @@ class NavInvoiceImporter
             $this->assertOperationMapping($invoice, $preview);
             $this->linkMirrorRecord((int) $record->rowid, $direction, $invoiceId);
 
+            // Validation intentionally happens only after all NAV reconciliation,
+            // assertions and mirror linking completed. Failure to validate is not
+            // an import failure: the correctly imported invoice remains a linked
+            // draft so the user can resolve the Dolibarr-side validation reason.
+            $validation = $this->maybeAutoValidateInbound($invoice, $preview, $user, $inbound);
+
             return array(
                 'id' => $invoiceId,
                 'type' => $inbound ? 'supplier' : 'customer',
@@ -119,6 +127,10 @@ class NavInvoiceImporter
                 'operation' => $operation,
                 'operation_mapping' => $operationMapping,
                 'source_invoice_id' => $sourceInvoiceId,
+                'validation_attempted' => (bool) $validation['attempted'],
+                'validated' => (bool) $validation['validated'],
+                'validation_skipped_reason' => (string) $validation['skipped_reason'],
+                'validation_error' => (string) $validation['error'],
             );
         } catch (Throwable $e) {
             if ($invoiceId > 0 && is_object($invoice)) {
@@ -672,6 +684,95 @@ class NavInvoiceImporter
         if (!$obj || (int) $obj->linked_id !== $invoiceId) {
             throw new Exception('The NAV mirror record was not linked to the created Dolibarr invoice.');
         }
+    }
+
+    /**
+     * Optionally validate a successfully imported inbound supplier invoice.
+     *
+     * This deliberately never throws. Import/reconciliation and mirror linking
+     * are already complete at this point, so a Dolibarr-side validation failure
+     * leaves the invoice as a usable linked draft instead of rolling it back.
+     *
+     * @param object $invoice
+     * @param array<string,mixed> $preview
+     * @return array{attempted:bool,validated:bool,skipped_reason:string,error:string}
+     */
+    private function maybeAutoValidateInbound($invoice, array $preview, User $user, bool $inbound): array
+    {
+        $status = array(
+            'attempted' => false,
+            'validated' => false,
+            'skipped_reason' => '',
+            'error' => '',
+        );
+
+        if (!$inbound || !getDolGlobalInt('NAVINVOICE_AUTO_VALIDATE_INBOUND')) {
+            return $status;
+        }
+
+        // REVIEW is intentionally still a draft: automatic validation is only
+        // for invoices for which the complete preflight is deterministic.
+        if ((string) ($preview['state'] ?? '') !== 'ready') {
+            $status['skipped_reason'] = 'preview_not_ready';
+            return $status;
+        }
+
+        // Dolibarr may generate stock movements on supplier invoice validation.
+        // Without an explicit warehouse mapping, calling validate(..., 0) could
+        // either fail or book stock into an unintended warehouse. Keep the draft
+        // until the module has a deterministic warehouse policy.
+        if (isModEnabled('stock') && getDolGlobalString('STOCK_CALCULATE_ON_SUPPLIER_BILL')) {
+            $status['skipped_reason'] = 'stock_warehouse_required';
+            dol_syslog(
+                'NavInvoiceImporter skipped automatic validation for supplier invoice '.((int) ($invoice->id ?? 0)).' because STOCK_CALCULATE_ON_SUPPLIER_BILL is enabled',
+                LOG_WARNING
+            );
+            return $status;
+        }
+
+        if (!($invoice instanceof FactureFournisseur)) {
+            $status['skipped_reason'] = 'not_supplier_invoice';
+            return $status;
+        }
+
+        $status['attempted'] = true;
+        try {
+            $result = $invoice->validate($user);
+            if ($result < 0) {
+                $status['error'] = $this->objectError($invoice);
+                dol_syslog(
+                    'NavInvoiceImporter automatic validation failed for supplier invoice '.((int) $invoice->id).': '.$status['error'],
+                    LOG_WARNING
+                );
+                return $status;
+            }
+
+            if ($invoice->fetch((int) $invoice->id) <= 0) {
+                $status['error'] = 'Validated supplier invoice could not be reloaded.';
+                dol_syslog(
+                    'NavInvoiceImporter automatic validation result could not be reloaded for supplier invoice '.((int) $invoice->id),
+                    LOG_WARNING
+                );
+                return $status;
+            }
+
+            $status['validated'] = (int) ($invoice->status ?? 0) >= FactureFournisseur::STATUS_VALIDATED;
+            if (!$status['validated']) {
+                $status['error'] = 'Dolibarr validation returned without moving the invoice out of draft status.';
+                dol_syslog(
+                    'NavInvoiceImporter automatic validation left supplier invoice '.((int) $invoice->id).' in draft status',
+                    LOG_WARNING
+                );
+            }
+        } catch (Throwable $e) {
+            $status['error'] = $e->getMessage();
+            dol_syslog(
+                'NavInvoiceImporter automatic validation threw for supplier invoice '.((int) ($invoice->id ?? 0)).': '.$e->getMessage(),
+                LOG_WARNING
+            );
+        }
+
+        return $status;
     }
 
     private function paymentModeId(string $navMethod): int
