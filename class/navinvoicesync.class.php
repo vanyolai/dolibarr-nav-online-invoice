@@ -118,7 +118,7 @@ class NavInvoiceSync
             if ($hasOldUnique && !$this->db->query("ALTER TABLE ".$table." DROP INDEX uk_navinvoice_invoice")) {
                 throw new Exception($this->db->lasterror());
             }
-            if (!$this->db->query("ALTER TABLE ".$table." ADD UNIQUE INDEX uk_navinvoice_invoice (entity, invoice_direction, invoice_number, batch_index)")) {
+            if ($hasOldUnique && !$this->db->query("ALTER TABLE ".$table." ADD UNIQUE INDEX uk_navinvoice_invoice (entity, invoice_direction, invoice_number, batch_index)")) {
                 throw new Exception($this->db->lasterror());
             }
         }
@@ -177,7 +177,13 @@ class NavInvoiceSync
 
                 if ($fetchFullData) {
                     if ($upsert['changed'] || !$upsert['data_fetched']) {
-                        $xml = $api->queryInvoiceData($data['invoice_number'], (int) $data['batch_index'], $direction);
+                        $supplierTaxNumber = trim((string) ($data['supplier_tax_number'] ?? ''));
+                        $xml = $api->queryInvoiceData(
+                            $data['invoice_number'],
+                            (int) $data['batch_index'],
+                            $direction,
+                            $supplierTaxNumber !== '' ? $supplierTaxNumber : null
+                        );
                         $this->storeInvoiceData((int) $upsert['rowid'], $xml);
                         $stats['downloaded']++;
                     } elseif ($upsert['amounts_missing']) {
