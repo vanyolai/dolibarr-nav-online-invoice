@@ -53,7 +53,7 @@ class modNavInvoice extends DolibarrModules
         $this->need_dolibarr_version = array(23, 0);
         $this->need_javascript_ajax = 0;
 
-        // Keep NAV connection settings when the module is temporarily disabled.
+        // Keep NAV connection/import settings when the module is temporarily disabled.
         // This also makes a disable/enable cycle safe when refreshing menu entries.
         $this->const = array(
             0 => array('NAVINVOICE_ENVIRONMENT', 'chaine', 'test', 'NAV API environment', 0, 'current', 0),
@@ -61,6 +61,7 @@ class modNavInvoice extends DolibarrModules
             2 => array('NAVINVOICE_SYNC_LOOKBACK_DAYS', 'chaine', '7', 'Days to re-check on scheduled sync', 0, 'current', 0),
             3 => array('NAVINVOICE_FETCH_FULL_DATA', 'yesno', '1', 'Download complete invoice XML', 0, 'current', 0),
             4 => array('NAVINVOICE_SOFTWARE_ID', 'chaine', 'DOLIBARRNAVSYNC001', 'NAV software identifier', 0, 'current', 0),
+            5 => array('NAVINVOICE_AUTO_VALIDATE_INBOUND', 'yesno', '0', 'Automatically validate READY inbound NAV imports', 0, 'current', 0),
         );
 
         if (!isModEnabled('navinvoice')) {
@@ -102,7 +103,7 @@ class modNavInvoice extends DolibarrModules
         $this->rights[$r][5] = 'sync';
         $r++;
         $this->rights[$r][0] = 581003;
-        $this->rights[$r][1] = 'Import NAV invoices as Dolibarr drafts';
+        $this->rights[$r][1] = 'Import NAV invoices into Dolibarr';
         $this->rights[$r][4] = 'invoice';
         $this->rights[$r][5] = 'import';
 
