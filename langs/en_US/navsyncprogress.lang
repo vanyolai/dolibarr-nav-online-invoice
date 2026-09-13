@@ -1,5 +1,8 @@
 SyncProgressRunning=Synchronization in progress: %s records processed
 SyncProgressRunningShort=Synchronization in progress
+SyncProgressPreparing=Preparing synchronization
+SyncProgressPlannedChunks=Planned blocks: %s
+SyncProgressPreparingDelayed=The first NAV request has not started yet; a previous synchronization or database lock may be delaying the process.
 SyncProgressLatestInvoice=Latest invoice
 SyncProgressCurrentInvoice=Current invoice
 SyncProgressChunk=Block %s/%s
