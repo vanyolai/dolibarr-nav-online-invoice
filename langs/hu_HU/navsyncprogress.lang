@@ -1,4 +1,12 @@
 SyncProgressRunning=Szinkronizálás folyamatban: %s rekord feldolgozva
+SyncProgressRunningShort=Szinkronizálás folyamatban
 SyncProgressLatestInvoice=Legutóbbi számla
+SyncProgressCurrentInvoice=Aktuális számla
+SyncProgressChunk=Blokk %s/%s
+SyncProgressPeriod=%s – %s
+SyncProgressDigestPage=Digest oldal %s/%s
+SyncProgressRecord=Rekord %s/%s
+SyncProgressApiRequests=NAV kérések: %s
+SyncProgressXmlDownloaded=XML letöltve: %s
 SyncProgressDone=Szinkronizálás kész: %s vizsgált, %s új, %s frissített, %s XML letöltve
 SyncProgressError=A szinkronizálás sikertelen
