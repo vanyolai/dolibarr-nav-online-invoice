@@ -6,10 +6,9 @@ dol_include_once('/navinvoice/class/navinvoiceoperationpreview.class.php');
  * Purchase workbench for inbound NAV invoices.
  *
  * The workbench deliberately separates master-data preparation from accounting
- * import. It can resolve invoice rows to existing products, create an editable
- * product candidate only after explicit confirmation, maintain the supplier
- * price/reference, and finally reconstruct a DRAFT supplier order. It never
- * validates, approves, orders or receives the supplier order.
+ * import. It can resolve invoice rows to existing products, create editable
+ * product candidates, maintain supplier references/prices and reconstruct DRAFT
+ * supplier orders. It never validates, approves, orders or receives an order.
  */
 class NavPurchaseWorkbench
 {
@@ -63,22 +62,38 @@ class NavPurchaseWorkbench
             if (!is_array($line)) {
                 continue;
             }
+
             $match = is_array($line['product_match'] ?? null) ? $line['product_match'] : array();
             $product = is_array($match['product'] ?? null) ? $match['product'] : null;
-            $priceDetails = null;
-            if ($product !== null && !empty($product['supplier_price_id'])) {
-                $priceDetails = $this->supplierPriceDetails((int) $product['supplier_price_id']);
+            $productId = $product !== null ? (int) ($product['id'] ?? 0) : 0;
+            $supplierRef = trim((string) ($line['supplier_ref'] ?? ''));
+            $priceSelection = null;
+            $productDetails = null;
+
+            if ($partnerId > 0 && $productId > 0) {
+                $productDetails = $this->productDetails($productId);
+                $priceSelection = $this->selectSupplierPriceForLine($partnerId, $productId, $supplierRef, $line);
+                if ($priceSelection !== null && $product !== null) {
+                    // The product matcher intentionally identifies the product, not
+                    // the correct MOQ price tier. The workbench can choose the exact
+                    // supplier-price row based on NAV quantity/price semantics.
+                    $match['product']['supplier_price_id'] = (int) $priceSelection['price']['rowid'];
+                    $line['product_match'] = $match;
+                    $product = $match['product'];
+                }
             }
 
-            $navUnitPrice = $line['unit_price_ht'] ?? null;
-            $currentUnitPrice = $priceDetails !== null ? $this->supplierPriceUnitPrice($priceDetails) : null;
-            $priceDiffers = $navUnitPrice !== null && $navUnitPrice !== '' && $currentUnitPrice !== null
-                && abs((float) $navUnitPrice - $currentUnitPrice) > 0.00001;
+            $normalization = $this->normalizePurchaseLine(
+                $line,
+                $priceSelection !== null ? $priceSelection['price'] : null,
+                $productDetails
+            );
 
             $line['workbench_index'] = (int) $index;
-            $line['supplier_price'] = $priceDetails;
-            $line['supplier_price_unit_price'] = $currentUnitPrice;
-            $line['supplier_price_differs'] = $priceDiffers;
+            $line['supplier_price'] = $priceSelection !== null ? $priceSelection['price'] : null;
+            $line['supplier_price_unit_price'] = $normalization['supplier_unit_price'];
+            $line['supplier_price_differs'] = $normalization['price_differs'];
+            $line['purchase_normalization'] = $normalization;
             $line['skip_for_order'] = !empty($line['informational_zero_line']);
             $line['candidate'] = array(
                 'ref' => $this->temporaryProductRef((int) $record->rowid, (string) ($line['number'] ?? $index + 1)),
@@ -88,12 +103,19 @@ class NavPurchaseWorkbench
                 'unit_id' => (int) ($line['unit_id'] ?? 0),
                 'stockable' => (int) ($line['product_type'] ?? 0) === 0 ? 1 : 0,
                 'tosell' => 0,
-                'supplier_ref' => trim((string) ($line['supplier_ref'] ?? '')),
-                'unit_price_ht' => $navUnitPrice,
+                'supplier_ref' => $supplierRef,
+                // For a new master record this is the NAV price for one NAV unit.
+                // The user may turn it into an MOQ price by editing quantity below.
+                'supplier_price_total' => $line['unit_price_ht'] ?? null,
+                'supplier_quantity' => 1,
+                'supplier_packaging' => 1,
+                'unit_price_ht' => $line['unit_price_ht'] ?? null,
                 'vat_rate' => $line['vat_rate'] ?? 0,
             );
             $lines[] = $line;
         }
+
+        $linkedOrders = $this->findLinkedOrders((int) $record->rowid);
 
         return array(
             'available' => !$reasons,
@@ -102,13 +124,20 @@ class NavPurchaseWorkbench
             'partner_id' => $partnerId,
             'partner' => $preview['partner'] ?? null,
             'linked_invoice_id' => (int) ($record->fk_facture_fourn ?? 0),
-            'order' => $this->findLinkedOrder((int) $record->rowid),
+            // Backward compatibility for the initial workbench UI.
+            'order' => $linkedOrders ? $linkedOrders[0] : null,
+            'orders' => $linkedOrders,
+            'candidate_orders' => $partnerId > 0 ? $this->candidateOrders($partnerId, (int) $record->rowid) : array(),
             'lines' => $lines,
         );
     }
 
     /**
      * Create a real Dolibarr product/service plus its supplier reference/price.
+     *
+     * Optional supplier_quantity / supplier_packaging / supplier_price_total
+     * inputs mirror Dolibarr's native MOQ supplier-price model. Older callers
+     * that only send unit_price_ht remain compatible and create a qty=1 tier.
      *
      * @param array<string,mixed> $line Workbench line rebuilt server-side.
      * @param array<string,mixed> $input User-confirmed candidate values.
@@ -117,18 +146,32 @@ class NavPurchaseWorkbench
     public function createProduct(array $line, int $supplierId, array $input, User $user): array
     {
         require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.product.class.php';
-        require_once DOL_DOCUMENT_ROOT.'/societe/class/societe.class.php';
 
         $ref = trim((string) ($input['ref'] ?? ''));
         $label = trim((string) ($input['label'] ?? ''));
         $description = trim((string) ($input['description'] ?? ''));
-        $type = (int) ($input['product_type'] ?? ($line['product_type'] ?? 0));
+        $sourceType = (int) ($line['product_type'] ?? 0);
+        $type = isset($input['product_type']) ? (int) $input['product_type'] : $sourceType;
         $unitId = (int) ($input['unit_id'] ?? ($line['unit_id'] ?? 0));
         $stockable = !empty($input['stockable']) && $type === 0 ? 1 : 0;
         $tosell = !empty($input['tosell']) ? 1 : 0;
         $supplierRef = trim((string) ($input['supplier_ref'] ?? ($line['supplier_ref'] ?? '')));
-        $unitPrice = (float) ($input['unit_price_ht'] ?? ($line['unit_price_ht'] ?? 0));
         $vatRate = (float) ($input['vat_rate'] ?? ($line['vat_rate'] ?? 0));
+
+        $quantity = (float) ($input['supplier_quantity'] ?? 1);
+        if ($quantity <= 0) {
+            $quantity = 1;
+        }
+        $packaging = (float) ($input['supplier_packaging'] ?? $quantity);
+        if ($packaging <= 0) {
+            $packaging = $quantity;
+        }
+
+        $legacyUnitPrice = (float) ($input['unit_price_ht'] ?? ($line['unit_price_ht'] ?? 0));
+        $totalPrice = array_key_exists('supplier_price_total', $input)
+            ? (float) $input['supplier_price_total']
+            : $legacyUnitPrice * $quantity;
+        $unitPrice = $quantity > 0 ? $totalPrice / $quantity : $legacyUnitPrice;
 
         if ($supplierId <= 0) {
             throw new Exception('Supplier is required before creating a product from NAV.');
@@ -136,8 +179,8 @@ class NavPurchaseWorkbench
         if ($ref === '' || $label === '') {
             throw new Exception('Product reference and label are required.');
         }
-        if (!in_array($type, array(0, 1), true)) {
-            throw new Exception('Unsupported Dolibarr product type.');
+        if (!in_array($type, array(0, 1), true) || $type !== $sourceType) {
+            throw new Exception('Product/service type must remain consistent with the NAV line.');
         }
         if ($supplierRef === '') {
             throw new Exception('Supplier reference is required for workbench product creation.');
@@ -166,7 +209,19 @@ class NavPurchaseWorkbench
 
         try {
             $product->id = (int) $productId;
-            $supplierPriceId = $this->writeSupplierPrice($product, $supplier, 0, $supplierRef, $unitPrice, $vatRate, null, $user);
+            $supplierPriceId = $this->writeSupplierPrice(
+                $product,
+                $supplier,
+                0,
+                $supplierRef,
+                $unitPrice,
+                $vatRate,
+                null,
+                $user,
+                $quantity,
+                $packaging,
+                $totalPrice
+            );
         } catch (Throwable $e) {
             try {
                 $product->delete($user);
@@ -184,12 +239,7 @@ class NavPurchaseWorkbench
         );
     }
 
-    /**
-     * Associate an existing product/variant with this supplier reference.
-     * Existing supplier price data is not overwritten here.
-     *
-     * @return int Supplier-price row id.
-     */
+    /** Associate an existing product/variant with this supplier reference. */
     public function linkExistingProduct(array $line, int $supplierId, int $productId, User $user): int
     {
         require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.product.class.php';
@@ -258,6 +308,14 @@ class NavPurchaseWorkbench
             throw new Exception('Supplier price relationship changed since the workbench preview.');
         }
 
+        $normalization = $this->normalizePurchaseLine($line, $details, $this->productDetails($productId));
+        if (empty($normalization['price_differs'])) {
+            return;
+        }
+        if (empty($normalization['can_update_price'])) {
+            throw new Exception('Supplier price cannot be updated safely until the NAV-to-Dolibarr quantity conversion is resolved.');
+        }
+
         $supplier = $this->loadSupplier($supplierId);
         $product = new ProductFournisseur($this->db);
         if ($product->fetch($productId) <= 0) {
@@ -279,7 +337,11 @@ class NavPurchaseWorkbench
     /**
      * Create a supplier order in DRAFT status only.
      *
-     * @param array<string,mixed> $workbench Result of build(), rebuilt server-side.
+     * Product-linked lines use normalized Dolibarr quantities/unit prices. An
+     * invoice that is already linked to any supplier order is not reconstructed
+     * into another order automatically; additional relations should use
+     * linkExistingOrder().
+     *
      * @param array<int,int> $freeTextIndexes Explicitly accepted unresolved rows.
      * @return array{id:int,ref:string,url:string}
      */
@@ -290,8 +352,8 @@ class NavPurchaseWorkbench
         if (empty($workbench['available'])) {
             throw new Exception('Purchase workbench is not available for this NAV invoice.');
         }
-        if (!empty($workbench['order']['id'])) {
-            throw new Exception('A supplier order is already linked to this NAV invoice.');
+        if (!empty($workbench['orders'])) {
+            throw new Exception('At least one supplier order is already linked to this NAV invoice.');
         }
 
         $supplierId = (int) ($workbench['partner_id'] ?? 0);
@@ -317,8 +379,18 @@ class NavPurchaseWorkbench
             if (!$matched && !in_array($index, $freeTextIndexes, true)) {
                 throw new Exception('Every unresolved invoice line must be explicitly accepted as a free-text order line or linked to a product.');
             }
+
+            $normalization = is_array($line['purchase_normalization'] ?? null)
+                ? $line['purchase_normalization']
+                : $this->normalizePurchaseLine($line, null, null);
+
             $line['_order_product_id'] = $matched ? (int) ($product['id'] ?? 0) : 0;
             $line['_order_supplier_price_id'] = $matched ? (int) ($product['supplier_price_id'] ?? 0) : 0;
+            $line['_order_qty'] = $matched ? (float) $normalization['normalized_quantity'] : (float) ($line['quantity'] ?? 0);
+            $line['_order_unit_price'] = $matched ? (float) $normalization['normalized_unit_price'] : (float) ($line['unit_price_ht'] ?? 0);
+            $line['_order_unit_id'] = $matched && !empty($normalization['product_unit_id'])
+                ? (int) $normalization['product_unit_id']
+                : (!empty($line['unit_id']) ? (int) $line['unit_id'] : null);
             $resolvedLines[] = $line;
         }
         if (!$resolvedLines) {
@@ -347,13 +419,13 @@ class NavPurchaseWorkbench
 
         try {
             foreach ($resolvedLines as $line) {
-                $qty = (float) ($line['quantity'] ?? 0);
+                $qty = (float) ($line['_order_qty'] ?? 0);
                 if ($qty <= 0) {
                     continue;
                 }
                 $result = $order->addline(
                     (string) ($line['description'] ?? ''),
-                    (float) ($line['unit_price_ht'] ?? 0),
+                    (float) ($line['_order_unit_price'] ?? 0),
                     $qty,
                     (float) ($line['vat_rate'] ?? 0),
                     0.0,
@@ -370,7 +442,7 @@ class NavPurchaseWorkbench
                     null,
                     null,
                     array(),
-                    !empty($line['unit_id']) ? (int) $line['unit_id'] : null
+                    $line['_order_unit_id']
                 );
                 if ($result <= 0) {
                     throw new Exception('Supplier order line creation failed: '.$this->objectError($order));
@@ -400,34 +472,135 @@ class NavPurchaseWorkbench
         );
     }
 
-    /** @return array<string,mixed>|null */
-    public function findLinkedOrder(int $mirrorId): ?array
+    /** Link this NAV invoice to an already existing order without modifying it. */
+    public function linkExistingOrder(array $workbench, $record, int $orderId, User $user): array
+    {
+        require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.commande.class.php';
+
+        if (empty($workbench['available'])) {
+            throw new Exception('Purchase workbench is not available for this NAV invoice.');
+        }
+        if ($orderId <= 0) {
+            throw new Exception('Supplier order is required.');
+        }
+
+        $supplierId = (int) ($workbench['partner_id'] ?? 0);
+        $order = new CommandeFournisseur($this->db);
+        if ($order->fetch($orderId) <= 0) {
+            throw new Exception('Selected supplier order could not be loaded.');
+        }
+        if ((int) ($order->socid ?? $order->fourn_id ?? 0) !== $supplierId) {
+            throw new Exception('Selected supplier order belongs to a different supplier.');
+        }
+        if (in_array((int) ($order->status ?? $order->statut ?? 0), array(6, 7, 9), true)) {
+            throw new Exception('Canceled/refused supplier orders cannot be linked from the workbench.');
+        }
+
+        $this->linkOrder((int) $record->rowid, $orderId);
+
+        $linkedInvoiceId = (int) ($workbench['linked_invoice_id'] ?? 0);
+        if ($linkedInvoiceId > 0) {
+            try {
+                $order->add_object_linked('invoice_supplier', $linkedInvoiceId);
+            } catch (Throwable $e) {
+                dol_syslog('NAV purchase workbench could not create core supplier order/invoice link: '.$e->getMessage(), LOG_WARNING);
+            }
+        }
+
+        return array(
+            'id' => $orderId,
+            'ref' => (string) $order->ref,
+            'url' => DOL_URL_ROOT.'/fourn/commande/card.php?id='.$orderId,
+        );
+    }
+
+    /** @return array<int,array<string,mixed>> */
+    public function findLinkedOrders(int $mirrorId): array
     {
         $this->ensureSchema();
-        $sql = 'SELECT l.fk_commande_fourn, c.ref, c.fk_statut';
+        $sql = 'SELECT l.fk_commande_fourn, c.ref, c.fk_statut, c.date_commande, c.date_creation, c.total_ht, c.billed';
         $sql .= ' FROM '.MAIN_DB_PREFIX.'navinvoice_purchase_link AS l';
         $sql .= ' LEFT JOIN '.MAIN_DB_PREFIX.'commande_fournisseur AS c ON c.rowid = l.fk_commande_fourn';
         $sql .= ' WHERE l.entity = '.$this->entity.' AND l.fk_navinvoice_invoice = '.$mirrorId;
-        $sql .= ' LIMIT 1';
+        $sql .= ' ORDER BY l.rowid';
         $resql = $this->db->query($sql);
         if (!$resql) {
-            throw new Exception('Could not read NAV purchase-workbench link: '.$this->db->lasterror());
+            throw new Exception('Could not read NAV purchase-workbench links: '.$this->db->lasterror());
         }
-        $obj = $this->db->fetch_object($resql);
+
+        $orders = array();
+        $stale = array();
+        while ($obj = $this->db->fetch_object($resql)) {
+            if (empty($obj->ref)) {
+                $stale[] = (int) $obj->fk_commande_fourn;
+                continue;
+            }
+            $orders[] = array(
+                'id' => (int) $obj->fk_commande_fourn,
+                'ref' => (string) $obj->ref,
+                'status' => (int) $obj->fk_statut,
+                'date' => (string) ($obj->date_commande ?: $obj->date_creation),
+                'total_ht' => (float) $obj->total_ht,
+                'billed' => (int) $obj->billed,
+                'url' => DOL_URL_ROOT.'/fourn/commande/card.php?id='.(int) $obj->fk_commande_fourn,
+            );
+        }
         $this->db->free($resql);
-        if (!$obj) {
-            return null;
+
+        foreach ($stale as $orderId) {
+            $this->deleteLink($mirrorId, $orderId);
         }
-        if (empty($obj->ref)) {
-            $this->deleteLinkByMirror($mirrorId);
-            return null;
+        return $orders;
+    }
+
+    /** Backward-compatible single-order accessor. */
+    public function findLinkedOrder(int $mirrorId): ?array
+    {
+        $orders = $this->findLinkedOrders($mirrorId);
+        return $orders ? $orders[0] : null;
+    }
+
+    /** @return array<int,array<string,mixed>> */
+    public function candidateOrders(int $supplierId, int $mirrorId = 0): array
+    {
+        if ($supplierId <= 0) {
+            return array();
         }
-        return array(
-            'id' => (int) $obj->fk_commande_fourn,
-            'ref' => (string) $obj->ref,
-            'status' => (int) $obj->fk_statut,
-            'url' => DOL_URL_ROOT.'/fourn/commande/card.php?id='.(int) $obj->fk_commande_fourn,
-        );
+
+        $linked = array();
+        if ($mirrorId > 0) {
+            foreach ($this->findLinkedOrders($mirrorId) as $order) {
+                $linked[(int) $order['id']] = true;
+            }
+        }
+
+        $sql = 'SELECT rowid, ref, fk_statut, date_commande, date_creation, total_ht, billed';
+        $sql .= ' FROM '.MAIN_DB_PREFIX.'commande_fournisseur';
+        $sql .= ' WHERE entity = '.$this->entity.' AND fk_soc = '.$supplierId;
+        $sql .= ' AND fk_statut NOT IN (6,7,9)';
+        $sql .= ' ORDER BY COALESCE(date_commande, date_creation) DESC, rowid DESC LIMIT 50';
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception('Could not load supplier-order candidates: '.$this->db->lasterror());
+        }
+
+        $orders = array();
+        while ($obj = $this->db->fetch_object($resql)) {
+            if (isset($linked[(int) $obj->rowid])) {
+                continue;
+            }
+            $orders[] = array(
+                'id' => (int) $obj->rowid,
+                'ref' => (string) $obj->ref,
+                'status' => (int) $obj->fk_statut,
+                'date' => (string) ($obj->date_commande ?: $obj->date_creation),
+                'total_ht' => (float) $obj->total_ht,
+                'billed' => (int) $obj->billed,
+                'url' => DOL_URL_ROOT.'/fourn/commande/card.php?id='.(int) $obj->rowid,
+            );
+        }
+        $this->db->free($resql);
+        return $orders;
     }
 
     /** @return Societe */
@@ -442,24 +615,125 @@ class NavPurchaseWorkbench
     }
 
     /**
-     * Create or update a Dolibarr supplier-price row using the native business
-     * method. In base-currency NAV imports, multicurrency mirrors the same amount
-     * with tx=1 so an enabled multicurrency module cannot zero the base price.
+     * Choose the supplier price tier whose unit or MOQ/packaging total best
+     * explains the NAV invoice unit price.
+     *
+     * @return array{price:array<string,mixed>,normalization:array<string,mixed>}|null
+     */
+    private function selectSupplierPriceForLine(int $supplierId, int $productId, string $supplierRef, array $line): ?array
+    {
+        $prices = $this->supplierPrices($supplierId, $productId, $supplierRef);
+        if (!$prices) {
+            return null;
+        }
+
+        $best = null;
+        $bestScore = -INF;
+        foreach ($prices as $price) {
+            $normalization = $this->normalizePurchaseLine($line, $price, $this->productDetails($productId));
+            $score = (float) ($normalization['match_score'] ?? 0);
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $best = array('price' => $price, 'normalization' => $normalization);
+            }
+        }
+        return $best;
+    }
+
+    /**
+     * Normalize NAV quantity/unit-price semantics to Dolibarr product units.
+     *
+     * Exact relationships only are automatic. We never divide by MOQ simply
+     * because MOQ exists: the NAV price must match either supplier unitprice,
+     * the total price for the supplier-price quantity, or unitprice*packaging.
+     *
+     * @param array<string,mixed>|null $price
+     * @param array<string,mixed>|null $product
+     * @return array<string,mixed>
+     */
+    private function normalizePurchaseLine(array $line, ?array $price, ?array $product): array
+    {
+        $navQty = (float) ($line['quantity'] ?? 0);
+        $navUnitPrice = (float) ($line['unit_price_ht'] ?? 0);
+        $supplierQty = $price !== null ? (float) ($price['quantity'] ?? 0) : 0.0;
+        $packaging = $price !== null ? (float) ($price['packaging'] ?? 0) : 0.0;
+        $supplierTotal = $price !== null ? (float) ($price['price'] ?? 0) : 0.0;
+        $supplierUnit = $price !== null ? $this->supplierPriceUnitPrice($price) : null;
+        $factor = 1.0;
+        $mode = 'unresolved';
+        $score = 0.0;
+
+        if ($supplierUnit !== null && $this->moneyEqual($navUnitPrice, $supplierUnit)) {
+            $mode = 'unit';
+            $factor = 1.0;
+            $score = 130.0;
+        } elseif ($supplierQty > 0 && $supplierTotal != 0.0 && $this->moneyEqual($navUnitPrice, $supplierTotal)) {
+            $mode = 'price_quantity';
+            $factor = $supplierQty;
+            $score = 150.0;
+        } elseif ($supplierUnit !== null && $packaging > 0 && $this->moneyEqual($navUnitPrice, $supplierUnit * $packaging)) {
+            $mode = 'packaging';
+            $factor = $packaging;
+            $score = 140.0;
+        } elseif ($supplierUnit !== null) {
+            // Used only to choose the nearest supplier-price tier for display.
+            $denom = max(abs($navUnitPrice), abs($supplierUnit), 1.0);
+            $score = max(0.0, 50.0 - 50.0 * abs($navUnitPrice - $supplierUnit) / $denom);
+        }
+
+        $normalizedQty = $navQty * $factor;
+        $normalizedUnit = $factor > 0 ? $navUnitPrice / $factor : $navUnitPrice;
+        $priceDiffers = $supplierUnit !== null && !$this->moneyEqual($normalizedUnit, $supplierUnit);
+        $canUpdatePrice = $priceDiffers && $mode === 'unresolved' && ($supplierQty <= 1.0 || $supplierQty == 0.0);
+
+        return array(
+            'mode' => $mode,
+            'match_score' => $score,
+            'factor' => $factor,
+            'nav_quantity' => $navQty,
+            'nav_unit_price' => $navUnitPrice,
+            'normalized_quantity' => $normalizedQty,
+            'normalized_unit_price' => $normalizedUnit,
+            'supplier_quantity' => $supplierQty,
+            'supplier_packaging' => $packaging,
+            'supplier_price_total' => $supplierTotal,
+            'supplier_unit_price' => $supplierUnit,
+            'product_unit_id' => $product !== null ? (int) ($product['fk_unit'] ?? 0) : 0,
+            'price_differs' => $priceDiffers,
+            'can_update_price' => $canUpdatePrice,
+        );
+    }
+
+    /**
+     * Create/update a Dolibarr supplier-price row using the native business API.
      *
      * @param array<string,mixed>|null $current Existing supplier-price row.
      */
-    private function writeSupplierPrice($product, $supplier, int $supplierPriceId, string $supplierRef, float $unitPrice, float $vatRate, ?array $current, User $user): int
-    {
-        $quantity = $current !== null ? (float) ($current['quantity'] ?? 1) : 1.0;
+    private function writeSupplierPrice(
+        $product,
+        $supplier,
+        int $supplierPriceId,
+        string $supplierRef,
+        float $unitPrice,
+        float $vatRate,
+        ?array $current,
+        User $user,
+        ?float $quantityOverride = null,
+        ?float $packagingOverride = null,
+        ?float $totalPriceOverride = null
+    ): int {
+        $quantity = $quantityOverride ?? ($current !== null ? (float) ($current['quantity'] ?? 1) : 1.0);
         if ($quantity <= 0) {
             $quantity = 1.0;
         }
-        $totalPrice = $unitPrice * $quantity;
+        $totalPrice = $totalPriceOverride ?? ($unitPrice * $quantity);
+        $packaging = $packagingOverride ?? ($current !== null ? (float) ($current['packaging'] ?? 0) : 0.0);
+        if ($packaging <= 0) {
+            $packaging = $quantity;
+        }
 
         $product->product_fourn_price_id = $supplierPriceId;
-        if ($current !== null && isset($current['packaging'])) {
-            $product->product_fourn_packaging = (float) $current['packaging'];
-        }
+        $product->product_fourn_packaging = $packaging;
 
         $result = $product->update_buyprice(
             qty: $quantity,
@@ -495,28 +769,47 @@ class NavPurchaseWorkbench
             throw new Exception('Supplier price write failed: '.$this->objectError($product));
         }
 
-        $stored = $this->findSupplierPrice((int) $supplier->id, (int) $product->id, $supplierRef);
+        $stored = $this->findSupplierPrice((int) $supplier->id, (int) $product->id, $supplierRef, $quantity);
         if ($stored === null) {
             throw new Exception('Supplier price was written but could not be reloaded.');
         }
         return (int) $stored['rowid'];
     }
 
-    /** @return array<string,mixed>|null */
-    private function findSupplierPrice(int $supplierId, int $productId, string $supplierRef): ?array
+    /** @return array<int,array<string,mixed>> */
+    private function supplierPrices(int $supplierId, int $productId, string $supplierRef): array
     {
         $sql = 'SELECT * FROM '.MAIN_DB_PREFIX.'product_fournisseur_price';
         $sql .= ' WHERE entity IN ('.getEntity('productsupplierprice').')';
         $sql .= ' AND fk_soc = '.$supplierId.' AND fk_product = '.$productId;
-        $sql .= " AND LOWER(TRIM(ref_fourn)) = LOWER('".$this->db->escape($supplierRef)."')";
-        $sql .= ' ORDER BY rowid LIMIT 1';
+        if ($supplierRef !== '') {
+            $sql .= " AND LOWER(TRIM(ref_fourn)) = LOWER('".$this->db->escape($supplierRef)."')";
+        }
+        $sql .= ' ORDER BY quantity, rowid';
         $resql = $this->db->query($sql);
         if (!$resql) {
             throw new Exception('Supplier price lookup failed: '.$this->db->lasterror());
         }
-        $obj = $this->db->fetch_object($resql);
+        $rows = array();
+        while ($obj = $this->db->fetch_object($resql)) {
+            $rows[] = (array) $obj;
+        }
         $this->db->free($resql);
-        return $obj ? (array) $obj : null;
+        return $rows;
+    }
+
+    /** @return array<string,mixed>|null */
+    private function findSupplierPrice(int $supplierId, int $productId, string $supplierRef, ?float $quantity = null): ?array
+    {
+        $prices = $this->supplierPrices($supplierId, $productId, $supplierRef);
+        if ($quantity !== null) {
+            foreach ($prices as $price) {
+                if (abs((float) ($price['quantity'] ?? 0) - $quantity) <= 0.000001) {
+                    return $price;
+                }
+            }
+        }
+        return $prices ? $prices[0] : null;
     }
 
     /** @return array<string,mixed>|null */
@@ -527,8 +820,7 @@ class NavPurchaseWorkbench
         }
         $sql = 'SELECT * FROM '.MAIN_DB_PREFIX.'product_fournisseur_price';
         $sql .= ' WHERE rowid = '.$supplierPriceId;
-        $sql .= ' AND entity IN ('.getEntity('productsupplierprice').')';
-        $sql .= ' LIMIT 1';
+        $sql .= ' AND entity IN ('.getEntity('productsupplierprice').') LIMIT 1';
         $resql = $this->db->query($sql);
         if (!$resql) {
             throw new Exception('Supplier price lookup failed: '.$this->db->lasterror());
@@ -538,17 +830,27 @@ class NavPurchaseWorkbench
         return $obj ? (array) $obj : null;
     }
 
-    private function productIsAccessible(int $productId): bool
+    /** @return array<string,mixed>|null */
+    private function productDetails(int $productId): ?array
     {
-        $sql = 'SELECT rowid FROM '.MAIN_DB_PREFIX.'product';
+        if ($productId <= 0) {
+            return null;
+        }
+        $sql = 'SELECT rowid, ref, label, fk_product_type, fk_unit, tobuy, tosell';
+        $sql .= ' FROM '.MAIN_DB_PREFIX.'product';
         $sql .= ' WHERE rowid = '.$productId.' AND entity IN ('.getEntity('product').') LIMIT 1';
         $resql = $this->db->query($sql);
         if (!$resql) {
-            throw new Exception('Product entity check failed: '.$this->db->lasterror());
+            throw new Exception('Product lookup failed: '.$this->db->lasterror());
         }
         $obj = $this->db->fetch_object($resql);
         $this->db->free($resql);
-        return (bool) $obj;
+        return $obj ? (array) $obj : null;
+    }
+
+    private function productIsAccessible(int $productId): bool
+    {
+        return $this->productDetails($productId) !== null;
     }
 
     /** @param array<string,mixed> $details */
@@ -562,6 +864,12 @@ class NavPurchaseWorkbench
             return (float) $details['price'] / $qty;
         }
         return null;
+    }
+
+    private function moneyEqual(float $a, float $b): bool
+    {
+        $tolerance = max(0.01, max(abs($a), abs($b)) * 0.00001);
+        return abs($a - $b) <= $tolerance;
     }
 
     private function temporaryProductRef(int $mirrorId, string $lineNumber): string
@@ -585,7 +893,8 @@ class NavPurchaseWorkbench
 
     private function linkOrder(int $mirrorId, int $orderId): void
     {
-        $sql = 'INSERT INTO '.MAIN_DB_PREFIX.'navinvoice_purchase_link(entity, fk_navinvoice_invoice, fk_commande_fourn, datec) VALUES (';
+        $sql = 'INSERT IGNORE INTO '.MAIN_DB_PREFIX.'navinvoice_purchase_link';
+        $sql .= ' (entity, fk_navinvoice_invoice, fk_commande_fourn, datec) VALUES (';
         $sql .= $this->entity.', '.$mirrorId.', '.$orderId.', ';
         $sql .= "'".$this->db->idate(dol_now())."')";
         if (!$this->db->query($sql)) {
@@ -593,29 +902,62 @@ class NavPurchaseWorkbench
         }
     }
 
-    private function deleteLinkByMirror(int $mirrorId): void
+    private function deleteLink(int $mirrorId, int $orderId): void
     {
         $sql = 'DELETE FROM '.MAIN_DB_PREFIX.'navinvoice_purchase_link';
         $sql .= ' WHERE entity = '.$this->entity.' AND fk_navinvoice_invoice = '.$mirrorId;
+        $sql .= ' AND fk_commande_fourn = '.$orderId;
         $this->db->query($sql);
     }
 
     private function ensureSchema(): void
     {
-        $sql = 'CREATE TABLE IF NOT EXISTS '.MAIN_DB_PREFIX.'navinvoice_purchase_link (';
+        $table = MAIN_DB_PREFIX.'navinvoice_purchase_link';
+        $sql = 'CREATE TABLE IF NOT EXISTS '.$table.' (';
         $sql .= 'rowid INTEGER AUTO_INCREMENT PRIMARY KEY,';
         $sql .= 'entity INTEGER NOT NULL,';
         $sql .= 'fk_navinvoice_invoice INTEGER NOT NULL,';
         $sql .= 'fk_commande_fourn INTEGER NOT NULL,';
         $sql .= 'datec DATETIME NOT NULL,';
         $sql .= 'tms TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,';
-        $sql .= 'UNIQUE KEY uk_navinvoice_purchase_mirror (entity, fk_navinvoice_invoice),';
-        $sql .= 'UNIQUE KEY uk_navinvoice_purchase_order (entity, fk_commande_fourn),';
-        $sql .= 'KEY idx_navinvoice_purchase_order (fk_commande_fourn)';
+        $sql .= 'UNIQUE KEY uk_navinvoice_purchase_pair (entity, fk_navinvoice_invoice, fk_commande_fourn),';
+        $sql .= 'KEY idx_navinvoice_purchase_mirror (entity, fk_navinvoice_invoice),';
+        $sql .= 'KEY idx_navinvoice_purchase_order (entity, fk_commande_fourn)';
         $sql .= ') ENGINE=InnoDB';
         if (!$this->db->query($sql)) {
             throw new Exception('Could not initialize NAV purchase-workbench schema: '.$this->db->lasterror());
         }
+
+        // Migrate the initial 1:1 schema to many-to-many in place.
+        foreach (array('uk_navinvoice_purchase_mirror', 'uk_navinvoice_purchase_order') as $legacyIndex) {
+            if ($this->indexExists($table, $legacyIndex)) {
+                if (!$this->db->query('ALTER TABLE '.$table.' DROP INDEX '.$legacyIndex)) {
+                    throw new Exception('Could not migrate purchase-workbench relation index '.$legacyIndex.': '.$this->db->lasterror());
+                }
+            }
+        }
+        if (!$this->indexExists($table, 'uk_navinvoice_purchase_pair')) {
+            if (!$this->db->query('ALTER TABLE '.$table.' ADD UNIQUE KEY uk_navinvoice_purchase_pair (entity, fk_navinvoice_invoice, fk_commande_fourn)')) {
+                throw new Exception('Could not add purchase-workbench pair index: '.$this->db->lasterror());
+            }
+        }
+        if (!$this->indexExists($table, 'idx_navinvoice_purchase_mirror')) {
+            $this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_mirror (entity, fk_navinvoice_invoice)');
+        }
+        if (!$this->indexExists($table, 'idx_navinvoice_purchase_order')) {
+            $this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_order (entity, fk_commande_fourn)');
+        }
+    }
+
+    private function indexExists(string $table, string $index): bool
+    {
+        $resql = $this->db->query("SHOW INDEX FROM ".$table." WHERE Key_name = '".$this->db->escape($index)."'");
+        if (!$resql) {
+            throw new Exception('Could not inspect purchase-workbench schema: '.$this->db->lasterror());
+        }
+        $exists = (bool) $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        return $exists;
     }
 
     private function objectError($object): string
