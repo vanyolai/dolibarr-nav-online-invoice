@@ -1,0 +1,4 @@
+SyncProgressRunning=Synchronization in progress: %s records processed
+SyncProgressLatestInvoice=Latest invoice
+SyncProgressDone=Synchronization complete: %s scanned, %s new, %s updated, %s XML downloads
+SyncProgressError=Synchronization failed
