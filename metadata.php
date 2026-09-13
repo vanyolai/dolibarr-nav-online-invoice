@@ -84,6 +84,24 @@ foreach (array(
     $labels['conventional_labels'][$key] = $langs->trans('NavMeta_'.$key);
 }
 
+// Dolibarr translations may be HTML-entity encoded because they are normally
+// rendered into HTML. This endpoint returns JSON and the client deliberately
+// inserts labels with textContent, so convert entities back to UTF-8 text here
+// instead of decoding them as HTML in JavaScript.
+$decodeJsonText = static function ($value) use (&$decodeJsonText) {
+    if (is_array($value)) {
+        foreach ($value as $key => $item) {
+            $value[$key] = $decodeJsonText($item);
+        }
+        return $value;
+    }
+    if (is_string($value)) {
+        return html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+    return $value;
+};
+$labels = $decodeJsonText($labels);
+
 try {
     $metadata = array('invoice' => array('conventional' => array(), 'additional_data' => array()), 'lines' => array());
     if (!empty($record->invoice_data)) {
