@@ -167,7 +167,7 @@ class NavInvoiceImporter
             $line->vat_src_code = '';
             $line->localtax1_tx = 0;
             $line->localtax2_tx = 0;
-            $line->fk_product = 0;
+            $line->fk_product = (int) ($mapped['product_id'] ?? 0);
             $line->remise_percent = 0;
             $line->date_start = null;
             $line->date_end = null;
@@ -243,7 +243,7 @@ class NavInvoiceImporter
             $line->vat_src_code = '';
             $line->localtax1_tx = 0;
             $line->localtax2_tx = 0;
-            $line->fk_product = 0;
+            $line->fk_product = (int) ($mapped['product_id'] ?? 0);
             $line->remise_percent = 0;
             $line->date_start = null;
             $line->date_end = null;
