@@ -79,6 +79,10 @@ $canEditProductType = static function (int $type) use ($user, $canUseWorkbench):
     }
     return $type === 1 ? $user->hasRight('service', 'creer') : $user->hasRight('produit', 'creer');
 };
+$isActiveOrderCandidate = static function (array $order): bool {
+    $status = (int) ($order['status'] ?? -1);
+    return in_array($status, array(0, 1, 2, 3, 4), true) && empty($order['billed']);
+};
 
 $action = GETPOST('action', 'aZ09');
 if (in_array($action, array('create_product', 'link_product', 'update_supplier_price', 'create_order', 'link_order'), true)) {
@@ -140,7 +144,18 @@ if (in_array($action, array('create_product', 'link_product', 'update_supplier_p
             if (!$canLinkSupplierOrder) {
                 accessforbidden();
             }
-            $linked = $workbenchService->linkExistingOrder($workbench, $record, GETPOSTINT('supplier_order_id'), $user);
+            $selectedOrderId = GETPOSTINT('supplier_order_id');
+            $allowed = false;
+            foreach (($workbench['candidate_orders'] ?? array()) as $candidateOrder) {
+                if (is_array($candidateOrder) && (int) ($candidateOrder['id'] ?? 0) === $selectedOrderId && $isActiveOrderCandidate($candidateOrder)) {
+                    $allowed = true;
+                    break;
+                }
+            }
+            if (!$allowed) {
+                throw new Exception($langs->transnoentities('PurchaseOrderNotActiveCandidate'));
+            }
+            $linked = $workbenchService->linkExistingOrder($workbench, $record, $selectedOrderId, $user);
             setEventMessages($langs->trans('PurchaseExistingOrderLinked', $linked['ref']), null, 'mesgs');
         } elseif ($action === 'create_order') {
             if (!$canCreateSupplierOrder) {
@@ -212,6 +227,7 @@ $invoiceNumber = (string) ($workbench['preview']['invoice_number'] ?? $record->i
 $supplier = is_array($workbench['partner'] ?? null) ? $workbench['partner'] : array();
 $linkedOrders = is_array($workbench['orders'] ?? null) ? $workbench['orders'] : array();
 $candidateOrders = is_array($workbench['candidate_orders'] ?? null) ? $workbench['candidate_orders'] : array();
+$candidateOrders = array_values(array_filter($candidateOrders, $isActiveOrderCandidate));
 
 llxHeader('', $langs->trans('PurchaseWorkbench'));
 print load_fiche_titre(
@@ -312,7 +328,7 @@ foreach (($workbench['lines'] ?? array()) as $line) {
         print img_picto('', 'tick').' <a href="'.DOL_URL_ROOT.'/product/card.php?id='.(int) $product['id'].'">'.dol_escape_htmltag((string) $product['ref']).' - '.dol_escape_htmltag((string) $product['label']).'</a>';
         if (in_array((string) ($norm['mode'] ?? ''), array('price_quantity', 'packaging'), true) && (float) ($norm['factor'] ?? 1) != 1.0) {
             print '<br><span class="opacitymedium">'.img_picto('', 'info').' ';
-            print $langs->trans(
+            $normalizationText = $langs->transnoentities(
                 'PurchaseQuantityNormalized',
                 price((float) ($norm['nav_quantity'] ?? 0)),
                 price((float) ($norm['factor'] ?? 1)),
@@ -320,6 +336,7 @@ foreach (($workbench['lines'] ?? array()) as $line) {
                 price((float) ($norm['normalized_unit_price'] ?? 0)),
                 $currency
             );
+            print dol_escape_htmltag($normalizationText);
             print '</span>';
         }
     } else {
