@@ -215,9 +215,12 @@ class NavPurchaseWorkbench
         if ($supplierRef === '') {
             throw new Exception('NAV line has no deterministic supplier reference.');
         }
+        if (!$this->productIsAccessible($productId)) {
+            throw new Exception('Selected Dolibarr product is outside the active entity scope.');
+        }
 
         $product = new ProductFournisseur($this->db);
-        if ($product->fetch($productId) <= 0 || !in_array((int) $product->entity, getEntity('product'), true)) {
+        if ($product->fetch($productId) <= 0) {
             throw new Exception('Selected Dolibarr product could not be loaded.');
         }
         if ((int) $product->type !== (int) ($line['product_type'] ?? 0)) {
@@ -251,7 +254,7 @@ class NavPurchaseWorkbench
 
         if (empty($product->status_buy)) {
             $product->status_buy = 1;
-            if ($product->update($user) <= 0) {
+            if ($product->update($productId, $user) <= 0) {
                 throw new Exception('Product could not be enabled for purchase: '.$this->objectError($product));
             }
         }
@@ -302,7 +305,7 @@ class NavPurchaseWorkbench
             fourn: $supplier,
             availability: (int) ($details['fk_availability'] ?? 0),
             ref_fourn: (string) ($details['ref_fourn'] ?? ($line['supplier_ref'] ?? '')),
-            tva_tx: (float) ($line['vat_rate'] ?? ($details['tva_tx'] ?? 0)),
+            tva_tx: (float) ($details['tva_tx'] ?? ($line['vat_rate'] ?? 0)),
             charges: (float) ($details['charges'] ?? 0),
             remise_percent: (float) ($details['remise_percent'] ?? 0),
             remise: (float) ($details['remise'] ?? 0),
@@ -518,6 +521,19 @@ class NavPurchaseWorkbench
         $obj = $this->db->fetch_object($resql);
         $this->db->free($resql);
         return $obj ? (array) $obj : null;
+    }
+
+    private function productIsAccessible(int $productId): bool
+    {
+        $sql = 'SELECT rowid FROM '.MAIN_DB_PREFIX.'product';
+        $sql .= ' WHERE rowid = '.$productId.' AND entity IN ('.getEntity('product').') LIMIT 1';
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception('Product entity check failed: '.$this->db->lasterror());
+        }
+        $obj = $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        return (bool) $obj;
     }
 
     /** @param array<string,mixed> $details */
