@@ -96,6 +96,26 @@
         });
     }
 
+    function removeRedundantInvoiceAction() {
+        if (window.location.pathname.indexOf('/navinvoice/detail.php') === -1) {
+            return;
+        }
+
+        document.querySelectorAll('.tabsAction a.butAction').forEach(function (link) {
+            var href = link.getAttribute('href') || '';
+            if (href.indexOf('/fourn/facture/card.php?facid=') !== -1
+                || href.indexOf('/compta/facture/card.php?facid=') !== -1) {
+                link.remove();
+            }
+        });
+
+        document.querySelectorAll('.tabsAction').forEach(function (actions) {
+            if (!actions.querySelector('a,button,input')) {
+                actions.remove();
+            }
+        });
+    }
+
     function element(tag, text, className) {
         var node = document.createElement(tag);
         if (className) {
@@ -228,6 +248,7 @@
 
     function init() {
         enhanceTechnicalXml();
+        removeRedundantInvoiceAction();
         loadProductRelations();
     }
 
