@@ -133,7 +133,7 @@ print '<div class="opacitymedium marginbottomonly">'.$langs->trans('BatchRangeAn
 $isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu';
 $fromLabel = $langs->trans('SyncFromLabel');
 $toLabel = $langs->trans('SyncToLabel');
-print '<form method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin:12px 0">';
+print '<form id="navinvoice-batch-preflight-form" method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin:12px 0">';
 print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
 if (!$isHungarianUi) {
     print '<span>'.dol_escape_htmltag($fromLabel).'</span>';
@@ -149,8 +149,19 @@ print '<input type="date" name="date_to" required value="'.dol_escape_htmltag($d
 if ($isHungarianUi) {
     print '<span>'.dol_escape_htmltag($toLabel).'</span>';
 }
-print '<input class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'">';
+print '<input id="navinvoice-batch-preflight-submit" class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'">';
 print '</div></form>';
+print '<script>';
+print 'document.addEventListener("DOMContentLoaded",function(){';
+print 'var form=document.getElementById("navinvoice-batch-preflight-form");';
+print 'var button=document.getElementById("navinvoice-batch-preflight-submit");';
+print 'if(!form||!button){return;}';
+print 'form.addEventListener("submit",function(){';
+print 'if(button.disabled){return false;}';
+print 'button.disabled=true;button.setAttribute("aria-busy","true");button.value=button.value+"…";';
+print '});';
+print '});';
+print '</script>';
 
 if ($loadError !== '') {
     print '<div class="error">'.img_picto('', 'error').' '.dol_escape_htmltag($loadError).'</div>';
