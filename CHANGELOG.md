@@ -25,8 +25,11 @@
 - Automatically include required older master invoices and prior modifications in batch preflight when a selected MODIFY/STORNO depends on them, even when they fall outside the requested date range.
 - Allow chain members blocked only by not-yet-imported prerequisites to be selected together; batch execution processes the selected chain in dependency order and re-runs preflight before each import.
 - Show Dolibarr import/link status and direct Import Preview / Relation Review actions on the individual NAV invoice detail page.
-- Add Hungarian and English UI strings for taxpayer, partner, relation and non-CREATE import workflows.
-- Keep product/supplier-product matching as the next major development block after controlled non-CREATE import and workflow validation.
+- Add deterministic product matching for invoice lines: inbound lines use supplier + supplier item reference; outbound lines use the Dolibarr product reference.
+- Link exact product matches through Dolibarr's native `fk_product` field while preserving NAV invoice-line descriptions, quantities, prices and supplier references; unresolved or ambiguous lines remain free-text.
+- Remove the experimental generic NAV line-metadata/GTIN display after real invoices showed that it added little value beyond the already available supplier item reference.
+- Remove the redundant linked-invoice action button from NAV invoice details when the status row already provides the Dolibarr invoice link.
+- Add Hungarian and English UI strings for taxpayer, partner, relation, product matching and non-CREATE import workflows.
 
 ## 0.7.2 - development
 
