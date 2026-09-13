@@ -5,6 +5,18 @@
         return /\/navinvoice\/detail\.php$/i.test(window.location.pathname || '');
     }
 
+    function moduleBaseUrl() {
+        var scripts = document.getElementsByTagName('script');
+        for (var i = scripts.length - 1; i >= 0; i--) {
+            var src = scripts[i].src || '';
+            if (/\/navinvoice\/js\/navpurchase-button\.js(?:\?|$)/i.test(src)) {
+                return src.replace(/\/js\/navpurchase-button\.js(?:\?.*)?$/i, '');
+            }
+        }
+        var root = window.DOL_URL_ROOT || '';
+        return root + '/custom/navinvoice';
+    }
+
     function addWorkbenchButton(data) {
         if (!data || !data.show || !data.url) {
             return;
@@ -36,8 +48,7 @@
             return;
         }
 
-        var base = window.DOL_URL_ROOT || '';
-        fetch(base + '/custom/navinvoice/purchasebutton.php?id=' + encodeURIComponent(id), {
+        fetch(moduleBaseUrl() + '/purchasebutton.php?id=' + encodeURIComponent(id), {
             credentials: 'same-origin',
             headers: {'Accept': 'application/json'}
         }).then(function (response) {
