@@ -1,9 +1,11 @@
 OperationMapping=Dolibarr mapping
 OperationMapping_standard=Standard invoice
+OperationMapping_deposit=Deposit invoice
 OperationMapping_credit_note=Credit note linked to original invoice
 OperationMapping_standard_adjustment=Standard adjustment linked to original invoice
 SourceDolibarrInvoice=Source Dolibarr invoice
 ImportNonCreateDraftNotice=This NAV modification/storno is imported as a separate Dolibarr draft linked to the original invoice. The NAV operation chain remains authoritative; no existing Dolibarr invoice is overwritten.
+ImportBlocker_advance_invoice_mapping_pending=NAV data identifies this as a deposit/advance invoice. Dolibarr deposit-invoice mapping is not enabled yet, so it will not be imported as a standard invoice.
 ImportBlocker_operation_operation_unsupported=This NAV operation has no supported Dolibarr mapping.
 ImportBlocker_operation_relation_original_invoice_number_missing=The modifying/storno invoice does not identify the original invoice.
 ImportBlocker_operation_relation_original_mirror_missing=The original NAV invoice is missing from the local mirror.
