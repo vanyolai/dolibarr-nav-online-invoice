@@ -33,8 +33,7 @@ if (!in_array($direction, array('BOTH', 'OUTBOUND', 'INBOUND'), true)) {
 
 $progress = new NavSyncProgress($db, (int) $conf->entity, (int) $user->id);
 try {
-    $progress->start($runKey, $dateFrom, $dateTo);
-    $progress->update($runKey, array('current_direction' => $direction));
+    $progress->start($runKey, $dateFrom, $dateTo, $direction);
 } catch (Throwable $e) {
     http_response_code(400);
     echo json_encode(array('ok' => false, 'error' => $e->getMessage()), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -55,7 +54,10 @@ try {
         $dateFrom,
         $dateTo,
         (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1),
-        $direction
+        $direction,
+        static function (array $state) use ($progress, $runKey): void {
+            $progress->update($runKey, $state);
+        }
     );
     $progress->update($runKey, array(
         'status' => 'done',
@@ -65,6 +67,7 @@ try {
         'updated' => (int) $stats['updated'],
         'unchanged' => (int) $stats['unchanged'],
         'downloaded' => (int) $stats['downloaded'],
+        'api_requests' => (int) ($stats['api_requests'] ?? 0),
         'message' => '',
     ));
     echo json_encode(array('ok' => true, 'stats' => $stats), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
