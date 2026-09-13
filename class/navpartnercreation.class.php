@@ -206,7 +206,7 @@ class NavPartnerCreationService
                 'field' => $field,
                 'invoice' => $invoice,
                 'current' => $current,
-                'same' => $this->normalize($invoice) === $this->normalize($current),
+                'same' => $this->normalizeForComparison($field, $invoice) === $this->normalizeForComparison($field, $current),
             );
         }
         return $items;
@@ -286,6 +286,32 @@ class NavPartnerCreationService
             return '';
         }
         return substr($digits, 0, 8);
+    }
+
+    private function normalizeForComparison(string $field, string $value): string
+    {
+        $normalized = $this->normalize($value);
+        if ($field !== 'address' || $normalized === '') {
+            return $normalized;
+        }
+
+        // Treat unambiguous Hungarian public-place abbreviations as equivalent
+        // for comparison only. Do not rewrite the source data and do not merge
+        // genuinely different types such as "út" and "utca".
+        $aliases = array(
+            'u' => 'utca',
+            'krt' => 'korut',
+            'rkp' => 'rakpart',
+            'sgt' => 'sugarut',
+            'stny' => 'setany',
+        );
+        $tokens = preg_split('/\s+/u', $normalized) ?: array();
+        foreach ($tokens as $index => $token) {
+            if (isset($aliases[$token])) {
+                $tokens[$index] = $aliases[$token];
+            }
+        }
+        return implode(' ', $tokens);
     }
 
     private function normalize(string $value): string
