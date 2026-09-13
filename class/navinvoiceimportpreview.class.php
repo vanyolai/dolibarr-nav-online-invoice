@@ -218,7 +218,12 @@ class NavInvoiceImportPreview
         $adjusted = false;
         $quantityDerived = false;
         $unitPriceDerived = false;
+        $informationalZeroLine = false;
         $nonExpressionLine = array_key_exists('expression', $line) && $line['expression'] === false;
+        $explicitZeroQuantity = $qty !== null && $qty !== '' && (float) $qty == 0.0;
+        $allAmountsExplicitlyZero = $sourceNet !== null && $sourceNet !== '' && (float) $sourceNet == 0.0
+            && $vatAmount !== null && $vatAmount !== '' && (float) $vatAmount == 0.0
+            && $sourceGross !== null && $sourceGross !== '' && (float) $sourceGross == 0.0;
 
         if ($qty === null || $qty === '' || (float) $qty == 0.0) {
             if ($nonExpressionLine) {
@@ -228,6 +233,25 @@ class NavInvoiceImportPreview
                 // This does not claim that the source invoice contained quantity 1.
                 $qty = 1;
                 $quantityDerived = true;
+            } elseif ($explicitZeroQuantity && $allAmountsExplicitlyZero) {
+                // Older NAV payloads may use explicit zero-quantity, zero-amount
+                // lines to detail what an advance/payment line refers to. These
+                // are valid descriptive invoice rows rather than monetary rows.
+                // Dolibarr supports qty=0, so preserve the source quantity and
+                // source unit price instead of inventing a technical quantity.
+                $informationalZeroLine = true;
+                if ($navUnitPrice !== null && $navUnitPrice !== '') {
+                    if ($simplified && $vatRate !== null) {
+                        $grossUnit = (float) $navUnitPrice;
+                        $unitPrice = $vatRate == 0.0 ? $grossUnit : $grossUnit / (1 + ($vatRate / 100));
+                        $unitPriceDerived = $vatRate != 0.0;
+                    } else {
+                        $unitPrice = (float) $navUnitPrice;
+                    }
+                } else {
+                    $unitPrice = 0.0;
+                    $unitPriceDerived = true;
+                }
             } else {
                 $blocker = $blocker ?: 'quantity_invalid';
             }
@@ -298,6 +322,8 @@ class NavInvoiceImportPreview
             'number' => (string) ($line['number'] ?? ''),
             'description' => (string) ($line['description'] ?? ''),
             'expression' => $line['expression'] ?? null,
+            'advance' => $line['advance'] ?? null,
+            'informational_zero_line' => $informationalZeroLine,
             'quantity' => $qty,
             'quantity_derived' => $quantityDerived,
             'unit' => (string) ($unitResolution['source'] ?? ''),
