@@ -1,5 +1,8 @@
 SyncProgressRunning=Szinkronizálás folyamatban: %s rekord feldolgozva
 SyncProgressRunningShort=Szinkronizálás folyamatban
+SyncProgressPreparing=Szinkronizálás előkészítése
+SyncProgressPlannedChunks=Tervezett blokkok: %s
+SyncProgressPreparingDelayed=Az első NAV kérés még nem indult el; egy korábbi szinkron vagy adatbázis-zár várakoztathatja a folyamatot.
 SyncProgressLatestInvoice=Legutóbbi számla
 SyncProgressCurrentInvoice=Aktuális számla
 SyncProgressChunk=Blokk %s/%s
