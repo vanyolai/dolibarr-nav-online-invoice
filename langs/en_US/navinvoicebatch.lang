@@ -1,6 +1,6 @@
 BatchImport=Batch import
 BatchInboundOnlyNotice=Batch import currently handles inbound NAV invoices only.
-BatchDraftOnlyNotice=Only READY invoices or invoices blocked solely by pending chain prerequisites can be selected. Every import creates a Dolibarr draft; no automatic validation or accounting action is performed.
+BatchDraftOnlyNotice=Only READY invoices or invoices blocked solely by pending chain prerequisites can be selected. Import always creates a Dolibarr draft first; when automatic inbound validation is enabled, fully READY invoices are validated immediately after successful import and reconciliation. Invoices that still require review remain drafts.
 BatchRangeAndDependenciesNotice=The date range filters the starting invoices. Required older master invoices and earlier modifications are added to preflight automatically even when they fall outside the selected range.
 BatchRunPreflight=Run preflight
 BatchTotal=Invoices checked
@@ -18,7 +18,7 @@ BatchResolvePartner=Resolve partner
 BatchSelect=Select
 BatchIssues=Preflight details
 BatchImportSelected=Import selected invoice chain
-BatchImportConfirm=Import the selected invoices as Dolibarr drafts? Relation prerequisites are processed automatically in dependency order.
+BatchImportConfirm=Import the selected invoices? Relation prerequisites are processed automatically in dependency order, and READY inbound invoices may also be validated according to the module setting.
 BatchNoSelection=No importable invoices were selected.
 BatchNoInvoices=No inbound NAV invoices were found in this date range.
 BatchImportFailed=Batch import failed
