@@ -23,9 +23,11 @@ class NavInvoiceApi
         $this->environment = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === 'production' ? 'production' : 'test';
         $this->softwareId = trim((string) getDolGlobalString('NAVINVOICE_SOFTWARE_ID', 'DOLIBARRNAVSYNC001'));
         $this->softwareVersion = '0.8.0';
-        // Keep a conservative distance between requests. The value can be
-        // overridden through a Dolibarr constant without changing the module.
-        $this->minIntervalMs = max(0, min(5000, getDolGlobalInt('NAVINVOICE_API_MIN_INTERVAL_MS', 1100)));
+        // Keep a small serialized gap between requests. Full invoice payloads
+        // are queried one-by-one by the NAV API, so a large fixed delay makes
+        // historical inbound synchronization unnecessarily slow. The value can
+        // still be overridden through a Dolibarr constant without code changes.
+        $this->minIntervalMs = max(0, min(5000, getDolGlobalInt('NAVINVOICE_API_MIN_INTERVAL_MS', 300)));
     }
 
     public function isConfigured(): bool
@@ -277,10 +279,10 @@ class NavInvoiceApi
     }
 
     /**
-     * Serialize requests from this Dolibarr instance and keep a conservative
-     * minimum interval between their start times. This protects manual sync,
-     * scheduled sync, taxpayer lookups and relation checks from collectively
-     * bursting the NAV API from the same application host.
+     * Serialize requests from this Dolibarr instance and keep a minimum
+     * interval between their start times. This protects manual sync, scheduled
+     * sync, taxpayer lookups and relation checks from collectively bursting the
+     * NAV API from the same application host.
      */
     private function paceRequests(): void
     {
