@@ -33,52 +33,46 @@ try {
         exit;
     }
 
-    $processed = (int) $state['seen'];
-    $latestInvoice = '';
-    $latestDirection = '';
-
-    if ((string) $state['status'] === 'running') {
-        // During a live run the core sync updates last_sync on every processed
-        // mirror row. Count those rows so the browser sees real progress without
-        // coupling the synchronization engine to the UI transport.
-        $where = array(
-            'entity = '.((int) $conf->entity),
-            "last_sync >= '".$db->escape((string) $state['datec'])."'",
-            "invoice_issue_date >= '".$db->escape((string) $state['date_from'])."'",
-            "invoice_issue_date <= '".$db->escape((string) $state['date_to'])."'",
-        );
-        $requestedDirection = strtoupper((string) $state['current_direction']);
-        if (in_array($requestedDirection, array('INBOUND', 'OUTBOUND'), true)) {
-            $where[] = "invoice_direction = '".$db->escape($requestedDirection)."'";
-        }
-        $whereSql = implode(' AND ', $where);
-
-        $sql = 'SELECT COUNT(*) AS nb FROM '.MAIN_DB_PREFIX.'navinvoice_invoice WHERE '.$whereSql;
-        $resql = $db->query($sql);
-        if ($resql && ($obj = $db->fetch_object($resql))) {
-            $processed = (int) $obj->nb;
-            $db->free($resql);
-        }
-
-        $sql = 'SELECT invoice_number, invoice_direction FROM '.MAIN_DB_PREFIX.'navinvoice_invoice'
-            .' WHERE '.$whereSql.' ORDER BY last_sync DESC, rowid DESC LIMIT 1';
-        $resql = $db->query($sql);
-        if ($resql && ($obj = $db->fetch_object($resql))) {
-            $latestInvoice = (string) $obj->invoice_number;
-            $latestDirection = (string) $obj->invoice_direction;
-            $db->free($resql);
-        }
+    $status = (string) $state['status'];
+    $stage = (string) $state['stage'];
+    $direction = (string) $state['current_direction'];
+    $directionLabel = '';
+    if ($direction === 'INBOUND') {
+        $directionLabel = $langs->transnoentities('DirectionInbound');
+    } elseif ($direction === 'OUTBOUND') {
+        $directionLabel = $langs->transnoentities('DirectionOutbound');
+    } elseif ($direction === 'BOTH') {
+        $directionLabel = $langs->transnoentities('DirectionBoth');
     }
 
-    $status = (string) $state['status'];
-    $directionLabel = '';
-    $effectiveDirection = $latestDirection !== '' ? $latestDirection : (string) $state['current_direction'];
-    if ($effectiveDirection === 'INBOUND') {
-        $directionLabel = $langs->transnoentities('DirectionInbound');
-    } elseif ($effectiveDirection === 'OUTBOUND') {
-        $directionLabel = $langs->transnoentities('DirectionOutbound');
-    } elseif ($effectiveDirection === 'BOTH') {
-        $directionLabel = $langs->transnoentities('DirectionBoth');
+    $chunkIndex = (int) ($state['chunk_index'] ?? 0);
+    $chunkTotal = (int) ($state['chunk_total'] ?? 0);
+    $page = (int) ($state['page'] ?? 0);
+    $availablePage = (int) ($state['available_page'] ?? 0);
+    $recordIndex = (int) ($state['record_index'] ?? 0);
+    $recordTotal = (int) ($state['record_total'] ?? 0);
+
+    $progressFraction = null;
+    if ($status === 'done') {
+        $progressFraction = 1.0;
+    } elseif ($chunkIndex > 0 && $chunkTotal > 0) {
+        $withinChunk = 0.0;
+        if ($stage === 'chunk_done') {
+            $withinChunk = 1.0;
+        } elseif ($page > 0 && $availablePage > 0) {
+            $withinPage = 0.0;
+            if ($recordTotal > 0) {
+                $withinPage = max(0.0, min(1.0, $recordIndex / $recordTotal));
+            } elseif ($stage === 'digest_page_done') {
+                $withinPage = 1.0;
+            }
+            $withinChunk = (($page - 1) + $withinPage) / $availablePage;
+        }
+        $progressFraction = (($chunkIndex - 1) + max(0.0, min(1.0, $withinChunk))) / $chunkTotal;
+        if ($status === 'running') {
+            $progressFraction = min(0.999, $progressFraction);
+        }
+        $progressFraction = max(0.0, min(1.0, $progressFraction));
     }
 
     if ($status === 'done') {
@@ -92,23 +86,55 @@ try {
     } elseif ($status === 'error') {
         $message = $langs->transnoentities('SyncProgressError').': '.(string) $state['message'];
     } else {
-        $message = $langs->transnoentities('SyncProgressRunning', $processed);
+        $parts = array($langs->transnoentities('SyncProgressRunningShort'));
+        if ($chunkIndex > 0 && $chunkTotal > 0) {
+            $parts[] = $langs->transnoentities('SyncProgressChunk', $chunkIndex, $chunkTotal);
+        }
+        if ((string) $state['chunk_from'] !== '' && (string) $state['chunk_to'] !== '') {
+            $parts[] = $langs->transnoentities('SyncProgressPeriod', (string) $state['chunk_from'], (string) $state['chunk_to']);
+        }
         if ($directionLabel !== '') {
-            $message .= ' · '.$directionLabel;
+            $parts[] = $directionLabel;
         }
-        if ($latestInvoice !== '') {
-            $message .= ' · '.$langs->transnoentities('SyncProgressLatestInvoice').': '.$latestInvoice;
+        if ($page > 0 && $availablePage > 0 && !in_array($stage, array('chunk', 'chunk_done'), true)) {
+            $parts[] = $langs->transnoentities('SyncProgressDigestPage', $page, $availablePage);
         }
+        if ($recordTotal > 0 && in_array($stage, array('digest_page', 'record', 'xml_request', 'digest_page_done'), true)) {
+            $parts[] = $langs->transnoentities('SyncProgressRecord', $recordIndex, $recordTotal);
+        }
+        $parts[] = $langs->transnoentities('SyncProgressApiRequests', (int) $state['api_requests']);
+        $parts[] = $langs->transnoentities('SyncProgressXmlDownloaded', (int) $state['downloaded']);
+        if ((string) $state['current_invoice'] !== '' && $stage === 'xml_request') {
+            $parts[] = $langs->transnoentities('SyncProgressCurrentInvoice').': '.(string) $state['current_invoice'];
+        }
+        $message = implode(' · ', $parts);
     }
 
     echo json_encode(array(
         'ok' => true,
         'found' => true,
         'status' => $status,
+        'stage' => $stage,
         'message' => $message,
-        'processed' => $processed,
-        'latest_invoice' => $latestInvoice,
-        'latest_direction' => $latestDirection,
+        'progress' => $progressFraction,
+        'progress_percent' => $progressFraction !== null ? (int) round($progressFraction * 100) : null,
+        'current_direction' => $direction,
+        'chunk' => array(
+            'index' => $chunkIndex,
+            'total' => $chunkTotal,
+            'from' => (string) $state['chunk_from'],
+            'to' => (string) $state['chunk_to'],
+        ),
+        'digest_page' => array(
+            'index' => $page,
+            'total' => $availablePage,
+        ),
+        'record' => array(
+            'index' => $recordIndex,
+            'total' => $recordTotal,
+        ),
+        'current_invoice' => (string) $state['current_invoice'],
+        'api_requests' => (int) $state['api_requests'],
         'stats' => array(
             'seen' => (int) $state['seen'],
             'inserted' => (int) $state['inserted'],
