@@ -383,6 +383,176 @@
             });
     }
 
+    function findPartnerEnrichmentTable(labels) {
+        var result = null;
+        document.querySelectorAll('table.noborder').forEach(function (table) {
+            if (result) {
+                return;
+            }
+            var head = table.querySelector('tr.liste_titre');
+            if (!head) {
+                return;
+            }
+            var cells = Array.prototype.map.call(head.querySelectorAll(':scope > td'), function (cell) {
+                return String(cell.textContent || '').trim();
+            });
+            if (cells.length === 4
+                && cells[0] === String(labels.field || '').trim()
+                && cells[1] === String(labels.current || '').trim()
+                && cells[2] === String(labels.nav || '').trim()
+                && cells[3] === String(labels.status || '').trim()) {
+                result = table;
+            }
+        });
+        return result;
+    }
+
+    function renderPartnerEnrichmentSelection(payload) {
+        if (!payload || !payload.ok || !payload.labels || !Array.isArray(payload.items) || !payload.items.length) {
+            return;
+        }
+        if (document.querySelector('.navinvoice-partner-selection-checkbox')) {
+            return;
+        }
+
+        var labels = payload.labels;
+        var table = findPartnerEnrichmentTable(labels);
+        if (!table) {
+            return;
+        }
+
+        var wrap = table.closest('.div-table-responsive');
+        var head = table.querySelector('tr.liste_titre');
+        var selectHead = element('td', labels.selection || '');
+        selectHead.style.width = '1%';
+        selectHead.style.whiteSpace = 'nowrap';
+        head.insertBefore(selectHead, head.firstElementChild);
+
+        var rows = Array.prototype.filter.call(table.querySelectorAll('tr'), function (row) {
+            return !row.classList.contains('liste_titre');
+        });
+
+        rows.forEach(function (row, index) {
+            var item = payload.items[index];
+            if (!item) {
+                return;
+            }
+
+            var selectCell = element('td');
+            selectCell.className = 'center';
+            var checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'navinvoice-partner-selection-checkbox';
+            checkbox.value = String(item.field || '');
+            checkbox.checked = !!item.default_selected;
+            checkbox.disabled = !item.selectable || !payload.can_update;
+            checkbox.setAttribute('aria-label', String(item.label || item.field || ''));
+            selectCell.appendChild(checkbox);
+            row.insertBefore(selectCell, row.firstElementChild);
+
+            var statusCell = row.lastElementChild;
+            if (statusCell) {
+                statusCell.textContent = '';
+                var prefix = item.default_selected ? '✓ ' : (item.selectable ? '⚠ ' : '— ');
+                var status = element('span', prefix + String(item.selection_status || ''));
+                status.className = item.default_selected ? 'ok' : (item.selectable ? 'warning' : 'opacitymedium');
+                statusCell.appendChild(status);
+            }
+        });
+
+        if (wrap) {
+            var oldNotice = wrap.previousElementSibling;
+            if (oldNotice && (oldNotice.classList.contains('info') || oldNotice.classList.contains('warning') || oldNotice.classList.contains('opacitymedium'))) {
+                oldNotice.style.display = 'none';
+            }
+            var notice = element('div', labels.notice || '', 'info marginbottomonly navinvoice-partner-selection-notice');
+            wrap.parentNode.insertBefore(notice, wrap);
+        }
+
+        var oldAction = document.querySelector('form input[name="action"][value="apply_partner_enrichment"]');
+        if (oldAction && oldAction.form) {
+            oldAction.form.style.display = 'none';
+        }
+
+        if (!payload.can_update || !wrap) {
+            return;
+        }
+
+        var actions = element('div', null, 'center tabsAction navinvoice-partner-selection-actions');
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'button button-save';
+        button.textContent = labels.apply || 'Apply selected partner data';
+        actions.appendChild(button);
+        wrap.parentNode.insertBefore(actions, wrap.nextSibling);
+
+        button.addEventListener('click', function () {
+            var selected = Array.prototype.filter.call(
+                table.querySelectorAll('.navinvoice-partner-selection-checkbox'),
+                function (checkbox) { return checkbox.checked && !checkbox.disabled; }
+            ).map(function (checkbox) { return checkbox.value; });
+
+            if (!selected.length) {
+                window.alert(labels.nothing_selected || 'No partner data is selected.');
+                return;
+            }
+            if (!window.confirm(labels.confirm || 'Apply selected partner data?')) {
+                return;
+            }
+
+            button.disabled = true;
+            var body = new URLSearchParams();
+            body.append('id', detailId());
+            body.append('token', String(payload.token || ''));
+            selected.forEach(function (field) {
+                body.append('fields[]', field);
+            });
+
+            fetch('partnerenrichment.php', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                cache: 'no-store',
+                body: body.toString()
+            }).then(function (response) {
+                return response.json().catch(function () { return {}; }).then(function (data) {
+                    if (!response.ok || !data.ok) {
+                        throw new Error(data.error || ('HTTP ' + response.status));
+                    }
+                    return data;
+                });
+            }).then(function () {
+                window.location.reload();
+            }).catch(function (error) {
+                button.disabled = false;
+                window.alert((labels.failed || 'Failed to apply selected partner data') + ': ' + error.message);
+            });
+        });
+    }
+
+    function loadPartnerEnrichmentSelection() {
+        var id = detailId();
+        if (!id) {
+            return;
+        }
+        var url = new URL('partnerenrichment.php', window.location.href);
+        url.search = '?id=' + encodeURIComponent(id);
+        fetch(url.toString(), {credentials: 'same-origin', headers: {'Accept': 'application/json'}, cache: 'no-store'})
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error('partner enrichment request failed');
+                }
+                return response.json();
+            })
+            .then(renderPartnerEnrichmentSelection)
+            .catch(function () {
+                // Keep the server-rendered safe-only enrichment UI as fallback.
+            });
+    }
+
     function loadProductRelations() {
         var id = detailId();
         if (!id) {
@@ -408,6 +578,7 @@
         removeRedundantInvoiceAction();
         normalizeInvoicePartyCards();
         loadImportStatus();
+        loadPartnerEnrichmentSelection();
         loadProductRelations();
     }
 
