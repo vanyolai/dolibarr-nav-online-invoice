@@ -31,6 +31,7 @@ $formTaxNumber = $isConfigPost
 $formLookbackDays = $isConfigPost ? max(1, min(35, GETPOSTINT('lookback_days'))) : getDolGlobalInt('NAVINVOICE_SYNC_LOOKBACK_DAYS', 7);
 $formSyncEnabled = $isConfigPost ? (bool) GETPOSTINT('sync_enabled') : (bool) getDolGlobalInt('NAVINVOICE_SYNC_ENABLED');
 $formFetchFullData = $isConfigPost ? (bool) GETPOSTINT('fetch_full_data') : (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1);
+$formAutoValidateInbound = $isConfigPost ? (bool) GETPOSTINT('auto_validate_inbound') : (bool) getDolGlobalInt('NAVINVOICE_AUTO_VALIDATE_INBOUND');
 $formShowTechnicalXml = $isConfigPost ? (bool) GETPOSTINT('show_technical_xml') : (bool) getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1);
 
 if ($isConfigPost) {
@@ -60,6 +61,7 @@ if ($isConfigPost) {
         dolibarr_set_const($db, 'NAVINVOICE_SYNC_ENABLED', $formSyncEnabled ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_FETCH_FULL_DATA', $formFetchFullData ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_SYNC_LOOKBACK_DAYS', (string) $formLookbackDays, 'chaine', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_AUTO_VALIDATE_INBOUND', $formAutoValidateInbound ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_SHOW_TECHNICAL_XML', $formShowTechnicalXml ? '1' : '0', 'yesno', 0, '', $conf->entity);
 
         if ($password !== '') {
@@ -101,6 +103,7 @@ $hasStoredSigningKey = getDolGlobalString('NAVINVOICE_SIGNING_KEY') !== '';
 $secretHint = static function (bool $hasValue) use ($langs): string {
     return $hasValue ? $langs->trans('StoredSecretPresent') : $langs->trans('StoredSecretMissing');
 };
+$stockValidationNeedsWarehouse = isModEnabled('stock') && getDolGlobalString('STOCK_CALCULATE_ON_SUPPLIER_BILL');
 
 llxHeader('', $langs->trans('NavInvoiceSetup'));
 print load_fiche_titre($langs->trans('NavInvoiceSetup'), '', 'title_setup');
@@ -123,6 +126,13 @@ print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavSigning
 print '<tr class="oddeven"><td>'.$langs->trans('ScheduledSync').'</td><td><input type="checkbox" name="sync_enabled" value="1"'.($formSyncEnabled ? ' checked' : '').'></td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('SyncLookbackDays').'</td><td><input type="number" min="1" max="35" name="lookback_days" value="'.((int) $formLookbackDays).'"></td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('DownloadFullInvoiceXml').'</td><td><input type="checkbox" name="fetch_full_data" value="1"'.($formFetchFullData ? ' checked' : '').'></td></tr>';
+
+print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavImportConfiguration').'</td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('AutoValidateInboundInvoices').'</td><td><input type="checkbox" name="auto_validate_inbound" value="1"'.($formAutoValidateInbound ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('AutoValidateInboundInvoicesHelp').'</span>';
+if ($stockValidationNeedsWarehouse) {
+    print '<br><span class="warning">'.img_picto('', 'warning').' '.$langs->trans('AutoValidateInboundStockWarning').'</span>';
+}
+print '</td></tr>';
 
 print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavDisplayConfiguration').'</td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('ShowTechnicalNavXml').'</td><td><input type="checkbox" name="show_technical_xml" value="1"'.($formShowTechnicalXml ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('ShowTechnicalNavXmlHelp').'</span></td></tr>';
