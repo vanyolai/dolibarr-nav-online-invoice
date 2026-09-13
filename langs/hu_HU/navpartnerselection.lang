@@ -1,0 +1,11 @@
+PartnerSelectionColumn=Alkalmazás
+PartnerSelectionNotice=A biztonságosan pótolható mezők alapból ki vannak jelölve. Az eltérő meglévő adatok kézzel választhatók; kijelölésük felülírja a Dolibarr jelenlegi értékét. Bankszámlát ezen a felületen nem módosítunk.
+PartnerSelectionDefault=alapértelmezetten kijelölve
+PartnerSelectionManual=kézzel kijelölhető
+PartnerSelectionLocked=nem módosítható ezen a felületen
+PartnerSelectionApply=Kijelölt partneradatok alkalmazása
+PartnerSelectionConfirm=Alkalmazod a kijelölt NAV-adatokat a Dolibarr partneren? A kézzel kijelölt eltérő mezők felülírják a jelenlegi Dolibarr értéket.
+PartnerSelectionNothingSelected=Nincs kijelölt partneradat.
+PartnerSelectionApplied=%s kijelölt partneradat frissült a NAV alapján.
+PartnerSelectionFailed=A kijelölt partneradatok alkalmazása sikertelen
+PartnerSelectionTaxCoreMismatch=Az adószám adózói törzse eltér; ezt ezen a felületen nem lehet felülírni.
