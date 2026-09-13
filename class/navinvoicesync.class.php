@@ -118,7 +118,7 @@ class NavInvoiceSync
             if ($hasOldUnique && !$this->db->query("ALTER TABLE ".$table." DROP INDEX uk_navinvoice_invoice")) {
                 throw new Exception($this->db->lasterror());
             }
-            if ($hasOldUnique && !$this->db->query("ALTER TABLE ".$table." ADD UNIQUE INDEX uk_navinvoice_invoice (entity, invoice_direction, invoice_number, batch_index)")) {
+            if (!$this->db->query("ALTER TABLE ".$table." ADD UNIQUE INDEX uk_navinvoice_invoice (entity, invoice_direction, invoice_number, batch_index)")) {
                 throw new Exception($this->db->lasterror());
             }
         }
