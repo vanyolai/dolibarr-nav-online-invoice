@@ -1,6 +1,6 @@
 BatchImport=Tömeges import
 BatchInboundOnlyNotice=A tömeges import jelenleg csak a bejövő NAV számlákat kezeli.
-BatchDraftOnlyNotice=Csak az IMPORTÁLHATÓ vagy kizárólag láncelőzményre váró számlák jelölhetők ki, és minden import Dolibarr piszkozatot hoz létre. Automatikus érvényesítés vagy könyvelési művelet nem történik.
+BatchDraftOnlyNotice=Csak az IMPORTÁLHATÓ vagy kizárólag láncelőzményre váró számlák jelölhetők ki. Az import először Dolibarr piszkozatot hoz létre; ha az automatikus bejövő hitelesítés engedélyezett, a teljesen IMPORTÁLHATÓ számlák a sikeres import és ellenőrzés után azonnal hitelesítésre kerülnek. Ellenőrzendő esetek piszkozatban maradnak.
 BatchRangeAndDependenciesNotice=A dátumtartomány a kiinduló számlákat szűri. A szükséges korábbi alapszámlákat és módosításokat a rendszer automatikusan hozzáadja az előellenőrzéshez akkor is, ha azok a tartományon kívül vannak.
 BatchRunPreflight=Előellenőrzés futtatása
 BatchTotal=Vizsgált számlák
@@ -18,7 +18,7 @@ BatchResolvePartner=Partner feloldása
 BatchSelect=Kijelölés
 BatchIssues=Előellenőrzés részletei
 BatchImportSelected=Kijelölt számlalánc importálása
-BatchImportConfirm=Importálod a kijelölt számlákat Dolibarr piszkozatként? A kapcsolati előzmények automatikusan helyes sorrendben kerülnek feldolgozásra.
+BatchImportConfirm=Importálod a kijelölt számlákat? A kapcsolati előzmények automatikusan helyes sorrendben kerülnek feldolgozásra, és a beállítástól függően az IMPORTÁLHATÓ bejövő számlák hitelesítése is lefuthat.
 BatchNoSelection=Nincs kijelölt importálható számla.
 BatchNoInvoices=Ebben a dátumtartományban nincs bejövő NAV számla.
 BatchImportFailed=A tömeges import sikertelen
