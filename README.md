@@ -33,6 +33,8 @@ External Dolibarr module for synchronizing inbound and outbound invoices from th
 - Controlled creation of missing Dolibarr third parties from fresh NAV master data
 - Guarded manual import into Dolibarr draft customer (`Facture`) and supplier (`FactureFournisseur`) invoices
 - Controlled MODIFY/STORNO draft import when the NAV relation chain has a deterministic Dolibarr mapping
+- Exact product matching for invoice lines using supplier + supplier item reference on inbound invoices and Dolibarr product reference on outbound invoices
+- Native `fk_product` linkage on imported invoice lines when the product match is deterministic; unresolved lines remain free-text
 - Batch preflight/import for inbound supplier invoices, including dedicated partner-resolution state
 - Duplicate detection and NAV mirror-to-Dolibarr linkage
 - Hungarian and English UI strings
@@ -151,7 +153,7 @@ For non-`CREATE` operations the module additionally requires the original NAV in
 
 Existing Dolibarr invoices and partner data are never silently overwritten by the synchronization process. All invoice imports create new drafts only.
 
-Product matching is intentionally separate from this accounting-safe invoice import path.
+Product matching is conservative and non-blocking. A deterministic match is linked through the native Dolibarr `fk_product` field while the NAV description, quantity, unit price and supplier reference remain authoritative for the imported invoice line. Unresolved or ambiguous items stay as free-text lines until product master data is resolved.
 
 ## Development roadmap
 
@@ -159,7 +161,7 @@ The completed 0.8.0 development block covers current NAV taxpayer master data, c
 
 The next development blocks are:
 
-1. product and supplier-product matching for inbound invoice lines;
+1. controlled assignment/creation of missing products and supplier-product references from unmatched NAV invoice lines;
 2. supplier price maintenance from invoices and supplier-order matching/reconstruction workflows;
 3. support for additional foreign-currency and special VAT cases;
 4. explicit validation workflow for imported outbound drafts while preserving the original NAV invoice number;
