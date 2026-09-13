@@ -65,6 +65,8 @@
         bar.style.width = '100%';
         bar.style.marginTop = '7px';
         bar.style.height = '12px';
+        bar.max = 1;
+        bar.value = 0;
         panel.appendChild(bar);
 
         var elapsed = document.createElement('div');
@@ -76,7 +78,7 @@
         return panel;
     }
 
-    function setPanelState(panel, state, message) {
+    function setPanelState(panel, state, message, progress) {
         var text = panel.querySelector('.navinvoice-sync-progress-text');
         var bar = panel.querySelector('.navinvoice-sync-progress-bar');
         if (text) {
@@ -84,19 +86,26 @@
         }
         panel.classList.remove('info', 'ok', 'error', 'warning');
         panel.classList.add(state === 'done' ? 'ok' : (state === 'error' ? 'error' : 'info'));
-        if (bar) {
-            if (state === 'done') {
-                bar.max = 1;
-                bar.value = 1;
-            } else if (state === 'error') {
-                // Keep the terminal error state determinate. Removing the value
-                // attribute would put the native progress element back into its
-                // indeterminate ("Knight Rider") animation even though work has stopped.
-                bar.max = 1;
-                bar.value = 0;
-            } else {
-                bar.removeAttribute('value');
-            }
+        if (!bar) {
+            return;
+        }
+
+        bar.max = 1;
+        if (state === 'done') {
+            bar.value = 1;
+            return;
+        }
+
+        if (typeof progress === 'number' && isFinite(progress)) {
+            bar.value = Math.max(0, Math.min(1, progress));
+            return;
+        }
+
+        // Keep running/error states determinate even before the first structured
+        // status arrives. An absent value would activate the native indeterminate
+        // ("Knight Rider") animation and falsely suggest unknown progress.
+        if (!bar.hasAttribute('value')) {
+            bar.value = 0;
         }
     }
 
@@ -144,9 +153,11 @@
             var panel = progressPanel(form, originalButtonLabel + '…');
             var started = Date.now();
             var elapsedNode = panel.querySelector('.navinvoice-sync-progress-elapsed');
+            var lastProgressPercent = null;
             var elapsedTimer = window.setInterval(function () {
                 if (elapsedNode) {
-                    elapsedNode.textContent = Math.max(0, Math.round((Date.now() - started) / 1000)) + ' s';
+                    var seconds = Math.max(0, Math.round((Date.now() - started) / 1000));
+                    elapsedNode.textContent = (lastProgressPercent !== null ? lastProgressPercent + '% · ' : '') + seconds + ' s';
                 }
             }, 1000);
 
@@ -200,8 +211,12 @@
                         if (!payload || !payload.ok || !payload.found) {
                             return;
                         }
-                        setPanelState(panel, payload.status, payload.message || '');
+                        if (typeof payload.progress_percent === 'number') {
+                            lastProgressPercent = Math.max(0, Math.min(100, payload.progress_percent));
+                        }
+                        setPanelState(panel, payload.status, payload.message || '', payload.progress);
                         if (payload.status === 'done') {
+                            lastProgressPercent = 100;
                             finished = true;
                             unlock();
                             scheduleReload();
@@ -238,13 +253,14 @@
                         poll();
                         if (!finished) {
                             finished = true;
+                            lastProgressPercent = 100;
                             var stats = result.payload.stats || {};
                             var text = '✓ ' + originalButtonLabel + ': '
                                 + (stats.seen || 0) + ' / '
                                 + (stats.inserted || 0) + ' / '
                                 + (stats.updated || 0) + ' / '
                                 + (stats.downloaded || 0);
-                            setPanelState(panel, 'done', text);
+                            setPanelState(panel, 'done', text, 1);
                             unlock();
                             scheduleReload();
                         }
