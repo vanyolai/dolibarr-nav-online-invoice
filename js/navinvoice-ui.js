@@ -141,7 +141,6 @@
 
         var normalized = titleCaseHungarian(original);
 
-        // Hungarian public-place categories are common nouns inside an address.
         [
             'Utca', 'Út', 'Körút', 'Köz', 'Tér', 'Rakpart', 'Sugárút', 'Sétány',
             'Sor', 'Dűlő', 'Lejtő', 'Liget', 'Park'
@@ -152,8 +151,6 @@
             });
         });
 
-        // Preserve only a conservative set of established acronyms when the
-        // source was all-caps. Do not infer arbitrary short words as acronyms.
         ['MÁV', 'OTP', 'MOL', 'DSC', 'IBM', 'SAP'].forEach(function (acronym) {
             var re = new RegExp('(^|[^\\p{L}\\p{N}])' + acronym + '(?=$|[^\\p{L}\\p{N}])', 'giu');
             normalized = normalized.replace(re, function (match, prefix) {
@@ -184,8 +181,6 @@
                     return;
                 }
                 var valueCell = cells[1];
-                // Do not rewrite links/status widgets. This is presentation-only
-                // normalization for plain historical NAV text.
                 if (valueCell.children.length) {
                     return;
                 }
@@ -307,6 +302,20 @@
         return id && /^\d+$/.test(id) ? id : '';
     }
 
+    function appendIssueMessages(statusCell, messages, className) {
+        if (!Array.isArray(messages) || !messages.length) {
+            return;
+        }
+        var list = element('div', null, className + ' small');
+        list.style.marginTop = '4px';
+        messages.forEach(function (message) {
+            var row = element('div', '• ' + String(message));
+            row.style.marginTop = '2px';
+            list.appendChild(row);
+        });
+        statusCell.appendChild(list);
+    }
+
     function renderImportStatus(payload) {
         if (!payload || !payload.labels || !payload.state) {
             return;
@@ -346,6 +355,12 @@
             link.className = 'error';
         }
         statusCell.appendChild(link);
+
+        if (state === 'blocked') {
+            appendIssueMessages(statusCell, payload.blocker_messages, 'error');
+        } else if (state === 'review') {
+            appendIssueMessages(statusCell, payload.warning_messages, 'warning');
+        }
     }
 
     function loadImportStatus() {
@@ -365,7 +380,6 @@
             })
             .then(renderImportStatus)
             .catch(function () {
-                // Status enhancement must never break the invoice detail page.
             });
     }
 
@@ -386,7 +400,6 @@
             })
             .then(renderProductRelations)
             .catch(function () {
-                // Product matching is advisory. Never break the invoice detail page.
             });
     }
 
