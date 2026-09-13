@@ -53,6 +53,11 @@ if (!$record) {
 $tr = static function (string $key) use ($langs): string {
     return $langs->transnoentities($key);
 };
+$issueLabel = static function (string $prefix, string $code) use ($langs): string {
+    $key = $prefix.$code;
+    $translated = $langs->transnoentities($key);
+    return $translated === $key ? $code : $translated;
+};
 
 try {
     $direction = strtoupper(trim((string) $record->invoice_direction));
@@ -88,6 +93,15 @@ try {
         $warnings = array_values(array_map('strval', $preview['warnings'] ?? array()));
     }
 
+    $blockerMessages = array();
+    foreach ($blockers as $code) {
+        $blockerMessages[] = $issueLabel('ImportBlocker_', $code);
+    }
+    $warningMessages = array();
+    foreach ($warnings as $code) {
+        $warningMessages[] = $issueLabel('ImportWarning_', $code);
+    }
+
     $stateLabels = array(
         'imported' => $tr('AlreadyImported'),
         'ready' => $tr('ImportStateReady'),
@@ -99,12 +113,16 @@ try {
         'state' => $state,
         'label' => $stateLabels[$state] ?? $state,
         'blockers' => $blockers,
+        'blocker_messages' => $blockerMessages,
         'warnings' => $warnings,
+        'warning_messages' => $warningMessages,
         'linked_id' => $linkedId,
         'linked_url' => $linkedUrl,
         'labels' => array(
             'proposal_status' => $tr('ProposalStatus'),
             'open_invoice' => $tr('OpenDolibarrInvoice'),
+            'blockers' => $tr('ImportBlockers'),
+            'warnings' => $tr('ImportWarnings'),
         ),
     ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 } catch (Throwable $e) {
