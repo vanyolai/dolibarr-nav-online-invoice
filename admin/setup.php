@@ -13,7 +13,7 @@ if (!$res) {
 require_once DOL_DOCUMENT_ROOT.'/core/lib/admin.lib.php';
 dol_include_once('/navinvoice/class/navapi.class.php');
 
-$langs->loadLangs(array('admin', 'navinvoice@navinvoice', 'navinvoiceui@navinvoice'));
+$langs->loadLangs(array('admin', 'navinvoice@navinvoice', 'navinvoiceui@navinvoice', 'navpurchase@navinvoice'));
 if (!$user->admin) {
     accessforbidden();
 }
