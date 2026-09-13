@@ -95,8 +95,6 @@ class NavPurchaseWorkbench
             $lines[] = $line;
         }
 
-        $order = $this->findLinkedOrder((int) $record->rowid);
-
         return array(
             'available' => !$reasons,
             'reasons' => array_values(array_unique($reasons)),
@@ -104,18 +102,17 @@ class NavPurchaseWorkbench
             'partner_id' => $partnerId,
             'partner' => $preview['partner'] ?? null,
             'linked_invoice_id' => (int) ($record->fk_facture_fourn ?? 0),
-            'order' => $order,
+            'order' => $this->findLinkedOrder((int) $record->rowid),
             'lines' => $lines,
         );
     }
 
     /**
      * Create a real Dolibarr product/service plus its supplier reference/price.
-     * The caller is expected to show/edit every supplied master-data field first.
      *
      * @param array<string,mixed> $line Workbench line rebuilt server-side.
      * @param array<string,mixed> $input User-confirmed candidate values.
-     * @return array{id:int,ref:string,label:string}
+     * @return array{id:int,ref:string,label:string,supplier_price_id:int}
      */
     public function createProduct(array $line, int $supplierId, array $input, User $user): array
     {
@@ -146,11 +143,7 @@ class NavPurchaseWorkbench
             throw new Exception('Supplier reference is required for workbench product creation.');
         }
 
-        $supplier = new Societe($this->db);
-        if ($supplier->fetch($supplierId) <= 0 || (int) $supplier->entity !== $this->entity) {
-            throw new Exception('Supplier could not be loaded for product creation.');
-        }
-
+        $supplier = $this->loadSupplier($supplierId);
         $product = new ProductFournisseur($this->db);
         $product->entity = $this->entity;
         $product->ref = $ref;
@@ -173,19 +166,7 @@ class NavPurchaseWorkbench
 
         try {
             $product->id = (int) $productId;
-            $result = $product->update_buyprice(
-                qty: 1,
-                buyprice: $unitPrice,
-                user: $user,
-                price_base_type: 'HT',
-                fourn: $supplier,
-                availability: 0,
-                ref_fourn: $supplierRef,
-                tva_tx: $vatRate
-            );
-            if ($result < 0) {
-                throw new Exception('Supplier price creation failed: '.$this->objectError($product));
-            }
+            $supplierPriceId = $this->writeSupplierPrice($product, $supplier, 0, $supplierRef, $unitPrice, $vatRate, null, $user);
         } catch (Throwable $e) {
             try {
                 $product->delete($user);
@@ -195,18 +176,23 @@ class NavPurchaseWorkbench
             throw $e;
         }
 
-        return array('id' => (int) $productId, 'ref' => (string) $product->ref, 'label' => (string) $product->label);
+        return array(
+            'id' => (int) $productId,
+            'ref' => (string) $product->ref,
+            'label' => (string) $product->label,
+            'supplier_price_id' => $supplierPriceId,
+        );
     }
 
     /**
      * Associate an existing product/variant with this supplier reference.
-     * Existing supplier price data is not overwritten here; price differences
-     * are handled by the explicit updateSupplierPrice() action.
+     * Existing supplier price data is not overwritten here.
+     *
+     * @return int Supplier-price row id.
      */
-    public function linkExistingProduct(array $line, int $supplierId, int $productId, User $user): void
+    public function linkExistingProduct(array $line, int $supplierId, int $productId, User $user): int
     {
         require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.product.class.php';
-        require_once DOL_DOCUMENT_ROOT.'/societe/class/societe.class.php';
 
         if ($supplierId <= 0 || $productId <= 0) {
             throw new Exception('Supplier and product are required.');
@@ -227,29 +213,21 @@ class NavPurchaseWorkbench
             throw new Exception('Selected Dolibarr product/service type differs from the NAV line type.');
         }
 
-        $supplier = new Societe($this->db);
-        if ($supplier->fetch($supplierId) <= 0 || (int) $supplier->entity !== $this->entity) {
-            throw new Exception('Supplier could not be loaded.');
-        }
-
+        $supplier = $this->loadSupplier($supplierId);
         $existing = $this->findSupplierPrice($supplierId, $productId, $supplierRef);
         if ($existing === null) {
-            $unitPrice = (float) ($line['unit_price_ht'] ?? 0);
-            $vatRate = (float) ($line['vat_rate'] ?? 0);
-            $product->id = $productId;
-            $result = $product->update_buyprice(
-                qty: 1,
-                buyprice: $unitPrice,
-                user: $user,
-                price_base_type: 'HT',
-                fourn: $supplier,
-                availability: 0,
-                ref_fourn: $supplierRef,
-                tva_tx: $vatRate
+            $supplierPriceId = $this->writeSupplierPrice(
+                $product,
+                $supplier,
+                0,
+                $supplierRef,
+                (float) ($line['unit_price_ht'] ?? 0),
+                (float) ($line['vat_rate'] ?? 0),
+                null,
+                $user
             );
-            if ($result < 0) {
-                throw new Exception('Supplier reference/price link failed: '.$this->objectError($product));
-            }
+        } else {
+            $supplierPriceId = (int) $existing['rowid'];
         }
 
         if (empty($product->status_buy)) {
@@ -258,18 +236,19 @@ class NavPurchaseWorkbench
                 throw new Exception('Product could not be enabled for purchase: '.$this->objectError($product));
             }
         }
+
+        return $supplierPriceId;
     }
 
     /** Update an already matched supplier-price row after explicit confirmation. */
     public function updateSupplierPrice(array $line, int $supplierId, User $user): void
     {
         require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.product.class.php';
-        require_once DOL_DOCUMENT_ROOT.'/societe/class/societe.class.php';
 
         $match = is_array($line['product_match'] ?? null) ? $line['product_match'] : array();
-        $product = is_array($match['product'] ?? null) ? $match['product'] : null;
-        $productId = $product !== null ? (int) ($product['id'] ?? 0) : 0;
-        $supplierPriceId = $product !== null ? (int) ($product['supplier_price_id'] ?? 0) : 0;
+        $productInfo = is_array($match['product'] ?? null) ? $match['product'] : null;
+        $productId = $productInfo !== null ? (int) ($productInfo['id'] ?? 0) : 0;
+        $supplierPriceId = $productInfo !== null ? (int) ($productInfo['supplier_price_id'] ?? 0) : 0;
         if ((string) ($match['status'] ?? '') !== 'matched' || $productId <= 0 || $supplierPriceId <= 0) {
             throw new Exception('NAV line is not linked to an updatable supplier price.');
         }
@@ -279,57 +258,22 @@ class NavPurchaseWorkbench
             throw new Exception('Supplier price relationship changed since the workbench preview.');
         }
 
-        $unitPrice = (float) ($line['unit_price_ht'] ?? 0);
-        $quantity = (float) ($details['quantity'] ?? 1);
-        if ($quantity <= 0) {
-            $quantity = 1;
-        }
-
-        $supplier = new Societe($this->db);
-        if ($supplier->fetch($supplierId) <= 0) {
-            throw new Exception('Supplier could not be loaded.');
-        }
-
-        $pf = new ProductFournisseur($this->db);
-        if ($pf->fetch($productId) <= 0) {
+        $supplier = $this->loadSupplier($supplierId);
+        $product = new ProductFournisseur($this->db);
+        if ($product->fetch($productId) <= 0) {
             throw new Exception('Product could not be loaded.');
         }
-        $pf->product_fourn_price_id = $supplierPriceId;
-        $pf->product_fourn_packaging = (float) ($details['packaging'] ?? $quantity);
 
-        $result = $pf->update_buyprice(
-            qty: $quantity,
-            buyprice: $unitPrice * $quantity,
-            user: $user,
-            price_base_type: 'HT',
-            fourn: $supplier,
-            availability: (int) ($details['fk_availability'] ?? 0),
-            ref_fourn: (string) ($details['ref_fourn'] ?? ($line['supplier_ref'] ?? '')),
-            tva_tx: (float) ($details['tva_tx'] ?? ($line['vat_rate'] ?? 0)),
-            charges: (float) ($details['charges'] ?? 0),
-            remise_percent: (float) ($details['remise_percent'] ?? 0),
-            remise: (float) ($details['remise'] ?? 0),
-            newnpr: !empty($details['info_bits']) ? 1 : 0,
-            delivery_time_days: $details['delivery_time_days'] ?? 0,
-            supplier_reputation: (string) ($details['supplier_reputation'] ?? ''),
-            localtaxes_array: array(
-                (string) ($details['localtax1_type'] ?? '0'),
-                (float) ($details['localtax1_tx'] ?? 0),
-                (string) ($details['localtax2_type'] ?? '0'),
-                (float) ($details['localtax2_tx'] ?? 0),
-            ),
-            newdefaultvatcode: (string) ($details['default_vat_code'] ?? ''),
-            multicurrency_buyprice: (float) ($details['multicurrency_price'] ?? 0),
-            multicurrency_price_base_type: 'HT',
-            multicurrency_tx: (float) ($details['multicurrency_tx'] ?? 1),
-            multicurrency_code: (string) ($details['multicurrency_code'] ?? ''),
-            desc_fourn: (string) ($details['desc_fourn'] ?? ''),
-            barcode: (string) ($details['barcode'] ?? ''),
-            fk_barcode_type: (int) ($details['fk_barcode_type'] ?? 0)
+        $this->writeSupplierPrice(
+            $product,
+            $supplier,
+            $supplierPriceId,
+            (string) ($details['ref_fourn'] ?? ($line['supplier_ref'] ?? '')),
+            (float) ($line['unit_price_ht'] ?? 0),
+            (float) ($details['tva_tx'] ?? ($line['vat_rate'] ?? 0)),
+            $details,
+            $user
         );
-        if ($result < 0) {
-            throw new Exception('Supplier price update failed: '.$this->objectError($pf));
-        }
     }
 
     /**
@@ -432,7 +376,6 @@ class NavPurchaseWorkbench
                     throw new Exception('Supplier order line creation failed: '.$this->objectError($order));
                 }
             }
-
             $this->linkOrder((int) $record->rowid, (int) $orderId);
         } catch (Throwable $e) {
             try {
@@ -485,6 +428,78 @@ class NavPurchaseWorkbench
             'status' => (int) $obj->fk_statut,
             'url' => DOL_URL_ROOT.'/fourn/commande/card.php?id='.(int) $obj->fk_commande_fourn,
         );
+    }
+
+    /** @return Societe */
+    private function loadSupplier(int $supplierId)
+    {
+        require_once DOL_DOCUMENT_ROOT.'/societe/class/societe.class.php';
+        $supplier = new Societe($this->db);
+        if ($supplier->fetch($supplierId) <= 0 || (int) $supplier->entity !== $this->entity) {
+            throw new Exception('Supplier could not be loaded.');
+        }
+        return $supplier;
+    }
+
+    /**
+     * Create or update a Dolibarr supplier-price row using the native business
+     * method. In base-currency NAV imports, multicurrency mirrors the same amount
+     * with tx=1 so an enabled multicurrency module cannot zero the base price.
+     *
+     * @param array<string,mixed>|null $current Existing supplier-price row.
+     */
+    private function writeSupplierPrice($product, $supplier, int $supplierPriceId, string $supplierRef, float $unitPrice, float $vatRate, ?array $current, User $user): int
+    {
+        $quantity = $current !== null ? (float) ($current['quantity'] ?? 1) : 1.0;
+        if ($quantity <= 0) {
+            $quantity = 1.0;
+        }
+        $totalPrice = $unitPrice * $quantity;
+
+        $product->product_fourn_price_id = $supplierPriceId;
+        if ($current !== null && isset($current['packaging'])) {
+            $product->product_fourn_packaging = (float) $current['packaging'];
+        }
+
+        $result = $product->update_buyprice(
+            qty: $quantity,
+            buyprice: $totalPrice,
+            user: $user,
+            price_base_type: 'HT',
+            fourn: $supplier,
+            availability: (int) ($current['fk_availability'] ?? 0),
+            ref_fourn: $supplierRef,
+            tva_tx: $vatRate,
+            charges: (float) ($current['charges'] ?? 0),
+            remise_percent: (float) ($current['remise_percent'] ?? 0),
+            remise: (float) ($current['remise'] ?? 0),
+            newnpr: !empty($current['info_bits']) ? 1 : 0,
+            delivery_time_days: $current['delivery_time_days'] ?? 0,
+            supplier_reputation: (string) ($current['supplier_reputation'] ?? ''),
+            localtaxes_array: array(
+                (string) ($current['localtax1_type'] ?? '0'),
+                (float) ($current['localtax1_tx'] ?? 0),
+                (string) ($current['localtax2_type'] ?? '0'),
+                (float) ($current['localtax2_tx'] ?? 0),
+            ),
+            newdefaultvatcode: (string) ($current['default_vat_code'] ?? ''),
+            multicurrency_buyprice: $totalPrice,
+            multicurrency_price_base_type: 'HT',
+            multicurrency_tx: 1,
+            multicurrency_code: $this->baseCurrency,
+            desc_fourn: (string) ($current['desc_fourn'] ?? ''),
+            barcode: (string) ($current['barcode'] ?? ''),
+            fk_barcode_type: (int) ($current['fk_barcode_type'] ?? 0)
+        );
+        if ($result < 0) {
+            throw new Exception('Supplier price write failed: '.$this->objectError($product));
+        }
+
+        $stored = $this->findSupplierPrice((int) $supplier->id, (int) $product->id, $supplierRef);
+        if ($stored === null) {
+            throw new Exception('Supplier price was written but could not be reloaded.');
+        }
+        return (int) $stored['rowid'];
     }
 
     /** @return array<string,mixed>|null */
@@ -573,8 +588,7 @@ class NavPurchaseWorkbench
         $sql = 'INSERT INTO '.MAIN_DB_PREFIX.'navinvoice_purchase_link(entity, fk_navinvoice_invoice, fk_commande_fourn, datec) VALUES (';
         $sql .= $this->entity.', '.$mirrorId.', '.$orderId.', ';
         $sql .= "'".$this->db->idate(dol_now())."')";
-        $resql = $this->db->query($sql);
-        if (!$resql) {
+        if (!$this->db->query($sql)) {
             throw new Exception('Could not link supplier order to NAV invoice: '.$this->db->lasterror());
         }
     }
