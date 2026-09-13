@@ -1,0 +1,4 @@
+SyncProgressRunning=Szinkronizálás folyamatban: %s rekord feldolgozva
+SyncProgressLatestInvoice=Legutóbbi számla
+SyncProgressDone=Szinkronizálás kész: %s vizsgált, %s új, %s frissített, %s XML letöltve
+SyncProgressError=A szinkronizálás sikertelen
