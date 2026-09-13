@@ -42,8 +42,24 @@ class NavInvoiceSync
         }
     }
 
-    public function syncPeriod(string $dateFrom, string $dateTo, bool $fetchFullData = true, string $direction = 'BOTH'): array
-    {
+    /**
+     * Synchronize NAV invoice digests and optionally the complete XML payloads.
+     *
+     * The optional progress callback receives deterministic synchronization
+     * stages. The number of 35-day chunks is known at start; NAV digest page
+     * counts become known after the first response of each chunk, while the
+     * number of queryInvoiceData calls is discovered as digests are compared to
+     * the local mirror.
+     *
+     * @param callable|null $progressCallback function(array<string,mixed>): void
+     */
+    public function syncPeriod(
+        string $dateFrom,
+        string $dateTo,
+        bool $fetchFullData = true,
+        string $direction = 'BOTH',
+        ?callable $progressCallback = null
+    ): array {
         $this->ensureSchema();
 
         $start = DateTimeImmutable::createFromFormat('!Y-m-d', $dateFrom);
@@ -58,6 +74,11 @@ class NavInvoiceSync
         }
         $directions = $direction === 'BOTH' ? array('OUTBOUND', 'INBOUND') : array($direction);
 
+        $days = (int) $start->diff($end)->format('%a') + 1;
+        $chunksPerDirection = max(1, (int) ceil($days / 35));
+        $totalChunks = $chunksPerDirection * count($directions);
+        $chunkIndex = 0;
+
         $api = new NavInvoiceApi();
         $stats = array(
             'seen' => 0,
@@ -68,6 +89,7 @@ class NavInvoiceSync
             'chunks' => 0,
             'outbound' => 0,
             'inbound' => 0,
+            'api_requests' => 0,
         );
 
         foreach ($directions as $currentDirection) {
@@ -77,18 +99,59 @@ class NavInvoiceSync
                 if ($chunkEnd > $end) {
                     $chunkEnd = $end;
                 }
+                $chunkIndex++;
                 $stats['chunks']++;
+
+                $this->notifyProgress($progressCallback, array_merge($stats, array(
+                    'stage' => 'chunk',
+                    'current_direction' => $currentDirection,
+                    'chunk_from' => $chunkStart->format('Y-m-d'),
+                    'chunk_to' => $chunkEnd->format('Y-m-d'),
+                    'chunk_index' => $chunkIndex,
+                    'chunk_total' => $totalChunks,
+                    'page' => null,
+                    'available_page' => null,
+                    'record_index' => null,
+                    'record_total' => null,
+                    'current_invoice' => null,
+                )));
+
                 $this->syncChunk(
                     $api,
                     $chunkStart->format('Y-m-d'),
                     $chunkEnd->format('Y-m-d'),
                     $fetchFullData,
                     $currentDirection,
-                    $stats
+                    $stats,
+                    $progressCallback,
+                    $chunkIndex,
+                    $totalChunks
                 );
+
+                $this->notifyProgress($progressCallback, array_merge($stats, array(
+                    'stage' => 'chunk_done',
+                    'current_direction' => $currentDirection,
+                    'chunk_from' => $chunkStart->format('Y-m-d'),
+                    'chunk_to' => $chunkEnd->format('Y-m-d'),
+                    'chunk_index' => $chunkIndex,
+                    'chunk_total' => $totalChunks,
+                    'record_index' => null,
+                    'record_total' => null,
+                    'current_invoice' => null,
+                )));
+
                 $chunkStart = $chunkEnd->modify('+1 day');
             }
         }
+
+        $this->notifyProgress($progressCallback, array_merge($stats, array(
+            'stage' => 'done',
+            'chunk_index' => $totalChunks,
+            'chunk_total' => $totalChunks,
+            'record_index' => null,
+            'record_total' => null,
+            'current_invoice' => null,
+        )));
 
         return $stats;
     }
@@ -151,18 +214,60 @@ class NavInvoiceSync
         }
     }
 
-    private function syncChunk(NavInvoiceApi $api, string $from, string $to, bool $fetchFullData, string $direction, array &$stats): void
-    {
+    private function syncChunk(
+        NavInvoiceApi $api,
+        string $from,
+        string $to,
+        bool $fetchFullData,
+        string $direction,
+        array &$stats,
+        ?callable $progressCallback,
+        int $chunkIndex,
+        int $chunkTotal
+    ): void {
         $page = 1;
         $availablePage = 1;
 
         do {
+            $stats['api_requests']++;
+            $this->notifyProgress($progressCallback, array_merge($stats, array(
+                'stage' => 'digest_request',
+                'current_direction' => $direction,
+                'chunk_from' => $from,
+                'chunk_to' => $to,
+                'chunk_index' => $chunkIndex,
+                'chunk_total' => $chunkTotal,
+                'page' => $page,
+                'available_page' => $availablePage,
+                'record_index' => 0,
+                'record_total' => 0,
+                'current_invoice' => null,
+            )));
+
             $response = $api->queryInvoiceDigest($from, $to, $page, $direction);
             $pageNodes = $response->xpath('//*[local-name()="invoiceDigestResult"]/*[local-name()="availablePage"]');
             $availablePage = $pageNodes ? max(1, (int) $pageNodes[0]) : 1;
             $digests = $response->xpath('//*[local-name()="invoiceDigestResult"]/*[local-name()="invoiceDigest"]');
+            $digestRows = $digests ?: array();
+            $recordTotal = count($digestRows);
 
-            foreach ($digests ?: array() as $digest) {
+            $this->notifyProgress($progressCallback, array_merge($stats, array(
+                'stage' => 'digest_page',
+                'current_direction' => $direction,
+                'chunk_from' => $from,
+                'chunk_to' => $to,
+                'chunk_index' => $chunkIndex,
+                'chunk_total' => $chunkTotal,
+                'page' => $page,
+                'available_page' => $availablePage,
+                'record_index' => 0,
+                'record_total' => $recordTotal,
+                'current_invoice' => null,
+            )));
+
+            $recordIndex = 0;
+            foreach ($digestRows as $digest) {
+                $recordIndex++;
                 $stats['seen']++;
                 $stats[strtolower($direction)]++;
                 $data = $this->digestToArray($digest, $direction);
@@ -175,22 +280,64 @@ class NavInvoiceSync
                     $stats['unchanged']++;
                 }
 
-                if ($fetchFullData) {
-                    if ($upsert['changed'] || !$upsert['data_fetched']) {
-                        $supplierTaxNumber = trim((string) ($data['supplier_tax_number'] ?? ''));
-                        $xml = $api->queryInvoiceData(
-                            $data['invoice_number'],
-                            (int) $data['batch_index'],
-                            $direction,
-                            $supplierTaxNumber !== '' ? $supplierTaxNumber : null
-                        );
-                        $this->storeInvoiceData((int) $upsert['rowid'], $xml);
-                        $stats['downloaded']++;
-                    } elseif ($upsert['amounts_missing']) {
-                        $this->enrichStoredInvoiceAmounts((int) $upsert['rowid']);
-                    }
+                if ($fetchFullData && ($upsert['changed'] || !$upsert['data_fetched'])) {
+                    $stats['api_requests']++;
+                    $this->notifyProgress($progressCallback, array_merge($stats, array(
+                        'stage' => 'xml_request',
+                        'current_direction' => $direction,
+                        'chunk_from' => $from,
+                        'chunk_to' => $to,
+                        'chunk_index' => $chunkIndex,
+                        'chunk_total' => $chunkTotal,
+                        'page' => $page,
+                        'available_page' => $availablePage,
+                        'record_index' => max(0, $recordIndex - 1),
+                        'record_total' => $recordTotal,
+                        'current_invoice' => $data['invoice_number'],
+                    )));
+
+                    $supplierTaxNumber = trim((string) ($data['supplier_tax_number'] ?? ''));
+                    $xml = $api->queryInvoiceData(
+                        $data['invoice_number'],
+                        (int) $data['batch_index'],
+                        $direction,
+                        $supplierTaxNumber !== '' ? $supplierTaxNumber : null
+                    );
+                    $this->storeInvoiceData((int) $upsert['rowid'], $xml);
+                    $stats['downloaded']++;
+                } elseif ($fetchFullData && $upsert['amounts_missing']) {
+                    $this->enrichStoredInvoiceAmounts((int) $upsert['rowid']);
                 }
+
+                $this->notifyProgress($progressCallback, array_merge($stats, array(
+                    'stage' => 'record',
+                    'current_direction' => $direction,
+                    'chunk_from' => $from,
+                    'chunk_to' => $to,
+                    'chunk_index' => $chunkIndex,
+                    'chunk_total' => $chunkTotal,
+                    'page' => $page,
+                    'available_page' => $availablePage,
+                    'record_index' => $recordIndex,
+                    'record_total' => $recordTotal,
+                    'current_invoice' => $data['invoice_number'],
+                )));
             }
+
+            $this->notifyProgress($progressCallback, array_merge($stats, array(
+                'stage' => 'digest_page_done',
+                'current_direction' => $direction,
+                'chunk_from' => $from,
+                'chunk_to' => $to,
+                'chunk_index' => $chunkIndex,
+                'chunk_total' => $chunkTotal,
+                'page' => $page,
+                'available_page' => $availablePage,
+                'record_index' => $recordTotal,
+                'record_total' => $recordTotal,
+                'current_invoice' => null,
+            )));
+
             $page++;
         } while ($page <= $availablePage);
     }
@@ -498,6 +645,20 @@ class NavInvoiceSync
         $formatted = number_format(round($value, 8), 8, '.', '');
         $formatted = rtrim(rtrim($formatted, '0'), '.');
         return $formatted === '-0' || $formatted === '' ? '0' : $formatted;
+    }
+
+    /** @param callable|null $callback */
+    private function notifyProgress(?callable $callback, array $state): void
+    {
+        if ($callback === null) {
+            return;
+        }
+        try {
+            $callback($state);
+        } catch (Throwable $e) {
+            // Progress reporting is advisory and must never abort the NAV mirror.
+            dol_syslog(__METHOD__.': progress callback failed: '.$e->getMessage(), LOG_WARNING);
+        }
     }
 
     private function sqlDateTime(string $value): ?string
