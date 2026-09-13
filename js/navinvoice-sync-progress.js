@@ -20,6 +20,25 @@
         return action ? action.closest('form') : null;
     }
 
+    function compactIndexLayout(form) {
+        var table = form ? form.closest('table') : null;
+        if (!table) {
+            return;
+        }
+
+        var container = table.parentElement;
+        if (container) {
+            container.style.maxWidth = '940px';
+        }
+
+        table.querySelectorAll('tr:not(.liste_titre) td > div').forEach(function (cell) {
+            if (cell.style && cell.style.justifyContent === 'space-between') {
+                cell.style.justifyContent = 'flex-start';
+                cell.style.gap = '12px';
+            }
+        });
+    }
+
     function submitButton(form) {
         return form.querySelector('input[type="submit"], button[type="submit"]');
     }
@@ -52,7 +71,7 @@
         panel.id = 'navinvoice-sync-progress';
         panel.className = 'info';
         panel.style.marginTop = '10px';
-        panel.style.maxWidth = '980px';
+        panel.style.maxWidth = '940px';
         panel.style.boxSizing = 'border-box';
 
         var text = document.createElement('div');
@@ -128,6 +147,8 @@
         if (!form || form.dataset.navinvoiceProgressBound === '1') {
             return;
         }
+
+        compactIndexLayout(form);
         form.dataset.navinvoiceProgressBound = '1';
 
         form.addEventListener('submit', function (event) {
