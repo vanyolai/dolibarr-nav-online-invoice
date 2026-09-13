@@ -1,8 +1,11 @@
 <?php
 
 /**
- * Parse NAV Online Invoice 3.0 InvoiceData XML into a stable, read-only
- * structure that can later be reused for Dolibarr invoice imports.
+ * Parse NAV Online Invoice XML into a stable, read-only structure that can
+ * later be reused for Dolibarr invoice imports.
+ *
+ * Current NAV 3.0 InvoiceData payloads and legacy NAV 1.x Invoice/
+ * invoiceExchange payloads are both normalized to the same internal model.
  */
 class NavInvoiceParser
 {
@@ -21,20 +24,46 @@ class NavInvoiceParser
             throw new Exception('Stored NAV invoice XML is invalid: '.$detail);
         }
 
+        $legacy = false;
         $invoiceNodes = $document->xpath(
             '//*[local-name()="invoiceMain"]/*[local-name()="invoice"]'
             .' | //*[local-name()="invoiceMain"]/*[local-name()="batchInvoice"]/*[local-name()="invoice"]'
         );
-        if (!$invoiceNodes) {
-            throw new Exception('Stored NAV XML does not contain an invoice payload.');
+
+        if ($invoiceNodes) {
+            $invoice = $invoiceNodes[0];
+            $head = $this->node($invoice, './*[local-name()="invoiceHead"]');
+            $detail = $head ? $this->node($head, './*[local-name()="invoiceDetail"]') : null;
+            $invoiceNumber = $this->text($document, './*[local-name()="invoiceNumber"]');
+            $invoiceIssueDate = $this->text($document, './*[local-name()="invoiceIssueDate"]');
+            $completenessIndicator = $this->boolText($document, './*[local-name()="completenessIndicator"]');
+            $batchIndex = $this->text($document, './*[local-name()="invoiceMain"]/*[local-name()="batchInvoice"]/*[local-name()="batchIndex"]');
+        } else {
+            // NAV OSA 1.x queryInvoiceData returned the historical Invoice payload
+            // directly. Its business content lives under invoiceExchange rather
+            // than InvoiceData/invoiceMain/invoice, but it can be normalized to
+            // the same internal representation used by the 3.0 parser.
+            $legacyExchange = $this->node($document, './*[local-name()="invoiceExchange"]');
+            if ($legacyExchange === null) {
+                throw new Exception('Stored NAV XML does not contain an invoice payload.');
+            }
+
+            $legacy = true;
+            $invoice = $legacyExchange;
+            $head = $this->node($invoice, './*[local-name()="invoiceHead"]');
+            $detail = $head ? $this->node($head, './*[local-name()="invoiceData"]') : null;
+            $invoiceNumber = $detail ? $this->text($detail, './*[local-name()="invoiceNumber"]') : '';
+            $invoiceIssueDate = $detail ? $this->text($detail, './*[local-name()="invoiceIssueDate"]') : '';
+            $completenessIndicator = null;
+            $batchIndex = '';
         }
 
-        $invoice = $invoiceNodes[0];
-        $head = $this->node($invoice, './*[local-name()="invoiceHead"]');
-        $detail = $head ? $this->node($head, './*[local-name()="invoiceDetail"]') : null;
         $supplierInfo = $head ? $this->node($head, './*[local-name()="supplierInfo"]') : null;
         $customerInfo = $head ? $this->node($head, './*[local-name()="customerInfo"]') : null;
         $reference = $this->node($invoice, './*[local-name()="invoiceReference"]');
+        if ($legacy && $reference === null && $detail !== null) {
+            $reference = $this->node($detail, './*[local-name()="invoiceReference"]');
+        }
 
         $currency = $detail ? $this->text($detail, './*[local-name()="currencyCode"]') : '';
         $totals = $this->parseTotals($invoice);
@@ -45,11 +74,32 @@ class NavInvoiceParser
             $lines[] = $this->parseLine($line);
         }
 
+        // Legacy HUF invoices often omitted the duplicated *HUF amount fields.
+        // The source currency and exchange rate make those values deterministic.
+        if (strtoupper($currency) === 'HUF') {
+            foreach (array('net', 'vat', 'gross') as $key) {
+                if ($totals[$key.'_huf'] === null && $totals[$key] !== null) {
+                    $totals[$key.'_huf'] = $totals[$key];
+                }
+            }
+            foreach ($lines as &$parsedLine) {
+                foreach (array('net', 'vat', 'gross') as $key) {
+                    if ($parsedLine['amounts'][$key.'_huf'] === null && $parsedLine['amounts'][$key] !== null) {
+                        $parsedLine['amounts'][$key.'_huf'] = $parsedLine['amounts'][$key];
+                    }
+                }
+                if ($parsedLine['unit_price_huf'] === null && $parsedLine['unit_price'] !== null) {
+                    $parsedLine['unit_price_huf'] = $parsedLine['unit_price'];
+                }
+            }
+            unset($parsedLine);
+        }
+
         return array(
-            'invoice_number' => $this->text($document, './*[local-name()="invoiceNumber"]'),
-            'invoice_issue_date' => $this->text($document, './*[local-name()="invoiceIssueDate"]'),
-            'completeness_indicator' => $this->boolText($document, './*[local-name()="completenessIndicator"]'),
-            'batch_index' => $this->text($document, './*[local-name()="invoiceMain"]/*[local-name()="batchInvoice"]/*[local-name()="batchIndex"]'),
+            'invoice_number' => $invoiceNumber,
+            'invoice_issue_date' => $invoiceIssueDate,
+            'completeness_indicator' => $completenessIndicator,
+            'batch_index' => $batchIndex,
             'supplier' => $this->parseSupplier($supplierInfo),
             'customer' => $this->parseCustomer($customerInfo),
             'detail' => array(
@@ -107,15 +157,30 @@ class NavInvoiceParser
             return $this->emptyParty();
         }
 
+        $taxNode = $this->node($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]');
+        if ($taxNode === null) {
+            // NAV 1.x used customerTaxNumber directly under customerInfo.
+            $taxNode = $this->node($node, './*[local-name()="customerTaxNumber"]');
+        }
+
+        $communityVatNumber = $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="communityVatNumber"]');
+        if ($communityVatNumber === '') {
+            $communityVatNumber = $this->text($node, './*[local-name()="communityVatNumber"]');
+        }
+        $thirdStateTaxId = $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="thirdStateTaxId"]');
+        if ($thirdStateTaxId === '') {
+            $thirdStateTaxId = $this->text($node, './*[local-name()="thirdStateTaxId"]');
+        }
+
         return array(
             'name' => $this->text($node, './*[local-name()="customerName"]'),
             'vat_status' => $this->text($node, './*[local-name()="customerVatStatus"]'),
-            'tax_number' => $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]/*[local-name()="taxpayerId"]'),
-            'vat_code' => $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]/*[local-name()="vatCode"]'),
-            'county_code' => $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]/*[local-name()="countyCode"]'),
-            'group_member_tax_number' => $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="communityVatNumber"]'),
-            'community_vat_number' => $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="communityVatNumber"]'),
-            'third_state_tax_id' => $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="thirdStateTaxId"]'),
+            'tax_number' => $taxNode ? $this->text($taxNode, './*[local-name()="taxpayerId"]') : '',
+            'vat_code' => $taxNode ? $this->text($taxNode, './*[local-name()="vatCode"]') : '',
+            'county_code' => $taxNode ? $this->text($taxNode, './*[local-name()="countyCode"]') : '',
+            'group_member_tax_number' => $this->text($node, './*[local-name()="groupMemberTaxNumber"]/*[local-name()="taxpayerId"]'),
+            'community_vat_number' => $communityVatNumber,
+            'third_state_tax_id' => $thirdStateTaxId,
             'bank_account' => $this->text($node, './*[local-name()="customerBankAccountNumber"]'),
             'address' => $this->parseAddress($this->node($node, './*[local-name()="customerAddress"]')),
         );
@@ -250,6 +315,10 @@ class NavInvoiceParser
         if ($grossData) {
             $result['gross'] = $this->nullableText($grossData, './*[local-name()="invoiceGrossAmount"]');
             $result['gross_huf'] = $this->nullableText($grossData, './*[local-name()="invoiceGrossAmountHUF"]');
+        } else {
+            // NAV 1.x stored the gross total directly under invoiceSummary.
+            $result['gross'] = $this->nullableText($summary, './*[local-name()="invoiceGrossAmount"]');
+            $result['gross_huf'] = $this->nullableText($summary, './*[local-name()="invoiceGrossAmountHUF"]');
         }
 
         if ($normal) {
@@ -358,6 +427,27 @@ class NavInvoiceParser
             $amounts['vat_huf'] = $this->nullableText($normal, './*[local-name()="lineVatData"]/*[local-name()="lineVatAmountHUF"]');
             $amounts['gross'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountData"]/*[local-name()="lineGrossAmountNormal"]');
             $amounts['gross_huf'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountData"]/*[local-name()="lineGrossAmountNormalHUF"]');
+
+            // NAV 1.x kept these amounts directly under lineAmountsNormal.
+            if ($amounts['net'] === null) {
+                $amounts['net'] = $this->nullableText($normal, './*[local-name()="lineNetAmount"]');
+            }
+            if ($amounts['net_huf'] === null) {
+                $amounts['net_huf'] = $this->nullableText($normal, './*[local-name()="lineNetAmountHUF"]');
+            }
+            if ($amounts['vat'] === null) {
+                $amounts['vat'] = $this->nullableText($normal, './*[local-name()="lineVatAmount"]');
+            }
+            if ($amounts['vat_huf'] === null) {
+                $amounts['vat_huf'] = $this->nullableText($normal, './*[local-name()="lineVatAmountHUF"]');
+            }
+            if ($amounts['gross'] === null) {
+                $amounts['gross'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountNormal"]');
+            }
+            if ($amounts['gross_huf'] === null) {
+                $amounts['gross_huf'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountNormalHUF"]');
+            }
+
             $vat = $this->parseVatRate($this->node($normal, './*[local-name()="lineVatRate"]'), false);
 
             // NAV may omit lineVatData and lineGrossAmountData even though line
@@ -445,6 +535,7 @@ class NavInvoiceParser
             'description' => $this->text($line, './*[local-name()="lineDescription"]'),
             'nature' => $this->text($line, './*[local-name()="lineNatureIndicator"]'),
             'expression' => $this->boolText($line, './*[local-name()="lineExpressionIndicator"]'),
+            'advance' => $this->boolText($line, './*[local-name()="advanceIndicator"]'),
             'quantity' => $this->nullableText($line, './*[local-name()="quantity"]'),
             'unit' => $this->text($line, './*[local-name()="unitOfMeasure"]'),
             'unit_own' => $this->text($line, './*[local-name()="unitOfMeasureOwn"]'),
