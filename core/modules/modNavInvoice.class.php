@@ -85,7 +85,11 @@ class modNavInvoice extends DolibarrModules
                 'comment' => 'NavInvoiceScheduledSyncDesc',
                 'frequency' => 1,
                 'unitfrequency' => 3600,
-                'status' => 0,
+                // The NAV setting remains the authoritative on/off switch via
+                // the test expression below. Keep the registered Dolibarr cron
+                // job enabled by default so a fresh installation needs only the
+                // module setting, not a second manual activation in Scheduled Jobs.
+                'status' => 1,
                 'test' => 'isModEnabled("navinvoice") && getDolGlobalInt("NAVINVOICE_SYNC_ENABLED")',
                 'priority' => 50,
             ),
