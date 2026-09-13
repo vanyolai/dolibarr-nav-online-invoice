@@ -56,11 +56,26 @@ class NavInvoiceOperationPreview
         $preview = $this->applyProductMatches($preview);
 
         $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
-        $preview['operation_mapping'] = $operation === 'CREATE' ? 'standard' : '';
+        $isAdvanceInvoice = $operation === 'CREATE' && $this->isAdvanceOnlyInvoice($preview);
+        $preview['is_advance_invoice'] = $isAdvanceInvoice;
+        $preview['operation_mapping'] = $operation === 'CREATE'
+            ? ($isAdvanceInvoice ? 'deposit' : 'standard')
+            : '';
         $preview['source_invoice_id'] = 0;
         $preview['operation_policy'] = null;
 
         if ($operation === 'CREATE') {
+            if ($isAdvanceInvoice) {
+                // Do not silently import an advance invoice as TYPE_STANDARD.
+                // The preview already knows the intended Dolibarr mapping, but
+                // the importer must explicitly support TYPE_DEPOSIT before this
+                // case becomes importable.
+                $preview['blockers'] = array_values(array_unique(array_merge(
+                    array_map('strval', $preview['blockers'] ?? array()),
+                    array('advance_invoice_mapping_pending')
+                )));
+                $preview['state'] = 'blocked';
+            }
             return $preview;
         }
 
@@ -98,6 +113,34 @@ class NavInvoiceOperationPreview
         $preview['warnings'] = array_values(array_unique($warnings));
         $preview['state'] = $preview['blockers'] ? 'blocked' : ($preview['warnings'] ? 'review' : 'ready');
         return $preview;
+    }
+
+    /**
+     * A CREATE is considered a deposit/advance invoice only when at least one
+     * monetary line exists and every monetary line is explicitly flagged by NAV
+     * as advance. Zero-amount descriptive rows are ignored for this decision.
+     * This deliberately avoids classifying final invoices that merely contain an
+     * advance settlement line as deposit invoices.
+     */
+    private function isAdvanceOnlyInvoice(array $preview): bool
+    {
+        $hasMonetaryLine = false;
+        foreach (($preview['lines'] ?? array()) as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+            $monetary = abs((float) ($line['net'] ?? 0)) > 0.0000001
+                || abs((float) ($line['vat'] ?? 0)) > 0.0000001
+                || abs((float) ($line['gross'] ?? 0)) > 0.0000001;
+            if (!$monetary) {
+                continue;
+            }
+            $hasMonetaryLine = true;
+            if (($line['advance'] ?? null) !== true) {
+                return false;
+            }
+        }
+        return $hasMonetaryLine;
     }
 
     /**
