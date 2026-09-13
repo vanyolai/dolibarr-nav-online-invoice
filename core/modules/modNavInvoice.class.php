@@ -25,7 +25,7 @@ class modNavInvoice extends DolibarrModules
         $this->descriptionlong = 'ModuleNavInvoiceDesc';
         $this->editor_name = 'vanyolai';
         $this->editor_url = 'https://github.com/vanyolai/dolibarr-nav-online-invoice';
-        $this->version = '0.8.0';
+        $this->version = '0.9.0';
         $this->const_name = 'MAIN_MODULE_'.strtoupper($this->name);
         $this->picto = 'file-invoice';
 
@@ -37,7 +37,7 @@ class modNavInvoice extends DolibarrModules
             'tpl' => 0,
             'models' => 0,
             'css' => array(),
-            'js' => array('/navinvoice/js/navinvoice-ui.js', '/navinvoice/js/navinvoice-sync-progress.js'),
+            'js' => array('/navinvoice/js/navinvoice-ui.js', '/navinvoice/js/navinvoice-sync-progress.js', '/navinvoice/js/navpurchase-button.js'),
             'hooks' => array('invoicesuppliercard'),
             'moduleforexternal' => 0,
         );
@@ -48,7 +48,7 @@ class modNavInvoice extends DolibarrModules
         $this->depends = array('modFacture');
         $this->requiredby = array();
         $this->conflictwith = array();
-        $this->langfiles = array('navinvoice@navinvoice');
+        $this->langfiles = array('navinvoice@navinvoice', 'navpurchase@navinvoice');
         $this->phpmin = array(8, 1);
         $this->need_dolibarr_version = array(23, 0);
         $this->need_javascript_ajax = 0;
@@ -62,6 +62,7 @@ class modNavInvoice extends DolibarrModules
             3 => array('NAVINVOICE_FETCH_FULL_DATA', 'yesno', '1', 'Download complete invoice XML', 0, 'current', 0),
             4 => array('NAVINVOICE_SOFTWARE_ID', 'chaine', 'DOLIBARRNAVSYNC001', 'NAV software identifier', 0, 'current', 0),
             5 => array('NAVINVOICE_AUTO_VALIDATE_INBOUND', 'yesno', '0', 'Automatically validate READY inbound NAV imports', 0, 'current', 0),
+            6 => array('NAVINVOICE_PURCHASE_WORKBENCH_ENABLED', 'yesno', '0', 'Enable inbound purchase preparation workbench', 0, 'current', 0),
         );
 
         if (!isModEnabled('navinvoice')) {
