@@ -12,6 +12,7 @@ class NavInvoiceApi
     private string $environment;
     private string $softwareId;
     private string $softwareVersion;
+    private int $minIntervalMs;
 
     public function __construct()
     {
@@ -22,6 +23,9 @@ class NavInvoiceApi
         $this->environment = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === 'production' ? 'production' : 'test';
         $this->softwareId = trim((string) getDolGlobalString('NAVINVOICE_SOFTWARE_ID', 'DOLIBARRNAVSYNC001'));
         $this->softwareVersion = '0.8.0';
+        // Keep a conservative distance between requests. The value can be
+        // overridden through a Dolibarr constant without changing the module.
+        $this->minIntervalMs = max(0, min(5000, getDolGlobalInt('NAVINVOICE_API_MIN_INTERVAL_MS', 1100)));
     }
 
     public function isConfigured(): bool
@@ -211,6 +215,8 @@ class NavInvoiceApi
             .$body
             .'</'.$rootElement.'>';
 
+        $this->paceRequests();
+
         $url = $this->baseUrl().'/'.$endpoint;
         $ch = curl_init($url);
         curl_setopt_array($ch, array(
@@ -227,12 +233,12 @@ class NavInvoiceApi
         curl_close($ch);
 
         if ($raw === false || $raw === '') {
-            throw new Exception('NAV API request failed'.($curlError !== '' ? ': '.$curlError : '.'));
+            throw new Exception('NAV API '.$endpoint.' request failed'.($curlError !== '' ? ': '.$curlError : '.'));
         }
 
         $response = @simplexml_load_string($raw);
         if ($response === false) {
-            throw new Exception('NAV API returned invalid XML (HTTP '.$status.').');
+            throw new Exception('NAV API '.$endpoint.' returned invalid XML (HTTP '.$status.').');
         }
 
         $technicalMessages = $response->xpath('//*[local-name()="technicalValidationMessages"]/*[local-name()="validationResultCode" and normalize-space(.) != "OK"]/..');
@@ -245,15 +251,77 @@ class NavInvoiceApi
                 $text = $this->xpathValue($message, './*[local-name()="message"]');
                 $parts[] = trim($code.($text !== '' ? ': '.$text : ''));
             }
-            throw new Exception('NAV API validation error: '.implode('; ', array_filter($parts)));
+            throw new Exception('NAV API '.$endpoint.' validation error: '.implode('; ', array_filter($parts)).' [requestId '.$requestId.']');
         }
 
         if ($status < 200 || $status >= 300) {
+            $errorCode = $this->xpathValue($response, '//*[local-name()="result"]/*[local-name()="errorCode"]');
+            $errorMessage = $this->xpathValue($response, '//*[local-name()="result"]/*[local-name()="message"]');
+            if ($errorCode === '') {
+                $errorCode = $this->xpathValue($response, '//*[local-name()="errorCode"]');
+            }
+            if ($errorMessage === '') {
+                $errorMessage = $this->xpathValue($response, '//*[local-name()="message"]');
+            }
+            $detail = trim($errorCode.($errorMessage !== '' ? ': '.$errorMessage : ''));
             $hint = $status === 401 ? ' Check that the selected test/production environment matches the technical user.' : '';
-            throw new Exception('NAV API HTTP '.$status.'.'.$hint);
+            throw new Exception(
+                'NAV API '.$endpoint.' HTTP '.$status
+                .($detail !== '' ? ' - '.$detail : '')
+                .' [requestId '.$requestId.'].'
+                .$hint
+            );
         }
 
         return $response;
+    }
+
+    /**
+     * Serialize requests from this Dolibarr instance and keep a conservative
+     * minimum interval between their start times. This protects manual sync,
+     * scheduled sync, taxpayer lookups and relation checks from collectively
+     * bursting the NAV API from the same application host.
+     */
+    private function paceRequests(): void
+    {
+        if ($this->minIntervalMs <= 0) {
+            return;
+        }
+
+        $directory = defined('DOL_DATA_ROOT') ? rtrim((string) DOL_DATA_ROOT, '/').'/navinvoice' : sys_get_temp_dir();
+        if (!is_dir($directory) && !@mkdir($directory, 0770, true) && !is_dir($directory)) {
+            return;
+        }
+        $path = rtrim($directory, '/').'/navapi-rate.lock';
+        $handle = @fopen($path, 'c+');
+        if ($handle === false) {
+            return;
+        }
+
+        try {
+            if (!flock($handle, LOCK_EX)) {
+                return;
+            }
+            rewind($handle);
+            $previous = (float) trim((string) stream_get_contents($handle));
+            $now = microtime(true);
+            $minimumSeconds = $this->minIntervalMs / 1000;
+            if ($previous > 0) {
+                $wait = $minimumSeconds - ($now - $previous);
+                if ($wait > 0) {
+                    usleep((int) ceil($wait * 1000000));
+                }
+            }
+
+            $started = microtime(true);
+            ftruncate($handle, 0);
+            rewind($handle);
+            fwrite($handle, sprintf('%.6F', $started));
+            fflush($handle);
+            flock($handle, LOCK_UN);
+        } finally {
+            fclose($handle);
+        }
     }
 
     private function baseUrl(): string
