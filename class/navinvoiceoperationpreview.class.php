@@ -2,13 +2,16 @@
 
 dol_include_once('/navinvoice/class/navinvoiceimportpreview.class.php');
 dol_include_once('/navinvoice/class/navinvoiceoperationpolicy.class.php');
+dol_include_once('/navinvoice/class/navproductmatcher.class.php');
 
 /**
- * Extend the established accounting/data preview with NAV operation semantics.
+ * Extend the established accounting/data preview with NAV operation semantics
+ * and conservative NAV-line to Dolibarr-product resolution.
  *
  * The base preview remains responsible for partner, VAT, currency, line and
  * duplicate checks. This wrapper replaces its blanket non-CREATE blocker with
- * the stricter relation/authoritative-chain/mapping policy.
+ * the stricter relation/authoritative-chain/mapping policy and enriches every
+ * mapped line with an exact product match when one is deterministic.
  */
 class NavInvoiceOperationPreview
 {
@@ -24,6 +27,9 @@ class NavInvoiceOperationPreview
     /** @var NavInvoiceOperationPolicy */
     private $operationPolicy;
 
+    /** @var NavProductMatcher */
+    private $productMatcher;
+
     public function __construct($db, int $entity, string $baseCurrency = 'HUF')
     {
         global $langs;
@@ -35,6 +41,7 @@ class NavInvoiceOperationPreview
         $this->entity = $entity;
         $this->basePreview = new NavInvoiceImportPreview($db, $entity, $baseCurrency);
         $this->operationPolicy = new NavInvoiceOperationPolicy($db, $entity);
+        $this->productMatcher = new NavProductMatcher($db, $entity);
     }
 
     /**
@@ -46,6 +53,8 @@ class NavInvoiceOperationPreview
     public function build(array $parsed, $record, ?array $partnerMatch): array
     {
         $preview = $this->basePreview->build($parsed, $record, $partnerMatch);
+        $preview = $this->applyProductMatches($preview);
+
         $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
         $preview['operation_mapping'] = $operation === 'CREATE' ? 'standard' : '';
         $preview['source_invoice_id'] = 0;
@@ -88,6 +97,52 @@ class NavInvoiceOperationPreview
         $preview['blockers'] = array_values(array_unique($blockers));
         $preview['warnings'] = array_values(array_unique($warnings));
         $preview['state'] = $preview['blockers'] ? 'blocked' : ($preview['warnings'] ? 'review' : 'ready');
+        return $preview;
+    }
+
+    /**
+     * Add read-only product resolution to every mapped line. Missing or
+     * uncertain product matches never block invoice import: such rows remain
+     * free-text invoice lines until the product master data is resolved.
+     *
+     * @param array<string,mixed> $preview
+     * @return array<string,mixed>
+     */
+    private function applyProductMatches(array $preview): array
+    {
+        $direction = strtoupper(trim((string) ($preview['direction'] ?? '')));
+        $partnerId = is_array($preview['partner'] ?? null) ? (int) ($preview['partner']['id'] ?? 0) : 0;
+        $summary = array(
+            'matched' => 0,
+            'unmatched' => 0,
+            'ambiguous' => 0,
+            'review' => 0,
+        );
+
+        foreach (($preview['lines'] ?? array()) as $index => $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $match = $this->productMatcher->matchLine($direction, $partnerId, $line);
+            $preview['lines'][$index]['product_match'] = $match;
+            $preview['lines'][$index]['product_id'] = !empty($match['auto_link']) && is_array($match['product'] ?? null)
+                ? (int) ($match['product']['id'] ?? 0)
+                : 0;
+
+            $status = (string) ($match['status'] ?? 'none');
+            if ($status === 'matched') {
+                $summary['matched']++;
+            } elseif ($status === 'ambiguous') {
+                $summary['ambiguous']++;
+            } elseif (in_array($status, array('type_mismatch', 'inactive'), true)) {
+                $summary['review']++;
+            } else {
+                $summary['unmatched']++;
+            }
+        }
+
+        $preview['product_match_summary'] = $summary;
         return $preview;
     }
 
