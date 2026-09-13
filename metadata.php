@@ -46,21 +46,28 @@ if (!$record) {
     exit;
 }
 
+// This endpoint returns JSON, not HTML. Use Dolibarr's entity-free
+// translation API so the browser receives real UTF-8 text and can keep
+// rendering it safely through textContent without HTML decoding.
+$tr = static function (string $key) use ($langs): string {
+    return $langs->transnoentities($key);
+};
+
 $labels = array(
-    'title' => $langs->trans('NavProcessingMetadata'),
-    'help' => $langs->trans('NavProcessingMetadataHelp'),
-    'none' => $langs->trans('NavProcessingMetadataNone'),
-    'invoice' => $langs->trans('NavInvoiceLevelMetadata'),
-    'line' => $langs->trans('NavLineMetadata'),
-    'product_codes' => $langs->trans('NavProductCodes'),
-    'conventional' => $langs->trans('NavConventionalData'),
-    'additional' => $langs->trans('NavAdditionalData'),
-    'barcode_candidates' => $langs->trans('NavBarcodeCandidates'),
-    'barcode_help' => $langs->trans('NavBarcodeCandidatesHelp'),
-    'source' => $langs->trans('NavMetadataSource'),
-    'name' => $langs->trans('NavMetadataName'),
-    'description' => $langs->trans('NavMetadataDescription'),
-    'value' => $langs->trans('NavMetadataValue'),
+    'title' => $tr('NavProcessingMetadata'),
+    'help' => $tr('NavProcessingMetadataHelp'),
+    'none' => $tr('NavProcessingMetadataNone'),
+    'invoice' => $tr('NavInvoiceLevelMetadata'),
+    'line' => $tr('NavLineMetadata'),
+    'product_codes' => $tr('NavProductCodes'),
+    'conventional' => $tr('NavConventionalData'),
+    'additional' => $tr('NavAdditionalData'),
+    'barcode_candidates' => $tr('NavBarcodeCandidates'),
+    'barcode_help' => $tr('NavBarcodeCandidatesHelp'),
+    'source' => $tr('NavMetadataSource'),
+    'name' => $tr('NavMetadataName'),
+    'description' => $tr('NavMetadataDescription'),
+    'value' => $tr('NavMetadataValue'),
     'conventional_labels' => array(),
 );
 
@@ -81,26 +88,8 @@ foreach (array(
     'item_numbers',
     'ekaer_ids',
 ) as $key) {
-    $labels['conventional_labels'][$key] = $langs->trans('NavMeta_'.$key);
+    $labels['conventional_labels'][$key] = $tr('NavMeta_'.$key);
 }
-
-// Dolibarr translations may be HTML-entity encoded because they are normally
-// rendered into HTML. This endpoint returns JSON and the client deliberately
-// inserts labels with textContent, so convert entities back to UTF-8 text here
-// instead of decoding them as HTML in JavaScript.
-$decodeJsonText = static function ($value) use (&$decodeJsonText) {
-    if (is_array($value)) {
-        foreach ($value as $key => $item) {
-            $value[$key] = $decodeJsonText($item);
-        }
-        return $value;
-    }
-    if (is_string($value)) {
-        return html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-    }
-    return $value;
-};
-$labels = $decodeJsonText($labels);
 
 try {
     $metadata = array('invoice' => array('conventional' => array(), 'additional_data' => array()), 'lines' => array());
