@@ -38,9 +38,10 @@ class NavTaxpayerService
      * Convert taxpayer master data to the same party shape used by the invoice
      * parser and partner matcher.
      *
-     * Prefer NAV's official short name for matching/display semantics when it
-     * exists. queryTaxpayer frequently returns the full registered name in all
-     * capitals while taxpayerShortName keeps the normal business spelling.
+     * Prefer the normalized/repaired NAV short name for matching/display when
+     * it exists. The raw short-name field may be fully uppercase or even end
+     * with a truncated legal-form suffix, so parse() repairs only cases that
+     * the complete registered name proves unambiguously.
      *
      * @param array<string,mixed> $master
      * @return array<string,mixed>
@@ -102,6 +103,7 @@ class NavTaxpayerService
         $rawShortName = $this->xpathValue($data, './*[local-name()="taxpayerShortName"]');
         $name = $this->normalizeCompanyName($rawName, $rawShortName);
         $shortName = $this->normalizeCompanyName($rawShortName, $rawShortName);
+        $shortName = $this->repairLegalFormSuffix($shortName, $name);
 
         $addresses = array();
         $addressItems = $data->xpath('.//*[local-name()="taxpayerAddressItem"]');
@@ -265,6 +267,41 @@ class NavTaxpayerService
         }, $normalized) ?? $normalized;
 
         return $normalized;
+    }
+
+    /**
+     * Repair only a trailing legal-form abbreviation when the complete NAV
+     * registered name proves the legal form. This handles truncated/unstyled
+     * taxpayerShortName values such as "... ZR" without guessing arbitrary
+     * missing characters in company names.
+     */
+    private function repairLegalFormSuffix(string $shortName, string $fullName): string
+    {
+        $shortName = trim($shortName);
+        $fullName = trim($fullName);
+        if ($shortName === '' || $fullName === '') {
+            return $shortName;
+        }
+
+        $fullLower = function_exists('mb_strtolower') ? mb_strtolower($fullName, 'UTF-8') : strtolower($fullName);
+        $rules = array(
+            array('zártkörűen működő részvénytársaság', 'Zrt.', '/\bZr(?:t)?\.?$/iu'),
+            array('nyilvánosan működő részvénytársaság', 'Nyrt.', '/\bNyr(?:t)?\.?$/iu'),
+            array('korlátolt felelősségű társaság', 'Kft.', '/\bKf(?:t)?\.?$/iu'),
+            array('betéti társaság', 'Bt.', '/\bB(?:t)?\.?$/iu'),
+            array('közkereseti társaság', 'Kkt.', '/\bKk(?:t)?\.?$/iu'),
+        );
+
+        foreach ($rules as $rule) {
+            if (strpos($fullLower, $rule[0]) === false) {
+                continue;
+            }
+            if (preg_match($rule[2], $shortName)) {
+                return preg_replace($rule[2], $rule[1], $shortName) ?? $shortName;
+            }
+        }
+
+        return $shortName;
     }
 
     private function normalizeProperText(string $value): string
