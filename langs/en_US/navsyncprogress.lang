@@ -1,4 +1,12 @@
 SyncProgressRunning=Synchronization in progress: %s records processed
+SyncProgressRunningShort=Synchronization in progress
 SyncProgressLatestInvoice=Latest invoice
+SyncProgressCurrentInvoice=Current invoice
+SyncProgressChunk=Block %s/%s
+SyncProgressPeriod=%s – %s
+SyncProgressDigestPage=Digest page %s/%s
+SyncProgressRecord=Record %s/%s
+SyncProgressApiRequests=NAV requests: %s
+SyncProgressXmlDownloaded=XML downloaded: %s
 SyncProgressDone=Synchronization complete: %s scanned, %s new, %s updated, %s XML downloads
 SyncProgressError=Synchronization failed
