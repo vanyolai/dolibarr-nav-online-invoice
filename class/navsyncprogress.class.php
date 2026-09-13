@@ -134,7 +134,8 @@ class NavSyncProgress
     public function get(string $runKey): ?array
     {
         $this->validateRunKey($runKey);
-        $this->ensureSchema();
+        // start() creates/migrates the progress table before the browser can
+        // begin polling. Avoid repeated SHOW COLUMNS/ALTER checks every 750 ms.
         $sql = 'SELECT * FROM '.MAIN_DB_PREFIX.'navinvoice_sync_run'
             .' WHERE entity = '.$this->entity
             ." AND run_key = '".$this->db->escape($runKey)."'"
