@@ -237,11 +237,22 @@ class NavTaxpayerService
             return '.'.(function_exists('mb_strtolower') ? mb_strtolower($m[1], 'UTF-8') : strtolower($m[1]));
         }, $normalized) ?? $normalized;
 
-        // If the NAV short name deliberately contains an acronym (MÁV, OTP,
-        // MOL, DSC, ...), preserve that spelling in the expanded legal name.
-        if ($shortName !== '') {
+        // Only a mixed-case NAV short name contains useful casing information.
+        // A fully uppercase short name such as "RUFUSZ COMPUTER INFORMATIKA ZR"
+        // does not tell us which words are real acronyms; treating every token
+        // as an acronym would undo the normalization of the whole company name.
+        if ($shortName !== '' && !$this->isAllCaps($shortName)) {
             preg_match_all('/(?<![\p{L}\p{N}])[\p{Lu}\p{N}]{2,}(?![\p{L}\p{N}])/u', $shortName, $matches);
             foreach (($matches[0] ?? array()) as $acronym) {
+                $normalized = preg_replace('/(?<![\p{L}\p{N}])'.preg_quote($acronym, '/').'(?![\p{L}\p{N}])/iu', $acronym, $normalized) ?? $normalized;
+            }
+        }
+
+        // A small conservative set of established business/brand acronyms is
+        // safe to restore even when NAV supplied the complete name in capitals.
+        // Do not infer arbitrary short words as acronyms here.
+        foreach (array('MÁV', 'OTP', 'MOL', 'DSC', 'IBM', 'SAP') as $acronym) {
+            if (preg_match('/(?<![\p{L}\p{N}])'.preg_quote($acronym, '/').'(?![\p{L}\p{N}])/iu', $value)) {
                 $normalized = preg_replace('/(?<![\p{L}\p{N}])'.preg_quote($acronym, '/').'(?![\p{L}\p{N}])/iu', $acronym, $normalized) ?? $normalized;
             }
         }
