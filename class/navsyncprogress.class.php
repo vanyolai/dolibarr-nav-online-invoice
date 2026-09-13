@@ -63,7 +63,7 @@ class NavSyncProgress
             .$this->entity.", '".$this->db->escape($runKey)."', ".$this->userId.", 'running', 'starting', '"
             .$this->db->escape($dateFrom)."', '".$this->db->escape($dateTo)."', '".$now."')"
             .' ON DUPLICATE KEY UPDATE fk_user = VALUES(fk_user), status = \'running\', stage = \'starting\','
-            .' date_from = VALUES(date_from), date_to = VALUES(date_to), current_direction = NULL, chunk_from = NULL,'
+            .' date_from = VALUES(date_from), date_to = VALUES(date_to), datec = VALUES(datec), current_direction = NULL, chunk_from = NULL,'
             .' chunk_to = NULL, page = NULL, available_page = NULL, current_invoice = NULL, seen = 0, inserted = 0,'
             .' updated = 0, unchanged = 0, downloaded = 0, message = NULL';
         if (!$this->db->query($sql)) {
@@ -144,6 +144,7 @@ class NavSyncProgress
             'unchanged' => (int) $obj->unchanged,
             'downloaded' => (int) $obj->downloaded,
             'message' => (string) $obj->message,
+            'datec' => (string) $obj->datec,
             'updated_at' => (string) $obj->tms,
         );
     }
