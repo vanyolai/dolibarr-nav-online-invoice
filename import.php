@@ -14,7 +14,7 @@ dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
 dol_include_once('/navinvoice/class/navinvoiceoperationpreview.class.php');
 dol_include_once('/navinvoice/class/navinvoiceimporter.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoiceui@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -96,6 +96,23 @@ if ($action === 'import_draft') {
             $importer = new NavInvoiceImporter($db, (int) $conf->entity, $baseCurrency);
             $result = $importer->importDraft($preview, $record, $user);
             setEventMessages($langs->trans('ImportSucceeded', $preview['invoice_number']), null, 'mesgs');
+
+            if ($isInbound && getDolGlobalInt('NAVINVOICE_AUTO_VALIDATE_INBOUND')) {
+                if (!empty($result['validated'])) {
+                    setEventMessages($langs->trans('InboundAutoValidationSucceeded'), null, 'mesgs');
+                } elseif (!empty($result['validation_error'])) {
+                    setEventMessages(
+                        $langs->trans('InboundAutoValidationFailed', (string) $result['validation_error']),
+                        null,
+                        'warnings'
+                    );
+                } elseif (($result['validation_skipped_reason'] ?? '') === 'stock_warehouse_required') {
+                    setEventMessages($langs->trans('InboundAutoValidationSkippedStock'), null, 'warnings');
+                } elseif (($result['validation_skipped_reason'] ?? '') === 'preview_not_ready') {
+                    setEventMessages($langs->trans('InboundAutoValidationSkippedReview'), null, 'warnings');
+                }
+            }
+
             header('Location: '.$result['url']);
             exit;
         } catch (Throwable $e) {
