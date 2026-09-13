@@ -225,6 +225,68 @@
         return id && /^\d+$/.test(id) ? id : '';
     }
 
+    function renderImportStatus(payload) {
+        if (!payload || !payload.labels || !payload.state) {
+            return;
+        }
+
+        var proposalLabel = String(payload.labels.proposal_status || '').trim();
+        if (!proposalLabel) {
+            return;
+        }
+
+        var statusCell = null;
+        document.querySelectorAll('table.border td').forEach(function (cell) {
+            if (!statusCell && String(cell.textContent || '').trim() === proposalLabel && cell.nextElementSibling) {
+                statusCell = cell.nextElementSibling;
+            }
+        });
+        if (!statusCell) {
+            return;
+        }
+
+        statusCell.textContent = '';
+        var state = String(payload.state || 'blocked');
+        var prefix = (state === 'ready' || state === 'imported') ? '✓ ' : '⚠ ';
+        var link = element('a', prefix + String(payload.label || state));
+
+        if (state === 'imported' && payload.linked_url) {
+            link.href = payload.linked_url;
+        } else {
+            link.href = 'import.php?id=' + encodeURIComponent(detailId());
+        }
+
+        if (state === 'ready' || state === 'imported') {
+            link.className = 'ok';
+        } else if (state === 'review') {
+            link.className = 'warning';
+        } else {
+            link.className = 'error';
+        }
+        statusCell.appendChild(link);
+    }
+
+    function loadImportStatus() {
+        var id = detailId();
+        if (!id) {
+            return;
+        }
+
+        var url = new URL('importstatus.php', window.location.href);
+        url.search = '?id=' + encodeURIComponent(id);
+        fetch(url.toString(), {credentials: 'same-origin', headers: {'Accept': 'application/json'}, cache: 'no-store'})
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error('import status request failed');
+                }
+                return response.json();
+            })
+            .then(renderImportStatus)
+            .catch(function () {
+                // Status enhancement must never break the invoice detail page.
+            });
+    }
+
     function loadProductRelations() {
         var id = detailId();
         if (!id) {
@@ -249,6 +311,7 @@
     function init() {
         enhanceTechnicalXml();
         removeRedundantInvoiceAction();
+        loadImportStatus();
         loadProductRelations();
     }
 
