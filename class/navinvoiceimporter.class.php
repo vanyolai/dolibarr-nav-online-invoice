@@ -717,6 +717,23 @@ class NavInvoiceImporter
             return $status;
         }
 
+        // Match the permission rule used by Dolibarr's supplier invoice card.
+        // With advanced permissions disabled, supplier invoice create permission
+        // grants validation. With advanced permissions enabled, the dedicated
+        // supplier_invoice_advance/validate permission is required.
+        $canValidate = (!getDolGlobalString('MAIN_USE_ADVANCED_PERMS')
+            && ($user->hasRight('fournisseur', 'facture', 'creer') || $user->hasRight('supplier_invoice', 'creer')))
+            || (getDolGlobalString('MAIN_USE_ADVANCED_PERMS')
+                && $user->hasRight('fournisseur', 'supplier_invoice_advance', 'validate'));
+        if (!$canValidate) {
+            $status['skipped_reason'] = 'validation_permission_missing';
+            dol_syslog(
+                'NavInvoiceImporter skipped automatic validation for supplier invoice '.((int) ($invoice->id ?? 0)).' because user '.$user->id.' has no supplier invoice validation permission',
+                LOG_WARNING
+            );
+            return $status;
+        }
+
         // Dolibarr may generate stock movements on supplier invoice validation.
         // Without an explicit warehouse mapping, calling validate(..., 0) could
         // either fail or book stock into an unintended warehouse. Keep the draft
