@@ -56,6 +56,7 @@ class NavInvoiceOperationPreview
         $preview = $this->applyProductMatches($preview);
 
         $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
+        $direction = strtoupper(trim((string) ($preview['direction'] ?? 'OUTBOUND')));
         $isAdvanceInvoice = $operation === 'CREATE' && $this->isAdvanceOnlyInvoice($preview);
         $preview['is_advance_invoice'] = $isAdvanceInvoice;
         $preview['operation_mapping'] = $operation === 'CREATE'
@@ -64,10 +65,17 @@ class NavInvoiceOperationPreview
         $preview['source_invoice_id'] = 0;
         $preview['operation_policy'] = null;
 
-        // CREATE invoices do not need chain resolution. Deposit invoices are
-        // deliberately recognized here as a first-class Dolibarr mapping; the
-        // importer decides the concrete TYPE_DEPOSIT object type.
+        // CREATE invoices do not need chain resolution. Deposit import is now
+        // enabled for inbound supplier invoices. Outbound deposit invoices stay
+        // blocked until NAV-number validation and outbound policy are enabled.
         if ($operation === 'CREATE') {
+            if ($isAdvanceInvoice && $direction !== 'INBOUND') {
+                $preview['blockers'] = array_values(array_unique(array_merge(
+                    array_map('strval', $preview['blockers'] ?? array()),
+                    array('advance_invoice_mapping_pending')
+                )));
+                $preview['state'] = 'blocked';
+            }
             return $preview;
         }
 
