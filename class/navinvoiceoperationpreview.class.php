@@ -64,18 +64,10 @@ class NavInvoiceOperationPreview
         $preview['source_invoice_id'] = 0;
         $preview['operation_policy'] = null;
 
+        // CREATE invoices do not need chain resolution. Deposit invoices are
+        // deliberately recognized here as a first-class Dolibarr mapping; the
+        // importer decides the concrete TYPE_DEPOSIT object type.
         if ($operation === 'CREATE') {
-            if ($isAdvanceInvoice) {
-                // Do not silently import an advance invoice as TYPE_STANDARD.
-                // The preview already knows the intended Dolibarr mapping, but
-                // the importer must explicitly support TYPE_DEPOSIT before this
-                // case becomes importable.
-                $preview['blockers'] = array_values(array_unique(array_merge(
-                    array_map('strval', $preview['blockers'] ?? array()),
-                    array('advance_invoice_mapping_pending')
-                )));
-                $preview['state'] = 'blocked';
-            }
             return $preview;
         }
 
