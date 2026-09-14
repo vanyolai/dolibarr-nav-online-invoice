@@ -180,6 +180,10 @@ $secretHint = static function (bool $hasValue) use ($langs): string {
     return $hasValue ? $langs->trans('StoredSecretPresent') : $langs->trans('StoredSecretMissing');
 };
 $stockValidationNeedsWarehouse = isModEnabled('stock') && getDolGlobalString('STOCK_CALCULATE_ON_SUPPLIER_BILL');
+$isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu';
+$fetchFullXmlHelp = $isHungarianUi
+    ? 'Bekapcsolva az új vagy módosult számlák teljes NAV XML-je is letöltődik. Ez szükséges a tételszintű részletekhez, az importhoz és a beszerzési workbenchhez. Kikapcsolva csak az összesítő NAV-adatok frissülnek; a korábban letöltött XML-ek megmaradnak.'
+    : 'When enabled, the complete NAV XML is downloaded for new or changed invoices. It is required for line-level details, invoice import and the purchase workbench. When disabled, only summary NAV data is refreshed; XML files downloaded earlier are kept.';
 
 llxHeader('', $langs->trans('NavInvoiceSetup'));
 print load_fiche_titre($langs->trans('NavInvoiceSetup'), '', 'title_setup');
@@ -201,7 +205,7 @@ print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTaxNumb
 print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavSigningKey').'</td><td><input class="minwidth300" type="password" name="signing_key" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint($hasStoredSigningKey).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('ScheduledSync').'</td><td><input type="checkbox" name="sync_enabled" value="1"'.($formSyncEnabled ? ' checked' : '').'> <span class="opacitymedium">1 × 3600 s; '.$langs->trans('DirectionBoth').'</span></td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('SyncLookbackDays').'</td><td><input type="number" min="1" max="35" name="lookback_days" value="'.((int) $formLookbackDays).'"></td></tr>';
-print '<tr class="oddeven"><td>'.$langs->trans('DownloadFullInvoiceXml').'</td><td><input type="checkbox" name="fetch_full_data" value="1"'.($formFetchFullData ? ' checked' : '').'></td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('DownloadFullInvoiceXml').'</td><td><input type="checkbox" name="fetch_full_data" value="1"'.($formFetchFullData ? ' checked' : '').'> <span class="opacitymedium">'.dol_escape_htmltag($fetchFullXmlHelp).'</span></td></tr>';
 
 print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavImportConfiguration').'</td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('AutoValidateInboundInvoices').'</td><td><input type="checkbox" name="auto_validate_inbound" value="1"'.($formAutoValidateInbound ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('AutoValidateInboundInvoicesHelp').'</span>';
