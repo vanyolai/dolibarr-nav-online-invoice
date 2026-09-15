@@ -275,12 +275,19 @@ class NavInvoiceImportPreview
             } elseif ($sourceNet === null || $sourceNet === '') {
                 $blocker = $blocker ?: 'line_net_missing';
             } else {
-                // For NORMAL invoices preserve NAV's explicit unitPrice exactly.
-                // Reconstructing it from lineNetAmount / quantity loses source
-                // precision (for example 1129.527 becomes 1129.525). Only derive
-                // a technical unit price when NAV omitted unitPrice altogether.
+                // For a normal NAV line the explicit unitPrice is useful source
+                // data, but discounts/surcharges may make quantity * unitPrice
+                // differ materially from the authoritative lineNetAmount. In
+                // that case Dolibarr needs an effective HT unit price derived
+                // from the line total so the created line remains internally
+                // consistent. Tiny differences are kept as source precision.
                 if ($navUnitPrice !== null && $navUnitPrice !== '') {
                     $unitPrice = (float) $navUnitPrice;
+                    $sourceExtended = $unitPrice * (float) $qty;
+                    if (abs($sourceExtended - (float) $sourceNet) > 0.01) {
+                        $unitPrice = (float) $sourceNet / (float) $qty;
+                        $adjusted = true;
+                    }
                     $unitPriceDerived = false;
                 } else {
                     $unitPrice = (float) $sourceNet / (float) $qty;
@@ -385,7 +392,8 @@ class NavInvoiceImportPreview
     /** @param array<int,array<string,mixed>> $lines @param array<string,mixed> $totals */
     private function lineTotalsMatchHeader(array $lines, array $totals, string $currency, string $category): bool
     {
-        $decimals = in_array($currency, array('HUF', 'JPY'), true) ? 0 : 2;
+        $zeroDecimalCurrency = in_array($currency, array('HUF', 'JPY'), true);
+        $decimals = $zeroDecimalCurrency ? 0 : 2;
 
         if ($category === 'SIMPLIFIED') {
             $gross = 0.0;
@@ -394,6 +402,9 @@ class NavInvoiceImportPreview
                     return false;
                 }
                 $gross += (float) $line['gross'];
+            }
+            if ($zeroDecimalCurrency) {
+                return abs($gross - (float) $totals['gross']) < 1.0;
             }
             return round($gross, $decimals) == round((float) $totals['gross'], $decimals);
         }
@@ -408,6 +419,12 @@ class NavInvoiceImportPreview
             $vat += (float) $line['vat'];
         }
         $gross = $net + $vat;
+
+        if ($zeroDecimalCurrency) {
+            return abs($net - (float) $totals['net']) < 1.0
+                && abs($vat - (float) $totals['vat']) < 1.0
+                && abs($gross - (float) $totals['gross']) < 1.0;
+        }
 
         return round($net, $decimals) == round((float) $totals['net'], $decimals)
             && round($vat, $decimals) == round((float) $totals['vat'], $decimals)
