@@ -136,10 +136,17 @@ class NavInvoiceOperationPolicy
                 $result['mapping'] = 'credit_note';
             } elseif ($gross > $epsilon) {
                 $result['mapping'] = 'standard_adjustment';
+            } elseif ($this->hasFinancialLineEffect($parsed, $epsilon)) {
+                // A zero-total MODIFY can still carry real accounting content:
+                // positive and negative line effects may cancel each other out
+                // while changing the composition of the original invoice. Keep
+                // such documents importable as a standard adjustment instead of
+                // treating them as descriptive/non-financial corrections.
+                $result['mapping'] = 'standard_adjustment';
             } else {
-                // A zero-value MODIFY can still be legally meaningful (for
-                // example correcting descriptive data), but creating a fake
-                // financial invoice would misrepresent the accounting event.
+                // Truly non-financial MODIFY: every monetary line is effectively
+                // zero, so creating a financial Dolibarr invoice would be
+                // misleading. These remain review-only/blocked.
                 $result['blockers'][] = 'non_financial_modification';
             }
         }
@@ -185,6 +192,23 @@ class NavInvoiceOperationPolicy
             }
         }
         return null;
+    }
+
+    /** @param array<string,mixed> $parsed */
+    private function hasFinancialLineEffect(array $parsed, float $epsilon = 0.005): bool
+    {
+        foreach (($parsed['lines'] ?? array()) as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+            foreach (array('gross', 'net', 'vat') as $key) {
+                $amount = $this->numeric($line['amounts'][$key] ?? null);
+                if ($amount !== null && abs($amount) >= $epsilon) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** @param array<string,mixed> $parsed */
