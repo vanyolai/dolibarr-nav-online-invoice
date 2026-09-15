@@ -7,7 +7,7 @@ CREATE TABLE llx_navinvoice_invoice (
     invoice_operation varchar(16) NULL,
     invoice_category varchar(16) NULL,
     invoice_issue_date date NULL,
-    supplier_tax_number varchar(20) NULL,
+    supplier_tax_number varchar(20) NOT NULL DEFAULT '',
     supplier_name varchar(512) NULL,
     customer_tax_number varchar(20) NULL,
     customer_name varchar(512) NULL,
