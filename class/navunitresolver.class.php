@@ -4,8 +4,9 @@
  * Resolve NAV invoice units to active Dolibarr c_units entries.
  *
  * The resolver intentionally prefers stable dictionary codes over translated
- * labels. Custom NAV OWN units may be matched against an exact Dolibarr code,
- * short label or literal label, but ambiguous matches are never selected.
+ * labels. Custom NAV OWN units may be matched against known business aliases
+ * or an exact Dolibarr code, short label or literal label, but ambiguous
+ * matches are never selected.
  */
 class NavUnitResolver
 {
@@ -122,6 +123,19 @@ class NavUnitResolver
             }
         }
 
+        // Hungarian and common invoice software frequently uses OWN even for
+        // conventional units (for example OWN/m or OWN/db). Resolve these
+        // known aliases to the installation's stable Dolibarr unit code before
+        // generic literal matching. This also disambiguates "m": in the active
+        // dictionary it means M/size (meter), while MO/time may also expose
+        // "m" as its short label.
+        if ($navUnit === 'OWN' && $ownUnit !== '') {
+            $match = $this->findOwnAlias($ownUnit);
+            if ($match !== null) {
+                return $this->resolvedResult($result, $match, 'own_alias');
+            }
+        }
+
         // OWN, PACK, CARTON and any future NAV unit can only be matched safely
         // when the invoice value uniquely equals a configured Dolibarr code,
         // short label or literal label. We do not translate labels here because
@@ -145,6 +159,75 @@ class NavUnitResolver
         }
 
         return $result;
+    }
+
+    /**
+     * Resolve common OWN values against the stable codes used by the current
+     * Dolibarr unit dictionary. Alias keys are normalized exactly like source
+     * values, so m³ and m3 are equivalent and dots/whitespace are ignored.
+     *
+     * The deliberately wrong-looking MI short label "piece" seen in some
+     * dictionaries is not treated as a minute alias; semantic aliases always
+     * target the canonical code and unit type instead of trusting that label.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function findOwnAlias(string $value): ?array
+    {
+        $aliases = array(
+            'km' => array('KM', 'distance'),
+            't' => array('T', 'weight'),
+            'tonna' => array('T', 'weight'),
+            'kg' => array('KG', 'weight'),
+            'g' => array('G', 'weight'),
+            'mg' => array('MG', 'weight'),
+            'm' => array('M', 'size'),
+            'dm' => array('DM', 'size'),
+            'cm' => array('CM', 'size'),
+            'mm' => array('MM', 'size'),
+            'm3' => array('M3', 'volume'),
+            'l' => array('L', 'volume'),
+            'liter' => array('L', 'volume'),
+            'litre' => array('L', 'volume'),
+            'db' => array('P', 'qty'),
+            'darab' => array('P', 'qty'),
+            'piece' => array('P', 'qty'),
+            'pc' => array('P', 'qty'),
+            'pcs' => array('P', 'qty'),
+            'klt' => array('SET', 'qty'),
+            'készlet' => array('SET', 'qty'),
+            'keszlet' => array('SET', 'qty'),
+            'set' => array('SET', 'qty'),
+            's' => array('S', 'time'),
+            'másodperc' => array('S', 'time'),
+            'masodperc' => array('S', 'time'),
+            'min' => array('MI', 'time'),
+            'mn' => array('MI', 'time'),
+            'perc' => array('MI', 'time'),
+            'h' => array('H', 'time'),
+            'óra' => array('H', 'time'),
+            'ora' => array('H', 'time'),
+            'd' => array('D', 'time'),
+            'nap' => array('D', 'time'),
+            'w' => array('W', 'time'),
+            'hét' => array('W', 'time'),
+            'het' => array('W', 'time'),
+            'mo' => array('MO', 'time'),
+            'hó' => array('MO', 'time'),
+            'ho' => array('MO', 'time'),
+            'hónap' => array('MO', 'time'),
+            'honap' => array('MO', 'time'),
+            'y' => array('Y', 'time'),
+            'év' => array('Y', 'time'),
+            'ev' => array('Y', 'time'),
+        );
+
+        $needle = $this->normalize($value);
+        if (!isset($aliases[$needle])) {
+            return null;
+        }
+
+        return $this->findUniqueByCode($aliases[$needle][0], $aliases[$needle][1]);
     }
 
     /** @return array<int,array<string,mixed>> */
