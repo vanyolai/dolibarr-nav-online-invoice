@@ -2,6 +2,7 @@
 
 dol_include_once('/navinvoice/class/navinvoiceimportpreview.class.php');
 dol_include_once('/navinvoice/class/navinvoiceoperationpolicy.class.php');
+dol_include_once('/navinvoice/class/navinvoiceaggregatesupport.class.php');
 dol_include_once('/navinvoice/class/navproductmatcher.class.php');
 
 /**
@@ -27,6 +28,9 @@ class NavInvoiceOperationPreview
     /** @var NavInvoiceOperationPolicy */
     private $operationPolicy;
 
+    /** @var NavInvoiceAggregateSupport */
+    private $aggregateSupport;
+
     /** @var NavProductMatcher */
     private $productMatcher;
 
@@ -41,6 +45,7 @@ class NavInvoiceOperationPreview
         $this->entity = $entity;
         $this->basePreview = new NavInvoiceImportPreview($db, $entity, $baseCurrency);
         $this->operationPolicy = new NavInvoiceOperationPolicy($db, $entity);
+        $this->aggregateSupport = new NavInvoiceAggregateSupport();
         $this->productMatcher = new NavProductMatcher($db, $entity);
     }
 
@@ -53,6 +58,7 @@ class NavInvoiceOperationPreview
     public function build(array $parsed, $record, ?array $partnerMatch): array
     {
         $preview = $this->basePreview->build($parsed, $record, $partnerMatch);
+        $preview = $this->aggregateSupport->enrich($preview, (string) ($record->invoice_data ?? ''));
         $preview = $this->applyProductMatches($preview);
 
         $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
@@ -63,6 +69,7 @@ class NavInvoiceOperationPreview
             ? ($isAdvanceInvoice ? 'deposit' : 'standard')
             : '';
         $preview['source_invoice_id'] = 0;
+        $preview['standalone_without_master'] = false;
         $preview['operation_policy'] = null;
 
         // CREATE invoices do not need chain resolution. Deposit import is now
@@ -91,6 +98,7 @@ class NavInvoiceOperationPreview
         $preview['operation_policy'] = $policy;
         $preview['operation_mapping'] = (string) ($policy['mapping'] ?? '');
         $preview['source_invoice_id'] = (int) ($policy['source_invoice_id'] ?? 0);
+        $preview['standalone_without_master'] = !empty($policy['standalone_without_master']);
 
         foreach (($policy['blockers'] ?? array()) as $blocker) {
             $blockers[] = 'operation_'.(string) $blocker;
