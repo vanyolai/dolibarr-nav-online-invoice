@@ -32,6 +32,11 @@ if (!in_array($pageSize, $pageSizeOptions, true)) {
     $pageSize = 100;
 }
 $page = max(1, (int) GETPOST('page', 'int'));
+$allowedStateFilters = array('ALL', 'READY', 'IMPORTED', 'BLOCKED', 'REVIEW', 'PARTNER_REQUIRED', 'CHAIN_PENDING');
+$stateFilter = strtoupper(trim((string) GETPOST('state_filter', 'alpha')));
+if (!in_array($stateFilter, $allowedStateFilters, true)) {
+    $stateFilter = 'ALL';
+}
 $baseCurrency = strtoupper((string) $conf->currency);
 $service = new NavInvoiceBatchService($db, (int) $conf->entity, $baseCurrency);
 $batchResult = null;
@@ -86,6 +91,14 @@ $isChainPending = static function (array $preview, string $state) use ($chainPen
     $blockers = array_values(array_unique(array_map('strval', $preview['blockers'] ?? array())));
     return $blockers && !array_diff($blockers, $chainPendingCodes);
 };
+$rowStateKey = static function (array $row) use ($isChainPending): string {
+    $state = (string) ($row['state'] ?? 'blocked');
+    $preview = is_array($row['preview'] ?? null) ? $row['preview'] : array();
+    if ($isChainPending($preview, $state)) {
+        return 'CHAIN_PENDING';
+    }
+    return strtoupper($state);
+};
 
 $counts = array('ready' => 0, 'review' => 0, 'partner_required' => 0, 'blocked' => 0, 'imported' => 0, 'dependency' => 0, 'chain_pending' => 0);
 foreach ($rows as $row) {
@@ -102,6 +115,13 @@ foreach ($rows as $row) {
     if ($isChainPending($preview, $state)) {
         $counts['chain_pending']++;
     }
+}
+
+$displayRows = $rows;
+if ($stateFilter !== 'ALL') {
+    $displayRows = array_values(array_filter($rows, static function (array $row) use ($stateFilter, $rowStateKey): bool {
+        return $rowStateKey($row) === $stateFilter;
+    }));
 }
 
 $issueLabel = static function (string $code) use ($langs): string {
@@ -136,11 +156,12 @@ $reconciliationLabel = static function (string $code) use ($langs): string {
     return isset($keys[$code]) ? $langs->trans($keys[$code]) : '';
 };
 
-$pagerUrl = static function (int $targetPage) use ($dateFrom, $dateTo, $pageSize): string {
+$pagerUrl = static function (int $targetPage) use ($dateFrom, $dateTo, $pageSize, $stateFilter): string {
     $query = http_build_query(array(
         'date_from' => $dateFrom,
         'date_to' => $dateTo,
         'page_size' => $pageSize,
+        'state_filter' => $stateFilter,
         'page' => $targetPage,
     ));
     return $_SERVER['PHP_SELF'].'?'.$query;
@@ -149,11 +170,34 @@ $renderPager = static function () use ($page, $pageCount, $pagerUrl, $langs): st
     if ($pageCount <= 1) {
         return '';
     }
-    $html = '<div style="display:flex;align-items:center;justify-content:center;gap:10px;margin:12px 0">';
+    $html = '<div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin:12px 0">';
     if ($page > 1) {
         $html .= '<a class="button" href="'.dol_escape_htmltag($pagerUrl($page - 1)).'">‹ '.$langs->trans('BatchPreviousPage').'</a>';
     }
-    $html .= '<strong>'.$langs->trans('BatchPageStatus', $page, $pageCount).'</strong>';
+
+    $first = max(1, $page - 2);
+    $last = min($pageCount, $page + 2);
+    if ($first > 1) {
+        $html .= '<a href="'.dol_escape_htmltag($pagerUrl(1)).'">1</a>';
+        if ($first > 2) {
+            $html .= '<span class="opacitymedium">…</span>';
+        }
+    }
+    for ($p = $first; $p <= $last; $p++) {
+        if ($p === $page) {
+            $html .= '<strong style="padding:0 4px">'.$p.'</strong>';
+        } else {
+            $html .= '<a href="'.dol_escape_htmltag($pagerUrl($p)).'">'.$p.'</a>';
+        }
+    }
+    if ($last < $pageCount) {
+        if ($last < $pageCount - 1) {
+            $html .= '<span class="opacitymedium">…</span>';
+        }
+        $html .= '<a href="'.dol_escape_htmltag($pagerUrl($pageCount)).'">'.$pageCount.'</a>';
+    }
+
+    $html .= '<span class="opacitymedium">'.$langs->trans('BatchPageStatus', $page, $pageCount).'</span>';
     if ($page < $pageCount) {
         $html .= '<a class="button" href="'.dol_escape_htmltag($pagerUrl($page + 1)).'">'.$langs->trans('BatchNextPage').' ›</a>';
     }
@@ -193,6 +237,20 @@ foreach ($pageSizeOptions as $option) {
     print '<option value="'.$option.'"'.($option === $pageSize ? ' selected' : '').'>'.$option.'</option>';
 }
 print '</select>';
+print '<span title="'.dol_escape_htmltag($langs->trans('BatchStateFilterHelp')).'">'.$langs->trans('BatchStateFilter').'</span><select name="state_filter">';
+$stateFilterLabels = array(
+    'ALL' => 'BatchStateFilterAll',
+    'READY' => 'BatchReady',
+    'IMPORTED' => 'BatchAlreadyImported',
+    'BLOCKED' => 'BatchBlocked',
+    'REVIEW' => 'BatchReview',
+    'PARTNER_REQUIRED' => 'BatchPartnerRequired',
+    'CHAIN_PENDING' => 'BatchChainPending',
+);
+foreach ($stateFilterLabels as $value => $labelKey) {
+    print '<option value="'.$value.'"'.($stateFilter === $value ? ' selected' : '').'>'.dol_escape_htmltag($langs->trans($labelKey)).'</option>';
+}
+print '</select>';
 print '<input id="navinvoice-batch-preflight-submit" class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'">';
 print '</div></form>';
 print '<script>';
@@ -223,16 +281,22 @@ $summaryCell = static function (string $label, string $value, string $class = ''
 print '<table class="noborder centpercent" style="max-width:1100px;table-layout:fixed">';
 print '<tr>';
 print $summaryCell($langs->trans('BatchRangeTotal'), (string) $totalRecords);
+print $summaryCell($langs->trans('BatchPageNumber'), $langs->trans('BatchPageStatus', $page, $pageCount));
 print $summaryCell($langs->trans('BatchPageChecked'), (string) count($rows));
+print '</tr>';
+print '<tr class="liste_titre"><td colspan="3">'.$langs->trans('BatchPageStatusSummary').'</td></tr>';
+print '<tr>';
 print $summaryCell($langs->trans('BatchReady'), (string) $counts['ready'], 'ok');
-print '</tr><tr>';
 print $summaryCell($langs->trans('BatchAlreadyImported'), (string) $counts['imported']);
 print $summaryCell($langs->trans('BatchDependencies'), (string) $counts['dependency']);
-print $summaryCell($langs->trans('BatchChainPending'), (string) $counts['chain_pending'], 'warning');
 print '</tr><tr>';
+print $summaryCell($langs->trans('BatchChainPending'), (string) $counts['chain_pending'], 'warning');
 print $summaryCell($langs->trans('BatchBlocked'), (string) $counts['blocked'], 'error');
 print $summaryCell($langs->trans('BatchPartnerRequired'), (string) $counts['partner_required'], 'warning');
+print '</tr><tr>';
 print $summaryCell($langs->trans('BatchReview'), (string) $counts['review'], 'warning');
+print $summaryCell($langs->trans('BatchFilteredVisible'), (string) count($displayRows));
+print '<td></td>';
 print '</tr>';
 print '</table>';
 print '<div class="opacitymedium small" style="margin-top:6px">'.$langs->trans('BatchPageCountsNotice').'</div><br>';
@@ -256,17 +320,18 @@ if (is_array($batchResult)) {
     print '</table></div><br>';
 }
 
-if ($rows) {
+if ($displayRows) {
     print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'">';
     print '<input type="hidden" name="token" value="'.newToken().'"><input type="hidden" name="action" value="batch_import">';
     print '<input type="hidden" name="date_from" value="'.dol_escape_htmltag($dateFrom).'"><input type="hidden" name="date_to" value="'.dol_escape_htmltag($dateTo).'">';
     print '<input type="hidden" name="page_size" value="'.$pageSize.'"><input type="hidden" name="page" value="'.$page.'">';
+    print '<input type="hidden" name="state_filter" value="'.dol_escape_htmltag($stateFilter).'">';
     print '<div class="div-table-responsive"><table class="noborder centpercent"><tr class="liste_titre">';
     print '<td class="center">'.$langs->trans('BatchSelect').'</td><td>'.$langs->trans('ProposalStatus').'</td><td>'.$langs->trans('NavInvoiceNumber').'</td><td>'.$langs->trans('Supplier').'</td>';
     print '<td>'.$langs->trans('InvoiceIssueDate').'</td><td>'.$langs->trans('InvoiceDeliveryDate').'</td><td>'.$langs->trans('PaymentDate').'</td><td>'.$langs->trans('InvoiceCategory').'</td><td class="right">'.$langs->trans('AmountTTC').'</td><td>'.$langs->trans('BatchIssues').'</td></tr>';
 
     $selectableCount = 0;
-    foreach ($rows as $row) {
+    foreach ($displayRows as $row) {
         $record = $row['record'];
         $preview = is_array($row['preview'] ?? null) ? $row['preview'] : array();
         $state = (string) ($row['state'] ?? 'blocked');
@@ -346,6 +411,9 @@ if ($rows) {
         }
     }
     print '</form>';
+    print $renderPager();
+} elseif ($rows && $loadError === '') {
+    print '<div class="opacitymedium">'.$langs->trans('BatchNoStateMatches').'</div>';
     print $renderPager();
 } elseif ($loadError === '') {
     print '<div class="opacitymedium">'.$langs->trans('BatchNoInvoices').'</div>';
