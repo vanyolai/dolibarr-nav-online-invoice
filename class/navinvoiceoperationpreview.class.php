@@ -9,8 +9,9 @@ dol_include_once('/navinvoice/class/navproductmatcher.class.php');
  * Extend the accounting/data preview with NAV operation semantics and
  * conservative NAV-line to Dolibarr-product resolution.
  *
- * NavInvoiceParser is the only XML parser. This class consumes the normalized
- * parsed structure and never reparses the raw NAV XML.
+ * NavInvoiceParser is the only XML parser. Pricing/discount semantics are
+ * already normalized by NavInvoiceImportPreview; this wrapper adds only
+ * operation, aggregate and product-relation policy.
  */
 class NavInvoiceOperationPreview
 {
@@ -57,7 +58,6 @@ class NavInvoiceOperationPreview
     {
         $preview = $this->basePreview->build($parsed, $record, $partnerMatch);
         $preview = $this->aggregateSupport->enrich($preview, $parsed);
-        $preview = $this->applyParsedLineDiscounts($preview, $parsed);
         $preview = $this->applyProductMatches($preview);
 
         $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
@@ -82,8 +82,8 @@ class NavInvoiceOperationPreview
             return $preview;
         }
 
-        // The base preview intentionally blocks every non-CREATE operation.
-        // Replace that generic blocker with concrete operation-policy results.
+        // The base preview blocks every non-CREATE operation until the verified
+        // relation/chain policy below has made the mapping deterministic.
         $blockers = array_values(array_diff(
             array_map('strval', $preview['blockers'] ?? array()),
             array('operation_relation')
@@ -117,116 +117,6 @@ class NavInvoiceOperationPreview
         $preview['warnings'] = array_values(array_unique($warnings));
         $preview['state'] = $preview['blockers'] ? 'blocked' : ($preview['warnings'] ? 'review' : 'ready');
         return $preview;
-    }
-
-    /**
-     * Restore the native NAV list-price + line-discount representation from the
-     * canonical parsed model. NavInvoiceImportPreview historically flattened
-     * such rows to an effective unit price; this compatibility step is now based
-     * solely on parsed source semantics and contains no XML recovery logic.
-     *
-     * @param array<string,mixed> $preview
-     * @param array<string,mixed> $parsed
-     * @return array<string,mixed>
-     */
-    private function applyParsedLineDiscounts(array $preview, array $parsed): array
-    {
-        $sourceLines = is_array($parsed['lines'] ?? null) ? $parsed['lines'] : array();
-        if (!$sourceLines || empty($preview['lines']) || !is_array($preview['lines'])) {
-            return $preview;
-        }
-
-        $sourceByNumber = array();
-        foreach ($sourceLines as $sourceLine) {
-            if (!is_array($sourceLine)) {
-                continue;
-            }
-            $number = trim((string) ($sourceLine['number'] ?? ''));
-            if ($number !== '') {
-                $sourceByNumber[$number] = $sourceLine;
-            }
-        }
-
-        foreach ($preview['lines'] as $index => $mappedLine) {
-            if (!is_array($mappedLine)) {
-                continue;
-            }
-            $number = trim((string) ($mappedLine['number'] ?? ''));
-            $sourceLine = $number !== '' && isset($sourceByNumber[$number])
-                ? $sourceByNumber[$number]
-                : ($sourceLines[(int) $index] ?? array());
-            if (!is_array($sourceLine)) {
-                continue;
-            }
-
-            $preview['lines'][$index]['discount_percent'] = 0.0;
-            $preview['lines'][$index]['discount_value'] = null;
-            $preview['lines'][$index]['discount_rate'] = null;
-            $preview['lines'][$index]['discount_description'] = '';
-            $preview['lines'][$index]['discount_native'] = false;
-
-            $discount = is_array($sourceLine['discount'] ?? null) ? $sourceLine['discount'] : array();
-            $quantity = $sourceLine['quantity'] ?? null;
-            $unitPrice = $sourceLine['unit_price'] ?? null;
-            $net = is_array($sourceLine['amounts'] ?? null) ? ($sourceLine['amounts']['net'] ?? null) : null;
-            if (!is_numeric($quantity) || !is_numeric($unitPrice) || !is_numeric($net) || abs((float) $quantity) <= 0.000000001) {
-                continue;
-            }
-
-            $extended = (float) $quantity * (float) $unitPrice;
-            if ($this->amountsClose($extended, (float) $net)) {
-                continue;
-            }
-
-            $discountPercent = $this->validatedDiscountPercent($discount, $extended, (float) $net);
-            if ($discountPercent === null) {
-                continue;
-            }
-
-            $preview['lines'][$index]['unit_price_ht'] = (float) $unitPrice;
-            $preview['lines'][$index]['unit_price_adjusted'] = false;
-            $preview['lines'][$index]['discount_percent'] = $discountPercent;
-            $preview['lines'][$index]['discount_value'] = isset($discount['value']) && is_numeric($discount['value']) ? (float) $discount['value'] : null;
-            $preview['lines'][$index]['discount_rate'] = isset($discount['rate']) && is_numeric($discount['rate']) ? (float) $discount['rate'] : null;
-            $preview['lines'][$index]['discount_description'] = trim((string) ($discount['description'] ?? ''));
-            $preview['lines'][$index]['discount_native'] = true;
-        }
-
-        return $preview;
-    }
-
-    /** @param array<string,mixed> $discount */
-    private function validatedDiscountPercent(array $discount, float $extended, float $net): ?float
-    {
-        if (abs($extended) <= 0.000000001) {
-            return null;
-        }
-
-        if (isset($discount['rate']) && $discount['rate'] !== null && $discount['rate'] !== '' && is_numeric($discount['rate'])) {
-            $rate = abs((float) $discount['rate']);
-            if ($rate <= 1.0) {
-                $percent = $rate * 100.0;
-                if ($percent <= 100.0 && $this->amountsClose($extended * (1.0 - $rate), $net)) {
-                    return $percent;
-                }
-            }
-        }
-
-        if (isset($discount['value']) && $discount['value'] !== null && $discount['value'] !== '' && is_numeric($discount['value'])) {
-            $discountValue = abs((float) $discount['value']);
-            $percent = 100.0 * $discountValue / abs($extended);
-            if ($percent >= 0.0 && $percent <= 100.0
-                && $this->amountsClose($extended * (1.0 - ($percent / 100.0)), $net)) {
-                return $percent;
-            }
-        }
-
-        return null;
-    }
-
-    private function amountsClose(float $left, float $right): bool
-    {
-        return abs($left - $right) <= 0.01;
     }
 
     /**
