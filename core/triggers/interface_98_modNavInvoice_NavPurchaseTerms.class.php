@@ -13,7 +13,7 @@ require_once DOL_DOCUMENT_ROOT.'/core/triggers/dolibarrtriggers.class.php';
  * Copy deterministic payment semantics from the source NAV invoice to
  * supplier-order drafts reconstructed by the NAV purchase workbench.
  */
-class InterfaceNavInvoicePurchaseTerms extends DolibarrTriggers
+class InterfaceNavPurchaseTerms extends DolibarrTriggers
 {
     public function __construct($db)
     {
