@@ -116,6 +116,7 @@ if (in_array($action, array('create_product', 'link_product', 'update_supplier_p
                     'supplier_quantity' => price2num(GETPOST('candidate_supplier_quantity', 'alphanohtml'), 'MS'),
                     'supplier_packaging' => price2num(GETPOST('candidate_supplier_packaging', 'alphanohtml'), 'MS'),
                     'supplier_price_total' => price2num(GETPOST('candidate_supplier_price_total', 'alphanohtml'), 'MU'),
+                    'supplier_discount_percent' => price2num(GETPOST('candidate_supplier_discount_percent', 'alphanohtml'), 'MU'),
                     'vat_rate' => price2num(GETPOST('candidate_vat_rate', 'alphanohtml'), 'MU'),
                 ),
                 $user
@@ -326,7 +327,7 @@ foreach (($workbench['lines'] ?? array()) as $line) {
         print '<span class="opacitymedium">'.$langs->trans('PurchaseInformationalLineSkipped').'</span>';
     } elseif ($matched) {
         print img_picto('', 'tick').' <a href="'.DOL_URL_ROOT.'/product/card.php?id='.(int) $product['id'].'">'.dol_escape_htmltag((string) $product['ref']).' - '.dol_escape_htmltag((string) $product['label']).'</a>';
-        if (in_array((string) ($norm['mode'] ?? ''), array('price_quantity', 'packaging'), true) && (float) ($norm['factor'] ?? 1) != 1.0) {
+        if ((string) ($norm['mode'] ?? '') === 'packaging' && (float) ($norm['factor'] ?? 1) != 1.0) {
             print '<br><span class="opacitymedium">'.img_picto('', 'info').' ';
             $normalizationText = $langs->transnoentities(
                 'PurchaseQuantityNormalized',
@@ -345,16 +346,31 @@ foreach (($workbench['lines'] ?? array()) as $line) {
         print img_picto('', 'warning').' <span class="warning">'.dol_escape_htmltag($statusText === $statusKey ? (string) ($match['status'] ?? 'none') : $statusText).'</span>';
     }
     print '</td>';
-    print '<td class="right">'.$money($line['unit_price_ht'] ?? null, $currency).'</td>';
+
+    $navListPrice = $line['unit_price_ht'] ?? null;
+    $navDiscount = (float) ($line['discount_percent'] ?? 0);
+    $navEffectivePrice = $norm['nav_effective_unit_price'] ?? null;
+    print '<td class="right">'.$money($navListPrice, $currency);
+    if ($navDiscount > 0.000001 && $navEffectivePrice !== null) {
+        print '<br><span class="opacitymedium">−'.price($navDiscount).'% = '.$money($navEffectivePrice, $currency).'</span>';
+    }
+    print '</td>';
+
     print '<td class="right">';
     if (($norm['supplier_unit_price'] ?? null) !== null) {
-        print $money($norm['supplier_unit_price'], $currency);
+        $supplierListPrice = (float) $norm['supplier_unit_price'];
+        $supplierDiscount = (float) ($norm['supplier_discount_percent'] ?? 0);
+        $supplierEffectivePrice = $norm['supplier_effective_unit_price'] ?? null;
+        print $money($supplierListPrice, $currency);
+        if ($supplierDiscount > 0.000001 && $supplierEffectivePrice !== null) {
+            print '<br><span class="opacitymedium">−'.price($supplierDiscount).'% = '.$money($supplierEffectivePrice, $currency).'</span>';
+        }
         if ((float) ($norm['supplier_quantity'] ?? 0) > 1) {
-            print '<br><span class="opacitymedium">'.price((float) $norm['supplier_quantity']).' × '.price((float) $norm['supplier_unit_price']).' = '.$money($norm['supplier_price_total'], $currency).'</span>';
+            print '<br><span class="opacitymedium">'.price((float) $norm['supplier_quantity']).' × '.price($supplierListPrice).' = '.$money($norm['supplier_price_total'], $currency).'</span>';
         }
         if (!empty($norm['price_differs'])) {
             print '<br><span class="warning">'.img_picto('', 'warning').' '.$langs->trans('PurchasePriceNeedsReview').'</span>';
-        } elseif (in_array((string) ($norm['mode'] ?? ''), array('price_quantity', 'packaging'), true)) {
+        } elseif ((string) ($norm['mode'] ?? '') === 'packaging') {
             print '<br><span class="ok">'.img_picto('', 'tick').' '.$langs->trans('PurchasePackagePriceMatched').'</span>';
         }
     } else {
@@ -405,6 +421,7 @@ foreach (($workbench['lines'] ?? array()) as $line) {
         print '<tr><td>'.$langs->trans('PurchaseSupplierMinQty').'</td><td><input class="width100" type="text" name="candidate_supplier_quantity" value="'.dol_escape_htmltag((string) ($candidate['supplier_quantity'] ?? 1)).'"></td></tr>';
         print '<tr><td>'.$langs->trans('PurchaseSupplierPackaging').'</td><td><input class="width100" type="text" name="candidate_supplier_packaging" value="'.dol_escape_htmltag((string) ($candidate['supplier_packaging'] ?? 1)).'"> <span class="opacitymedium">'.$langs->trans('PurchaseSupplierPackagingHelp').'</span></td></tr>';
         print '<tr><td>'.$langs->trans('PurchaseSupplierPriceForQty').'</td><td><input class="width100" type="text" name="candidate_supplier_price_total" value="'.dol_escape_htmltag((string) ($candidate['supplier_price_total'] ?? '')).'"> '.dol_escape_htmltag($currency).' <span class="opacitymedium">'.$langs->trans('PurchaseSupplierPriceModelHelp').'</span></td></tr>';
+        print '<tr><td>'.$langs->trans('Discount').'</td><td><input class="width75" type="text" name="candidate_supplier_discount_percent" value="'.dol_escape_htmltag((string) ($candidate['supplier_discount_percent'] ?? 0)).'"> %</td></tr>';
         print '<tr><td>'.$langs->trans('VAT').'</td><td><input class="width75" type="text" name="candidate_vat_rate" value="'.dol_escape_htmltag((string) ($candidate['vat_rate'] ?? '')).'"> %</td></tr>';
         print '</table><div class="center"><button class="button button-save" type="submit" onclick="return confirm(\''.dol_escape_js($langs->trans('PurchaseCreateProductConfirm')).'\');">'.$langs->trans('PurchaseCreateProduct').'</button></div></form></details>';
     }
