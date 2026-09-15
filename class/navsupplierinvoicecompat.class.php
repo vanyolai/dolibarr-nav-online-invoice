@@ -3,15 +3,13 @@
 dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 
 /**
- * Dolibarr 23 supplier-invoice compatibility boundary.
+ * Dolibarr 23 supplier-credit-note compatibility boundary.
  *
- * Core FactureFournisseur creation normalizes every credit-note line to a
- * positive quantity and negative unit price. That destroys legitimate
- * mixed-sign NAV MODIFY/STORNO semantics. Older NAVinvoice imports also need
- * source list-price + line-discount fidelity on the created draft.
- *
- * Keep this version-specific correction isolated here. All source semantics
- * come from NavInvoiceParser; this class never reparses individual XML fields.
+ * FactureFournisseur::create() in Dolibarr 23 forces every supplier credit-note
+ * line to positive quantity + negative unit price. NAV MODIFY/STORNO documents
+ * may legitimately contain both positive and negative financial lines, so that
+ * core normalization loses source semantics. Standard supplier invoices do not
+ * need this adapter and are left entirely to native Dolibarr creation.
  */
 class NavSupplierInvoiceCompatibility
 {
@@ -30,34 +28,18 @@ class NavSupplierInvoiceCompatibility
      */
     public function apply($invoice, Conf $conf): int
     {
-        if (!is_object($invoice) || empty($invoice->id)) {
+        if (!is_object($invoice) || empty($invoice->id) || (int) ($invoice->type ?? 0) !== 2) {
             return 0;
         }
 
-        $refExt = trim((string) ($invoice->ref_ext ?? ''));
-        if (!preg_match('/^NAV\|INBOUND\|(.+)\|(\d+)$/', $refExt, $matches)) {
-            return 0;
-        }
-
-        $invoiceNumber = (string) $matches[1];
-        $batchIndex = (int) $matches[2];
         $entity = !empty($invoice->entity) ? (int) $invoice->entity : (int) $conf->entity;
-
-        $sql = 'SELECT invoice_data FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
-        $sql .= ' WHERE entity = '.$entity;
-        $sql .= " AND invoice_direction = 'INBOUND'";
-        $sql .= " AND invoice_number = '".$this->db->escape($invoiceNumber)."'";
-        $sql .= ' AND batch_index = '.$batchIndex;
-        $sql .= ' LIMIT 1';
-        $resql = $this->db->query($sql);
-        if (!$resql) {
-            return $this->error('Could not load NAV source invoice: '.$this->db->lasterror());
+        $xml = $this->loadSourceXml($invoice, $entity);
+        if ($xml === null) {
+            // Not a NAV-created supplier invoice.
+            return 0;
         }
-        $mirror = $this->db->fetch_object($resql);
-        $this->db->free($resql);
-        $xml = is_object($mirror) ? trim((string) ($mirror->invoice_data ?? '')) : '';
         if ($xml === '') {
-            return $this->error('NAV source XML is missing for supplier invoice compatibility correction.');
+            return $this->error('NAV source XML is missing for supplier credit-note compatibility correction.');
         }
 
         try {
@@ -87,7 +69,6 @@ class NavSupplierInvoiceCompatibility
             return $this->error('NAV/Dolibarr supplier line count differs: NAV '.count($sourceLines).' vs Dolibarr '.count($lineIds).'.');
         }
 
-        $creditNote = (int) ($invoice->type ?? 0) === 2;
         foreach ($sourceLines as $index => $sourceLine) {
             if (!is_array($sourceLine)) {
                 continue;
@@ -100,17 +81,14 @@ class NavSupplierInvoiceCompatibility
                 continue;
             }
 
-            $sourceQuantity = (float) $quantityRaw;
-            $quantity = $creditNote ? abs($sourceQuantity) : $sourceQuantity;
+            $quantity = abs((float) $quantityRaw);
             $net = (float) $netRaw;
-            if (abs($quantity) <= 0.000000001) {
+            if ($quantity <= 0.000000001) {
                 continue;
             }
 
             $unitPrice = is_numeric($unitPriceRaw) ? (float) $unitPriceRaw : $net / $quantity;
-            if ($creditNote) {
-                $unitPrice = $net < -0.0000001 ? -abs($unitPrice) : abs($unitPrice);
-            }
+            $unitPrice = $net < -0.0000001 ? -abs($unitPrice) : abs($unitPrice);
 
             $discount = is_array($sourceLine['discount'] ?? null) ? $sourceLine['discount'] : array();
             $discountPercent = $this->validatedDiscountPercent($discount, $quantity * $unitPrice, $net);
@@ -128,6 +106,9 @@ class NavSupplierInvoiceCompatibility
             $vatRate = $this->vatPercent(is_array($sourceLine['vat'] ?? null) ? $sourceLine['vat'] : array());
             $unitPriceTtc = $unitPrice * (1.0 + ($vatRate / 100.0));
 
+            // This is intentionally the only direct supplier-line correction in
+            // the module. It compensates for Dolibarr 23's credit-note sign rule;
+            // all standard invoices remain native business-object writes.
             $sql = 'UPDATE '.MAIN_DB_PREFIX.'facture_fourn_det SET';
             $sql .= ' qty = '.$this->number($quantity);
             $sql .= ', pu_ht = '.$this->number($unitPrice);
@@ -138,11 +119,56 @@ class NavSupplierInvoiceCompatibility
             $sql .= ', total_ttc = '.$this->number($gross);
             $sql .= ' WHERE rowid = '.$lineIds[(int) $index];
             if (!$this->db->query($sql)) {
-                return $this->error('Could not apply NAV supplier line compatibility correction: '.$this->db->lasterror());
+                return $this->error('Could not apply NAV supplier credit-note compatibility correction: '.$this->db->lasterror());
             }
         }
 
         return 1;
+    }
+
+    /**
+     * @return string|null null means the invoice is not a NAVinvoice document.
+     */
+    private function loadSourceXml($invoice, int $entity): ?string
+    {
+        // New imports carry the authoritative mirror row id in the audit note,
+        // which avoids all invoice-number/supplier collision ambiguity.
+        $note = (string) ($invoice->note_private ?? '');
+        if (preg_match('/(?:^|\n)mirror_rowid=(\d+)(?:\n|$)/', $note, $matches)) {
+            $mirrorId = (int) $matches[1];
+            if ($mirrorId > 0) {
+                $sql = 'SELECT invoice_data FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
+                $sql .= ' WHERE rowid = '.$mirrorId.' AND entity = '.$entity;
+                $sql .= " AND invoice_direction = 'INBOUND' LIMIT 1";
+                $resql = $this->db->query($sql);
+                if (!$resql) {
+                    return '';
+                }
+                $mirror = $this->db->fetch_object($resql);
+                $this->db->free($resql);
+                return $mirror ? trim((string) ($mirror->invoice_data ?? '')) : '';
+            }
+        }
+
+        // Backward compatibility for drafts created before mirror_rowid was
+        // embedded in note_private. Do not use this path for new imports.
+        $refExt = trim((string) ($invoice->ref_ext ?? ''));
+        if (!preg_match('/^NAV\|INBOUND\|(.+)\|(\d+)$/', $refExt, $matches)) {
+            return null;
+        }
+        $invoiceNumber = (string) $matches[1];
+        $batchIndex = (int) $matches[2];
+        $sql = 'SELECT invoice_data FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
+        $sql .= ' WHERE entity = '.$entity." AND invoice_direction = 'INBOUND'";
+        $sql .= " AND invoice_number = '".$this->db->escape($invoiceNumber)."'";
+        $sql .= ' AND batch_index = '.$batchIndex.' ORDER BY rowid DESC LIMIT 1';
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            return '';
+        }
+        $mirror = $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        return $mirror ? trim((string) ($mirror->invoice_data ?? '')) : '';
     }
 
     /** @param array<string,mixed> $discount */
