@@ -46,10 +46,13 @@ class NavInvoiceAggregateSupport
         $accountingDeliveryDate = $detail ? $this->text($detail, './*[local-name()="invoiceAccountingDeliveryDate"]') : '';
         $headerDeliveryDate = trim((string) ($preview['header']['delivery_date'] ?? ''));
 
+        // Keep NAV's accounting-delivery date available for audit/reporting, but
+        // do not reinterpret it as Dolibarr's point-of-tax date. The importer has
+        // historically mapped invoiceDeliveryDate to date_pointoftax, and an
+        // aggregate invoice's header delivery date remains the latest line-level
+        // delivery date by NAV semantics.
         $preview['header']['accounting_delivery_date'] = $accountingDeliveryDate;
-        $preview['header']['point_of_tax_date'] = $this->validDate($accountingDeliveryDate)
-            ? $accountingDeliveryDate
-            : $headerDeliveryDate;
+        $preview['header']['point_of_tax_date'] = $headerDeliveryDate;
 
         if ($accountingDeliveryDate !== '' && !$this->validDate($accountingDeliveryDate)) {
             $blockers[] = 'aggregate_accounting_delivery_date_invalid';
@@ -92,7 +95,9 @@ class NavInvoiceAggregateSupport
                 $maxDeliveryDate = $deliveryDate;
             }
 
-            if ($exchangeRate === '' || !is_numeric($exchangeRate) || (float) $exchangeRate <= 0) {
+            // lineExchangeRate is optional in the NAV 3.0 XSD. Validate it only
+            // when present; zero is also a schema-valid ExchangeRateType value.
+            if ($exchangeRate !== '' && (!is_numeric($exchangeRate) || (float) $exchangeRate < 0)) {
                 $blockers[] = 'aggregate_line_exchange_rate_invalid';
             }
         }
