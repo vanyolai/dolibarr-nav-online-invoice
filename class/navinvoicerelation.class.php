@@ -5,10 +5,9 @@ dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
 /**
  * Resolve NAV CREATE / MODIFY / STORNO relationships from the local mirror.
  *
- * This class does not decide how a non-CREATE document is represented in
- * Dolibarr. It builds the auditable relation graph needed before that decision
- * is allowed: original NAV invoice, modification index, known chain members
- * and the Dolibarr invoice linked to the original mirror row.
+ * Relation lookup is issuer scoped: invoice numbers are not globally unique
+ * across suppliers, therefore a modification chain must never cross supplier
+ * tax identities when that identity is known.
  */
 class NavInvoiceRelationResolver
 {
@@ -38,6 +37,8 @@ class NavInvoiceRelationResolver
         $direction = $this->normalizeDirection((string) ($record->invoice_direction ?? 'OUTBOUND'));
         $operation = strtoupper(trim((string) ($record->invoice_operation ?? 'CREATE')));
         $invoiceNumber = trim((string) ($record->invoice_number ?? ''));
+        $parsedSupplier = is_array($parsed['supplier'] ?? null) ? $parsed['supplier'] : array();
+        $supplierTaxNumber = trim((string) ($parsedSupplier['tax_number'] ?? $record->supplier_tax_number ?? ''));
 
         $parsedReference = is_array($parsed['reference'] ?? null) ? $parsed['reference'] : array();
         $originalInvoiceNumber = trim((string) ($parsedReference['original_invoice_number'] ?? $record->original_invoice_number ?? ''));
@@ -51,6 +52,7 @@ class NavInvoiceRelationResolver
             'operation' => $operation,
             'direction' => $direction,
             'invoice_number' => $invoiceNumber,
+            'supplier_tax_number' => $supplierTaxNumber,
             'requires_relation' => $operation !== 'CREATE',
             'relationship_kind' => $this->relationshipKind($operation),
             'original_invoice_number' => $originalInvoiceNumber,
@@ -68,9 +70,8 @@ class NavInvoiceRelationResolver
         );
 
         if ($operation === 'CREATE') {
-            $root = $invoiceNumber;
-            if ($root !== '') {
-                $result['chain'] = $this->loadChain($direction, $root);
+            if ($invoiceNumber !== '') {
+                $result['chain'] = $this->loadChain($direction, $invoiceNumber, $supplierTaxNumber);
             }
             return $result;
         }
@@ -86,17 +87,12 @@ class NavInvoiceRelationResolver
         }
 
         if ($originalInvoiceNumber !== '') {
-            $original = $this->findOriginalRecord($direction, $originalInvoiceNumber);
+            $original = $this->findOriginalRecord($direction, $originalInvoiceNumber, $supplierTaxNumber);
             $result['original_record'] = $original;
-            $result['chain'] = $this->loadChain($direction, $originalInvoiceNumber);
+            $result['chain'] = $this->loadChain($direction, $originalInvoiceNumber, $supplierTaxNumber);
 
             if ($original === null) {
                 if ($modifyWithoutMaster === true) {
-                    // NAV explicitly permits an antecedent-less modification.
-                    // There is no source Dolibarr invoice to link, but this is a
-                    // legitimate relation state rather than a broken chain. The
-                    // operation policy still verifies the authoritative NAV chain
-                    // and the financial mapping before import is allowed.
                     $result['standalone_without_master'] = true;
                     $result['warnings'][] = 'original_mirror_missing_allowed';
                 } else {
@@ -145,18 +141,18 @@ class NavInvoiceRelationResolver
         return $result;
     }
 
-    /**
-     * @return object|null
-     */
-    private function findOriginalRecord(string $direction, string $invoiceNumber)
+    /** @return object|null */
+    private function findOriginalRecord(string $direction, string $invoiceNumber, string $supplierTaxNumber)
     {
         $sql = 'SELECT * FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
         $sql .= ' WHERE entity = '.$this->entity;
         $sql .= " AND invoice_direction = '".$this->db->escape($direction)."'";
+        if ($supplierTaxNumber !== '') {
+            $sql .= " AND supplier_tax_number = '".$this->db->escape($supplierTaxNumber)."'";
+        }
         $sql .= " AND invoice_number = '".$this->db->escape($invoiceNumber)."'";
         $sql .= " AND UPPER(COALESCE(invoice_operation, 'CREATE')) = 'CREATE'";
-        $sql .= ' ORDER BY batch_index ASC, rowid ASC';
-        $sql .= ' LIMIT 1';
+        $sql .= ' ORDER BY batch_index ASC, rowid ASC LIMIT 1';
         $resql = $this->db->query($sql);
         if (!$resql) {
             throw new Exception('Failed to resolve original NAV invoice: '.$this->db->lasterror());
@@ -166,17 +162,18 @@ class NavInvoiceRelationResolver
         return $obj ?: null;
     }
 
-    /**
-     * @return array<int,array<string,mixed>>
-     */
-    private function loadChain(string $direction, string $originalInvoiceNumber): array
+    /** @return array<int,array<string,mixed>> */
+    private function loadChain(string $direction, string $originalInvoiceNumber, string $supplierTaxNumber): array
     {
         $sql = 'SELECT rowid, invoice_number, batch_index, invoice_operation, invoice_issue_date,';
-        $sql .= ' original_invoice_number, modification_index, transaction_id, transaction_index,';
+        $sql .= ' supplier_tax_number, original_invoice_number, modification_index, transaction_id, transaction_index,';
         $sql .= ' fk_facture, fk_facture_fourn';
         $sql .= ' FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
         $sql .= ' WHERE entity = '.$this->entity;
         $sql .= " AND invoice_direction = '".$this->db->escape($direction)."'";
+        if ($supplierTaxNumber !== '') {
+            $sql .= " AND supplier_tax_number = '".$this->db->escape($supplierTaxNumber)."'";
+        }
         $sql .= " AND (invoice_number = '".$this->db->escape($originalInvoiceNumber)."'";
         $sql .= " OR original_invoice_number = '".$this->db->escape($originalInvoiceNumber)."')";
         $sql .= " ORDER BY CASE WHEN UPPER(COALESCE(invoice_operation, 'CREATE')) = 'CREATE' THEN 0 ELSE 1 END,";
@@ -197,6 +194,7 @@ class NavInvoiceRelationResolver
                 'batch_index' => (int) $obj->batch_index,
                 'operation' => $operation,
                 'invoice_issue_date' => (string) $obj->invoice_issue_date,
+                'supplier_tax_number' => (string) $obj->supplier_tax_number,
                 'original_invoice_number' => (string) $obj->original_invoice_number,
                 'modification_index' => $obj->modification_index === null ? null : (int) $obj->modification_index,
                 'transaction_id' => (string) $obj->transaction_id,
