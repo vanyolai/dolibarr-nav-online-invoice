@@ -79,10 +79,23 @@ class NavUnitResolver
             'LINEAR_METER' => array('M', 'size'),
         );
 
-        if ($navUnit !== 'OWN' && isset($codeMap[$navUnit])) {
-            $match = $this->findUniqueByCode($codeMap[$navUnit][0], $codeMap[$navUnit][1]);
+        // Some issuers legally send unitOfMeasure=OWN but put one of NAV's
+        // standard enum names into unitOfMeasureOwn (for example
+        // "LINEAR_METER "). Treat such values as aliases of the standard enum,
+        // otherwise literal matching would look for a Dolibarr unit actually
+        // named LINEAR_METER instead of mapping it to M / size.
+        $mappedNavUnit = $navUnit;
+        if ($navUnit === 'OWN' && $ownUnit !== '') {
+            $ownEnum = strtoupper(trim($ownUnit));
+            if (isset($codeMap[$ownEnum])) {
+                $mappedNavUnit = $ownEnum;
+            }
+        }
+
+        if (isset($codeMap[$mappedNavUnit])) {
+            $match = $this->findUniqueByCode($codeMap[$mappedNavUnit][0], $codeMap[$mappedNavUnit][1]);
             if ($match !== null) {
-                return $this->resolvedResult($result, $match, 'code');
+                return $this->resolvedResult($result, $match, $navUnit === 'OWN' ? 'own_standard_code' : 'code');
             }
 
             // Some installations use a custom code while retaining the
@@ -101,10 +114,10 @@ class NavUnitResolver
                 'METER' => array('m', 'size'),
                 'LINEAR_METER' => array('m', 'size'),
             );
-            if (isset($symbolMap[$navUnit])) {
-                $match = $this->findUniqueByShortLabel($symbolMap[$navUnit][0], $symbolMap[$navUnit][1]);
+            if (isset($symbolMap[$mappedNavUnit])) {
+                $match = $this->findUniqueByShortLabel($symbolMap[$mappedNavUnit][0], $symbolMap[$mappedNavUnit][1]);
                 if ($match !== null) {
-                    return $this->resolvedResult($result, $match, 'symbol');
+                    return $this->resolvedResult($result, $match, $navUnit === 'OWN' ? 'own_standard_symbol' : 'symbol');
                 }
             }
         }
