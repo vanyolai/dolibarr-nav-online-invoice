@@ -4,9 +4,11 @@ dol_include_once('/navinvoice/class/navunitresolver.class.php');
 dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
 
 /**
- * Build a read-only preview of how a NAV invoice would map into Dolibarr.
- * No Dolibarr business object is created or modified here, except repairing
- * stale NAV mirror links to Dolibarr invoices that no longer exist.
+ * Build a read-only preview of how a parsed NAV invoice maps into Dolibarr.
+ *
+ * This class consumes the canonical NavInvoiceParser model. It never reparses
+ * raw XML and it preserves source list-price + discount semantics whenever they
+ * deterministically reproduce the authoritative NAV line amount.
  */
 class NavInvoiceImportPreview
 {
@@ -46,8 +48,9 @@ class NavInvoiceImportPreview
         $inbound = $direction === 'INBOUND';
         $operation = strtoupper((string) ($record->invoice_operation ?? 'CREATE'));
         $invoiceNumber = trim((string) ($parsed['invoice_number'] ?? $record->invoice_number ?? ''));
-        $currency = strtoupper(trim((string) ($parsed['detail']['currency'] ?? $record->currency ?? '')));
-        $category = strtoupper(trim((string) ($parsed['detail']['category'] ?? $record->invoice_category ?? '')));
+        $detail = is_array($parsed['detail'] ?? null) ? $parsed['detail'] : array();
+        $currency = strtoupper(trim((string) ($detail['currency'] ?? $record->currency ?? '')));
+        $category = strtoupper(trim((string) ($detail['category'] ?? $record->invoice_category ?? '')));
         $simplified = $category === 'SIMPLIFIED';
         $externalPartyKey = $inbound ? 'supplier' : 'customer';
         $navCountryCode = strtoupper(trim((string) ($parsed[$externalPartyKey]['address']['country_code'] ?? '')));
@@ -65,11 +68,8 @@ class NavInvoiceImportPreview
             $partnerCountry = $this->partnerCountry((int) $partner['id']);
             $partnerCountryCode = strtoupper(trim((string) ($partnerCountry['country_code'] ?? '')));
             if ($partnerCountryCode === '') {
-                // Dolibarr needs the third-party country to determine VAT rules
-                // when invoice lines are created or edited.
                 $blockers[] = 'partner_country_missing';
             } elseif ($navCountryCode !== '' && $partnerCountryCode !== $navCountryCode) {
-                // A country mismatch can change VAT treatment, so never guess.
                 $blockers[] = 'partner_country_mismatch';
             }
         }
@@ -80,7 +80,7 @@ class NavInvoiceImportPreview
         if ($operation !== 'CREATE') {
             $blockers[] = 'operation_relation';
         }
-        if (!in_array($category, array('NORMAL', 'SIMPLIFIED'), true)) {
+        if (!in_array($category, array('NORMAL', 'SIMPLIFIED', 'AGGREGATE'), true)) {
             $blockers[] = 'category_unsupported';
         }
         if ($simplified) {
@@ -103,6 +103,9 @@ class NavInvoiceImportPreview
 
         $lines = array();
         foreach (($parsed['lines'] ?? array()) as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
             $mapped = $this->mapLine($line, $category);
             if (!empty($mapped['blocker'])) {
                 $blockers[] = (string) $mapped['blocker'];
@@ -116,10 +119,8 @@ class NavInvoiceImportPreview
             $blockers[] = 'no_lines';
         }
 
-        $totals = $parsed['totals'] ?? array();
+        $totals = is_array($parsed['totals'] ?? null) ? $parsed['totals'] : array();
         if ($simplified) {
-            // A simplified NAV invoice reports gross amounts and VAT content.
-            // Net and VAT are derived values, therefore gross is authoritative.
             if (($totals['gross'] ?? null) === null) {
                 $blockers[] = 'totals_incomplete';
             } elseif ($lines && !$this->lineTotalsMatchHeader($lines, $totals, $currency, $category)) {
@@ -142,6 +143,8 @@ class NavInvoiceImportPreview
         $warnings = array_values(array_unique($warnings));
         $state = $blockers ? 'blocked' : ($warnings ? 'review' : 'ready');
 
+        $deliveryDate = (string) ($detail['delivery_date'] ?? '');
+        $accountingDeliveryDate = (string) ($detail['accounting_delivery_date'] ?? '');
         return array(
             'state' => $state,
             'target_class' => $inbound ? 'FactureFournisseur' : 'Facture',
@@ -161,11 +164,13 @@ class NavInvoiceImportPreview
             'units_enabled' => $this->unitResolver->isEnabled(),
             'header' => array(
                 'invoice_date' => $invoiceDate,
-                'delivery_date' => (string) ($parsed['detail']['delivery_date'] ?? ''),
-                'due_date' => (string) ($parsed['detail']['payment_date'] ?? ''),
-                'payment_method' => (string) ($parsed['detail']['payment_method'] ?? ''),
+                'delivery_date' => $deliveryDate,
+                'accounting_delivery_date' => $accountingDeliveryDate,
+                'point_of_tax_date' => $deliveryDate,
+                'due_date' => (string) ($detail['payment_date'] ?? ''),
+                'payment_method' => (string) ($detail['payment_method'] ?? ''),
                 'currency' => $currency,
-                'exchange_rate' => (string) ($parsed['detail']['exchange_rate'] ?? ''),
+                'exchange_rate' => (string) ($detail['exchange_rate'] ?? ''),
                 'supplier_reference' => $inbound ? $invoiceNumber : '',
                 'customer_invoice_reference' => $inbound ? '' : $invoiceNumber,
             ),
@@ -174,14 +179,11 @@ class NavInvoiceImportPreview
         );
     }
 
-    /**
-     * @param array<string,mixed> $line
-     * @return array<string,mixed>
-     */
+    /** @param array<string,mixed> $line @return array<string,mixed> */
     private function mapLine(array $line, string $category): array
     {
         $simplified = $category === 'SIMPLIFIED';
-        $vat = $line['vat'] ?? array();
+        $vat = is_array($line['vat'] ?? null) ? $line['vat'] : array();
         $kind = (string) ($vat['kind'] ?? '');
         $value = $vat['value'] ?? '';
         $vatRate = null;
@@ -208,17 +210,25 @@ class NavInvoiceImportPreview
         }
 
         $qty = $line['quantity'] ?? null;
-        $sourceNet = $line['amounts']['net'] ?? null;
-        $sourceGross = $line['amounts']['gross'] ?? null;
+        $amounts = is_array($line['amounts'] ?? null) ? $line['amounts'] : array();
+        $sourceNet = $amounts['net'] ?? null;
+        $sourceGross = $amounts['gross'] ?? null;
         $navUnitPrice = $line['unit_price'] ?? null;
         $unitPrice = null;
         $net = $sourceNet;
-        $vatAmount = $line['amounts']['vat'] ?? null;
+        $vatAmount = $amounts['vat'] ?? null;
         $gross = $sourceGross;
         $adjusted = false;
         $quantityDerived = false;
         $unitPriceDerived = false;
         $informationalZeroLine = false;
+        $discount = is_array($line['discount'] ?? null) ? $line['discount'] : array();
+        $discountPercent = 0.0;
+        $discountNative = false;
+        $discountValue = isset($discount['value']) && is_numeric($discount['value']) ? (float) $discount['value'] : null;
+        $discountRate = isset($discount['rate']) && is_numeric($discount['rate']) ? (float) $discount['rate'] : null;
+        $discountDescription = trim((string) ($discount['description'] ?? ''));
+
         $nonExpressionLine = array_key_exists('expression', $line) && $line['expression'] === false;
         $explicitZeroQuantity = $qty !== null && $qty !== '' && (float) $qty == 0.0;
         $allAmountsExplicitlyZero = $sourceNet !== null && $sourceNet !== '' && (float) $sourceNet == 0.0
@@ -227,18 +237,9 @@ class NavInvoiceImportPreview
 
         if ($qty === null || $qty === '' || (float) $qty == 0.0) {
             if ($nonExpressionLine) {
-                // NAV allows quantity and unitPrice to be omitted when the line
-                // cannot be expressed in a natural unit. Dolibarr still needs a
-                // quantity, so represent the complete line as one technical unit.
-                // This does not claim that the source invoice contained quantity 1.
                 $qty = 1;
                 $quantityDerived = true;
             } elseif ($explicitZeroQuantity && $allAmountsExplicitlyZero) {
-                // Older NAV payloads may use explicit zero-quantity, zero-amount
-                // lines to detail what an advance/payment line refers to. These
-                // are valid descriptive invoice rows rather than monetary rows.
-                // Dolibarr supports qty=0, so preserve the source quantity and
-                // source unit price instead of inventing a technical quantity.
                 $informationalZeroLine = true;
                 if ($navUnitPrice !== null && $navUnitPrice !== '') {
                     if ($simplified && $vatRate !== null) {
@@ -262,9 +263,6 @@ class NavInvoiceImportPreview
                 if ($gross === null || $gross === '') {
                     $blocker = $blocker ?: 'line_gross_missing';
                 } elseif ($vatRate !== null) {
-                    // On SIMPLIFIED invoices NAV unit price and line amount are gross.
-                    // Convert authoritative gross to the legal VAT rate Dolibarr needs,
-                    // then derive an HT unit price without treating NAV unitPrice as HT.
                     $grossFloat = (float) $gross;
                     $netFloat = $vatRate == 0.0 ? $grossFloat : $grossFloat / (1 + ($vatRate / 100));
                     $net = $this->decimal($netFloat);
@@ -275,20 +273,21 @@ class NavInvoiceImportPreview
             } elseif ($sourceNet === null || $sourceNet === '') {
                 $blocker = $blocker ?: 'line_net_missing';
             } else {
-                // For a normal NAV line the explicit unitPrice is useful source
-                // data, but discounts/surcharges may make quantity * unitPrice
-                // differ materially from the authoritative lineNetAmount. In
-                // that case Dolibarr needs an effective HT unit price derived
-                // from the line total so the created line remains internally
-                // consistent. Tiny differences are kept as source precision.
                 if ($navUnitPrice !== null && $navUnitPrice !== '') {
                     $unitPrice = (float) $navUnitPrice;
-                    $sourceExtended = $unitPrice * (float) $qty;
-                    if (abs($sourceExtended - (float) $sourceNet) > 0.01) {
-                        $unitPrice = (float) $sourceNet / (float) $qty;
-                        $adjusted = true;
+                    $extended = $unitPrice * (float) $qty;
+                    if (!$this->amountsClose($extended, (float) $sourceNet)) {
+                        $validatedDiscount = $this->validatedDiscountPercent($discount, $extended, (float) $sourceNet);
+                        if ($validatedDiscount !== null) {
+                            $discountPercent = $validatedDiscount;
+                            $discountNative = true;
+                        } else {
+                            // Source lineNetAmount is authoritative. Flatten only
+                            // when the explicit discount metadata cannot explain it.
+                            $unitPrice = (float) $sourceNet / (float) $qty;
+                            $adjusted = true;
+                        }
                     }
-                    $unitPriceDerived = false;
                 } else {
                     $unitPrice = (float) $sourceNet / (float) $qty;
                     $unitPriceDerived = true;
@@ -296,10 +295,6 @@ class NavInvoiceImportPreview
             }
         }
 
-        // Supplier reference priority:
-        // 1) NAV productCodes/OWN = issuer's own product code.
-        // 2) conventionalLineInfo/itemNumbers/itemNumber = conventional item id.
-        // Other code categories (GTIN/VTSZ/TESZOR/etc.) are not supplier refs.
         $supplierRef = '';
         $supplierRefSource = '';
         foreach (($line['product_codes'] ?? array()) as $productCode) {
@@ -344,6 +339,11 @@ class NavInvoiceImportPreview
             'unit_price_ht' => $unitPrice,
             'unit_price_derived' => $unitPriceDerived,
             'unit_price_adjusted' => $adjusted,
+            'discount_percent' => $discountPercent,
+            'discount_value' => $discountValue,
+            'discount_rate' => $discountRate,
+            'discount_description' => $discountDescription,
+            'discount_native' => $discountNative,
             'supplier_ref' => $supplierRef,
             'supplier_ref_source' => $supplierRefSource,
             'product_codes' => is_array($line['product_codes'] ?? null) ? $line['product_codes'] : array(),
@@ -360,30 +360,42 @@ class NavInvoiceImportPreview
         );
     }
 
-    /**
-     * Convert NAV VAT-content ratio from a simplified invoice to the legal
-     * VAT percentage Dolibarr expects.
-     */
+    /** @param array<string,mixed> $discount */
+    private function validatedDiscountPercent(array $discount, float $extended, float $net): ?float
+    {
+        if (abs($extended) <= 0.000000001) {
+            return null;
+        }
+        if (isset($discount['rate']) && $discount['rate'] !== null && $discount['rate'] !== '' && is_numeric($discount['rate'])) {
+            $rate = abs((float) $discount['rate']);
+            if ($rate <= 1.0 && $this->amountsClose($extended * (1.0 - $rate), $net)) {
+                return $rate * 100.0;
+            }
+        }
+        if (isset($discount['value']) && $discount['value'] !== null && $discount['value'] !== '' && is_numeric($discount['value'])) {
+            $percent = 100.0 * abs((float) $discount['value']) / abs($extended);
+            if ($percent <= 100.0 && $this->amountsClose($extended * (1.0 - ($percent / 100.0)), $net)) {
+                return $percent;
+            }
+        }
+        return null;
+    }
+
+    private function amountsClose(float $a, float $b): bool
+    {
+        return abs($a - $b) <= 0.01;
+    }
+
     private function vatRateFromContent(float $content): ?float
     {
         if ($content < 0 || $content >= 1) {
             return null;
         }
-
-        // Do not use floating point values as PHP array keys: they are cast to int.
-        $known = array(
-            array(0.0476, 5.0),
-            array(0.1525, 18.0),
-            array(0.2126, 27.0),
-        );
-        foreach ($known as $entry) {
+        foreach (array(array(0.0476, 5.0), array(0.1525, 18.0), array(0.2126, 27.0)) as $entry) {
             if (abs($content - $entry[0]) <= 0.00005) {
                 return $entry[1];
             }
         }
-
-        // VAT content = r / (100 + r). NAV stores a rounded content value,
-        // therefore only accept inversion when it is very close to an integer rate.
         $derived = 100 * $content / (1 - $content);
         $integerRate = round($derived);
         return abs($derived - $integerRate) <= 0.05 ? (float) $integerRate : null;
@@ -403,10 +415,9 @@ class NavInvoiceImportPreview
                 }
                 $gross += (float) $line['gross'];
             }
-            if ($zeroDecimalCurrency) {
-                return abs($gross - (float) $totals['gross']) < 1.0;
-            }
-            return round($gross, $decimals) == round((float) $totals['gross'], $decimals);
+            return $zeroDecimalCurrency
+                ? abs($gross - (float) $totals['gross']) < 1.0
+                : round($gross, $decimals) == round((float) $totals['gross'], $decimals);
         }
 
         $net = 0.0;
@@ -425,7 +436,6 @@ class NavInvoiceImportPreview
                 && abs($vat - (float) $totals['vat']) < 1.0
                 && abs($gross - (float) $totals['gross']) < 1.0;
         }
-
         return round($net, $decimals) == round((float) $totals['net'], $decimals)
             && round($vat, $decimals) == round((float) $totals['vat'], $decimals)
             && round($gross, $decimals) == round((float) $totals['gross'], $decimals);
@@ -442,12 +452,10 @@ class NavInvoiceImportPreview
         if ($partnerId <= 0) {
             return null;
         }
-
         $sql = 'SELECT s.fk_pays, c.code AS country_code, c.label AS country_label';
         $sql .= ' FROM '.MAIN_DB_PREFIX.'societe AS s';
         $sql .= ' LEFT JOIN '.MAIN_DB_PREFIX.'c_country AS c ON c.rowid = s.fk_pays';
-        $sql .= ' WHERE s.rowid = '.$partnerId.' AND s.entity = '.$this->entity;
-        $sql .= ' LIMIT 1';
+        $sql .= ' WHERE s.rowid = '.$partnerId.' AND s.entity = '.$this->entity.' LIMIT 1';
         $resql = $this->db->query($sql);
         if (!$resql) {
             throw new Exception($this->db->lasterror());
@@ -457,7 +465,6 @@ class NavInvoiceImportPreview
         if (!$obj) {
             return null;
         }
-
         return array(
             'id' => (int) $obj->fk_pays,
             'country_code' => (string) $obj->country_code,
@@ -468,8 +475,6 @@ class NavInvoiceImportPreview
     /** @return array<string,mixed>|null */
     private function findExistingInvoice($record, string $direction, string $invoiceNumber, int $partnerId): ?array
     {
-        // Validate the stored mirror link first. If the draft was deleted in
-        // Dolibarr, resolve() clears the stale link and import can proceed again.
         $linkedId = $this->linkManager->resolve($record, $direction);
         if ($linkedId > 0) {
             return array('id' => $linkedId, 'type' => $direction === 'INBOUND' ? 'supplier' : 'customer', 'source' => 'mirror_link');
