@@ -10,8 +10,11 @@
 require_once DOL_DOCUMENT_ROOT.'/core/triggers/dolibarrtriggers.class.php';
 
 /**
- * Copy deterministic payment semantics from the source NAV invoice to
- * supplier-order drafts reconstructed by the NAV purchase workbench.
+ * Copy deterministic payment semantics from the source NAV invoice to supplier
+ * order drafts reconstructed by the NAV purchase workbench.
+ *
+ * XML interpretation is delegated to NavInvoiceParser so the trigger consumes
+ * the same canonical source model as import and preview code.
  */
 class InterfaceNavPurchaseTerms extends DolibarrTriggers
 {
@@ -35,17 +38,17 @@ class InterfaceNavPurchaseTerms extends DolibarrTriggers
      */
     public function runTrigger($action, $object, User $user, Translate $langs, Conf $conf)
     {
-        if ($action !== 'ORDER_SUPPLIER_CREATE') {
-            return 0;
-        }
-        if (empty($conf->navinvoice) || empty($conf->navinvoice->enabled)) {
-            return 0;
-        }
-        if (!is_object($object) || empty($object->id) || (string) ($object->element ?? '') !== 'order_supplier') {
+        if ($action !== 'ORDER_SUPPLIER_CREATE'
+            || empty($conf->navinvoice)
+            || empty($conf->navinvoice->enabled)
+            || !is_object($object)
+            || empty($object->id)
+            || (string) ($object->element ?? '') !== 'order_supplier') {
             return 0;
         }
 
-        // Only touch orders explicitly reconstructed by NavPurchaseWorkbench.
+        // Only orders explicitly reconstructed by NavPurchaseWorkbench carry
+        // this stable audit marker.
         $note = (string) ($object->note_private ?? '');
         if (!preg_match('/(?:^|\n)mirror_rowid=(\d+)(?:\n|$)/', $note, $matches)) {
             return 0;
@@ -62,22 +65,22 @@ class InterfaceNavPurchaseTerms extends DolibarrTriggers
             return 0;
         }
 
-        libxml_use_internal_errors(true);
-        $document = simplexml_load_string($xml, 'SimpleXMLElement', LIBXML_NONET | LIBXML_NOCDATA);
-        libxml_clear_errors();
-        if (!$document instanceof SimpleXMLElement) {
-            dol_syslog('NavInvoice purchase terms: invalid source XML for mirror '.$mirrorId, LOG_WARNING);
+        dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
+        try {
+            $parsed = (new NavInvoiceParser())->parse($xml);
+        } catch (Throwable $e) {
+            dol_syslog('NavInvoice purchase terms: source parsing failed for mirror '.$mirrorId.': '.$e->getMessage(), LOG_WARNING);
             return 0;
         }
 
-        $paymentMethod = $this->xmlText($document, '//*[local-name()="invoiceDetail"]/*[local-name()="paymentMethod"]');
-        $dueDate = $this->xmlText($document, '//*[local-name()="invoiceDetail"]/*[local-name()="paymentDate"]');
-        $invoiceDate = $this->xmlText($document, '/*[local-name()="InvoiceData"]/*[local-name()="invoiceIssueDate"]');
-        $deliveryDate = $this->xmlText($document, '//*[local-name()="invoiceDetail"]/*[local-name()="invoiceDeliveryDate"]');
-        $accountingDeliveryDate = $this->xmlText($document, '//*[local-name()="invoiceDetail"]/*[local-name()="invoiceAccountingDeliveryDate"]');
+        $detail = is_array($parsed['detail'] ?? null) ? $parsed['detail'] : array();
+        $paymentMethod = trim((string) ($detail['payment_method'] ?? ''));
+        $dueDate = trim((string) ($detail['payment_date'] ?? ''));
+        $invoiceDate = trim((string) ($parsed['invoice_issue_date'] ?? ''));
+        $deliveryDate = trim((string) ($detail['delivery_date'] ?? ''));
+        $accountingDeliveryDate = trim((string) ($detail['accounting_delivery_date'] ?? ''));
 
         $changed = false;
-
         $modeId = $this->paymentModeId($paymentMethod);
         if ($modeId > 0) {
             $result = $object->setPaymentMethods($modeId);
@@ -121,11 +124,7 @@ class InterfaceNavPurchaseTerms extends DolibarrTriggers
 
     private function paymentModeId(string $navMethod): int
     {
-        $map = array(
-            'CASH' => 'LIQ',
-            'TRANSFER' => 'VIR',
-            'CARD' => 'CB',
-        );
+        $map = array('CASH' => 'LIQ', 'TRANSFER' => 'VIR', 'CARD' => 'CB');
         $code = $map[strtoupper(trim($navMethod))] ?? '';
         if ($code === '') {
             return 0;
@@ -142,19 +141,7 @@ class InterfaceNavPurchaseTerms extends DolibarrTriggers
         return $obj ? (int) $obj->id : 0;
     }
 
-    /**
-     * Resolve an exact simple Dolibarr payment term from the NAV due date.
-     *
-     * NAV gives the actual due date, not a payment-term code. We therefore only
-     * infer straight N-day terms when one of the invoice's authoritative base
-     * dates produces an exact number of days. Accounting/delivery date is tried
-     * before invoice issue date; this maps e.g. 2026-09-14 -> 2026-10-14 to the
-     * native 30-day term even when the invoice itself was issued on 2026-09-15.
-     * End-of-month / nth-of-month terms are deliberately not guessed.
-     *
-     * @param string $dueDate
-     * @param string[] $baseDates
-     */
+    /** @param string[] $baseDates */
     private function paymentTermId(string $dueDate, array $baseDates, int $entity): int
     {
         $due = $this->parseDate($dueDate);
@@ -191,7 +178,6 @@ class InterfaceNavPurchaseTerms extends DolibarrTriggers
                 return (int) $obj->rowid;
             }
         }
-
         return 0;
     }
 
@@ -202,18 +188,6 @@ class InterfaceNavPurchaseTerms extends DolibarrTriggers
             return null;
         }
         $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
-        if (!$parsed || $parsed->format('Y-m-d') !== $date) {
-            return null;
-        }
-        return $parsed;
-    }
-
-    private function xmlText(SimpleXMLElement $node, string $xpath): string
-    {
-        $nodes = $node->xpath($xpath);
-        if (!$nodes) {
-            return '';
-        }
-        return trim((string) $nodes[0]);
+        return $parsed && $parsed->format('Y-m-d') === $date ? $parsed : null;
     }
 }
