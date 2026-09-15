@@ -1,11 +1,15 @@
 <?php
 
 require_once __DIR__.'/navapi.class.php';
+require_once __DIR__.'/navinvoiceparser.class.php';
 
 class NavInvoiceSync
 {
     /** @var DoliDB */
     private $db;
+
+    /** @var NavInvoiceParser */
+    private $parser;
 
     public string $error = '';
     public array $errors = array();
@@ -13,6 +17,7 @@ class NavInvoiceSync
     public function __construct($db)
     {
         $this->db = $db;
+        $this->parser = new NavInvoiceParser();
     }
 
     public function runScheduledSync(): int
@@ -44,12 +49,6 @@ class NavInvoiceSync
 
     /**
      * Synchronize NAV invoice digests and optionally the complete XML payloads.
-     *
-     * The optional progress callback receives deterministic synchronization
-     * stages. The number of 35-day chunks is known at start; NAV digest page
-     * counts become known after the first response of each chunk, while the
-     * number of queryInvoiceData calls is discovered as digests are compared to
-     * the local mirror.
      *
      * @param callable|null $progressCallback function(array<string,mixed>): void
      */
@@ -156,6 +155,10 @@ class NavInvoiceSync
         return $stats;
     }
 
+    /**
+     * Backward-compatible schema migration for installations upgraded in place.
+     * New installs use the SQL definitions under sql/.
+     */
     public function ensureSchema(): void
     {
         $table = MAIN_DB_PREFIX.'navinvoice_invoice';
@@ -166,22 +169,46 @@ class NavInvoiceSync
         }
         $hasDirection = (bool) $this->db->fetch_object($resql);
         $this->db->free($resql);
-
         if (!$hasDirection) {
             if (!$this->db->query("ALTER TABLE ".$table." ADD invoice_direction varchar(8) NOT NULL DEFAULT 'OUTBOUND' AFTER entity")) {
                 throw new Exception($this->db->lasterror());
             }
+        }
 
-            $resql = $this->db->query("SHOW INDEX FROM ".$table." WHERE Key_name = 'uk_navinvoice_invoice'");
-            if (!$resql) {
+        // The issuer/supplier is part of invoice identity. Invoice numbers are
+        // not globally unique across suppliers; the old key could collapse two
+        // unrelated inbound invoices with the same number.
+        $resql = $this->db->query("SHOW COLUMNS FROM ".$table." LIKE 'supplier_tax_number'");
+        if (!$resql) {
+            throw new Exception($this->db->lasterror());
+        }
+        $supplierTaxColumn = $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        if (!$supplierTaxColumn) {
+            if (!$this->db->query("ALTER TABLE ".$table." ADD supplier_tax_number varchar(20) NOT NULL DEFAULT '' AFTER invoice_issue_date")) {
                 throw new Exception($this->db->lasterror());
             }
-            $hasOldUnique = (bool) $this->db->fetch_object($resql);
-            $this->db->free($resql);
-            if ($hasOldUnique && !$this->db->query("ALTER TABLE ".$table." DROP INDEX uk_navinvoice_invoice")) {
+        } else {
+            if (!$this->db->query("UPDATE ".$table." SET supplier_tax_number = '' WHERE supplier_tax_number IS NULL")) {
                 throw new Exception($this->db->lasterror());
             }
-            if (!$this->db->query("ALTER TABLE ".$table." ADD UNIQUE INDEX uk_navinvoice_invoice (entity, invoice_direction, invoice_number, batch_index)")) {
+            if (strtoupper((string) ($supplierTaxColumn->Null ?? 'YES')) !== 'NO') {
+                if (!$this->db->query("ALTER TABLE ".$table." MODIFY supplier_tax_number varchar(20) NOT NULL DEFAULT ''")) {
+                    throw new Exception($this->db->lasterror());
+                }
+            }
+        }
+
+        $expectedUnique = array('entity', 'invoice_direction', 'supplier_tax_number', 'invoice_number', 'batch_index');
+        $existingUnique = $this->indexColumns($table, 'uk_navinvoice_invoice');
+        if ($existingUnique !== $expectedUnique) {
+            if ($existingUnique && !$this->db->query("ALTER TABLE ".$table." DROP INDEX uk_navinvoice_invoice")) {
+                throw new Exception($this->db->lasterror());
+            }
+            if (!$this->db->query(
+                "ALTER TABLE ".$table." ADD UNIQUE INDEX uk_navinvoice_invoice "
+                ."(entity, invoice_direction, supplier_tax_number, invoice_number, batch_index)"
+            )) {
                 throw new Exception($this->db->lasterror());
             }
         }
@@ -201,17 +228,30 @@ class NavInvoiceSync
             }
         }
 
-        $resql = $this->db->query("SHOW INDEX FROM ".$table." WHERE Key_name = 'idx_navinvoice_supplier_tax'");
-        if (!$resql) {
-            throw new Exception($this->db->lasterror());
-        }
-        $hasSupplierTaxIndex = (bool) $this->db->fetch_object($resql);
-        $this->db->free($resql);
-        if (!$hasSupplierTaxIndex) {
+        if (!$this->indexColumns($table, 'idx_navinvoice_supplier_tax')) {
             if (!$this->db->query("ALTER TABLE ".$table." ADD INDEX idx_navinvoice_supplier_tax (entity, supplier_tax_number)")) {
                 throw new Exception($this->db->lasterror());
             }
         }
+    }
+
+    /** @return string[] */
+    private function indexColumns(string $table, string $indexName): array
+    {
+        $resql = $this->db->query("SHOW INDEX FROM ".$table." WHERE Key_name = '".$this->db->escape($indexName)."'");
+        if (!$resql) {
+            throw new Exception($this->db->lasterror());
+        }
+        $columns = array();
+        while ($obj = $this->db->fetch_object($resql)) {
+            $columns[(int) $obj->Seq_in_index] = (string) $obj->Column_name;
+        }
+        $this->db->free($resql);
+        if (!$columns) {
+            return array();
+        }
+        ksort($columns);
+        return array_values($columns);
     }
 
     private function syncChunk(
@@ -415,12 +455,15 @@ class NavInvoiceSync
     {
         global $conf;
         $entity = (int) $conf->entity;
+        $supplierTaxNumber = trim((string) ($data['supplier_tax_number'] ?? ''));
 
         $sql = 'SELECT rowid, digest_hash, data_fetched, invoice_net_amount, invoice_vat_amount FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
         $sql .= ' WHERE entity = '.$entity;
         $sql .= " AND invoice_direction = '".$this->db->escape($data['invoice_direction'])."'";
+        $sql .= " AND supplier_tax_number = '".$this->db->escape($supplierTaxNumber)."'";
         $sql .= " AND invoice_number = '".$this->db->escape($data['invoice_number'])."'";
         $sql .= ' AND batch_index = '.((int) $data['batch_index']);
+        $sql .= ' LIMIT 1';
         $resql = $this->db->query($sql);
         if (!$resql) {
             throw new Exception($this->db->lasterror());
@@ -437,8 +480,10 @@ class NavInvoiceSync
 
         if ($inserted) {
             $sql = 'INSERT INTO '.MAIN_DB_PREFIX.'navinvoice_invoice ('
-                .'entity, invoice_direction, invoice_number, batch_index, datec, last_sync) VALUES ('
-                .$entity.", '".$this->db->escape($data['invoice_direction'])."', '".$this->db->escape($data['invoice_number'])."', ".((int) $data['batch_index']).", '".$this->db->idate(dol_now())."', '".$this->db->idate(dol_now())."')";
+                .'entity, invoice_direction, supplier_tax_number, invoice_number, batch_index, datec, last_sync) VALUES ('
+                .$entity.", '".$this->db->escape($data['invoice_direction'])."', '".$this->db->escape($supplierTaxNumber)."', '"
+                .$this->db->escape($data['invoice_number'])."', ".((int) $data['batch_index']).", '"
+                .$this->db->idate(dol_now())."', '".$this->db->idate(dol_now())."')";
             if (!$this->db->query($sql)) {
                 throw new Exception($this->db->lasterror());
             }
@@ -449,16 +494,17 @@ class NavInvoiceSync
 
         $set = array();
         foreach (array(
-            'invoice_operation', 'invoice_category', 'supplier_tax_number', 'supplier_name', 'customer_tax_number', 'customer_name',
+            'invoice_operation', 'invoice_category', 'supplier_name', 'customer_tax_number', 'customer_name',
             'payment_method', 'invoice_appearance', 'source', 'currency', 'transaction_id', 'original_invoice_number', 'raw_digest', 'digest_hash'
         ) as $key) {
             $set[] = $key." = '".$this->db->escape((string) $data[$key])."'";
         }
+        // Supplier tax is identity. Keep it explicit as well as in the lookup key.
+        $set[] = "supplier_tax_number = '".$this->db->escape($supplierTaxNumber)."'";
         foreach (array('invoice_issue_date', 'payment_date', 'invoice_delivery_date', 'ins_date') as $key) {
             $set[] = $key.' = '.($data[$key] !== '' && $data[$key] !== null ? "'".$this->db->escape((string) $data[$key])."'" : 'NULL');
         }
         foreach (array('invoice_net_amount', 'invoice_net_amount_huf', 'invoice_vat_amount', 'invoice_vat_amount_huf') as $key) {
-            // Missing digest values must not erase amounts previously recovered from the full invoice XML.
             if ($data[$key] !== '') {
                 $set[] = $key." = '".$this->db->escape((string) $data[$key])."'";
             }
@@ -533,12 +579,10 @@ class NavInvoiceSync
     }
 
     /**
-     * Recover invoice totals from the full NAV XML when queryInvoiceDigest omitted them.
-     * Normal invoices carry explicit net/VAT totals. Simplified invoices carry gross
-     * totals grouped by VAT content, so a display total can be derived from those groups.
-     * The digest remains authoritative: these values are only used with SQL COALESCE.
+     * Recover mirror totals from the canonical parser when queryInvoiceDigest
+     * omitted them. No second XML interpretation lives in the sync layer.
      *
-     * @return array<string, string|null>
+     * @return array<string,string|null>
      */
     private function extractInvoiceAmounts(string $xml): array
     {
@@ -548,103 +592,25 @@ class NavInvoiceSync
             'invoice_vat_amount' => null,
             'invoice_vat_amount_huf' => null,
         );
-
-        libxml_use_internal_errors(true);
-        $document = simplexml_load_string($xml);
-        libxml_clear_errors();
-        if (!$document instanceof SimpleXMLElement) {
+        try {
+            $parsed = $this->parser->parse($xml);
+        } catch (Throwable $e) {
+            dol_syslog(__METHOD__.': cannot parse stored NAV XML: '.$e->getMessage(), LOG_WARNING);
             return $result;
         }
-
-        $paths = array(
-            'invoice_net_amount' => '//*[local-name()="invoiceSummary"]/*[local-name()="summaryNormal"]/*[local-name()="invoiceNetAmount"]',
-            'invoice_net_amount_huf' => '//*[local-name()="invoiceSummary"]/*[local-name()="summaryNormal"]/*[local-name()="invoiceNetAmountHUF"]',
-            'invoice_vat_amount' => '//*[local-name()="invoiceSummary"]/*[local-name()="summaryNormal"]/*[local-name()="invoiceVatAmount"]',
-            'invoice_vat_amount_huf' => '//*[local-name()="invoiceSummary"]/*[local-name()="summaryNormal"]/*[local-name()="invoiceVatAmountHUF"]',
-        );
-        foreach ($paths as $key => $path) {
-            $nodes = $document->xpath($path);
-            if ($nodes && trim((string) $nodes[0]) !== '') {
-                $result[$key] = trim((string) $nodes[0]);
+        $totals = is_array($parsed['totals'] ?? null) ? $parsed['totals'] : array();
+        foreach (array(
+            'invoice_net_amount' => 'net',
+            'invoice_net_amount_huf' => 'net_huf',
+            'invoice_vat_amount' => 'vat',
+            'invoice_vat_amount_huf' => 'vat_huf',
+        ) as $column => $key) {
+            $value = $totals[$key] ?? null;
+            if ($value !== null && $value !== '' && is_numeric($value)) {
+                $result[$column] = (string) $value;
             }
         }
-
-        if ($result['invoice_net_amount'] !== null || $result['invoice_vat_amount'] !== null) {
-            return $result;
-        }
-
-        // Simplified invoices contain gross amounts by VAT content instead of explicit
-        // net/VAT invoice totals. Derive totals only from well-defined VAT-content or
-        // zero-VAT groups. This is a mirror/display fallback, not a replacement for the XML.
-        $summaries = $document->xpath('//*[local-name()="invoiceSummary"]/*[local-name()="summarySimplified"]');
-        if (!$summaries) {
-            return $result;
-        }
-
-        $grossTotal = 0.0;
-        $vatTotal = 0.0;
-        $grossHufTotal = 0.0;
-        $vatHufTotal = 0.0;
-        $hasGross = false;
-        $hasGrossHuf = false;
-        $canDerive = true;
-
-        foreach ($summaries as $summary) {
-            $grossNodes = $summary->xpath('./*[local-name()="vatContentGrossAmount"]');
-            if (!$grossNodes || trim((string) $grossNodes[0]) === '') {
-                $canDerive = false;
-                break;
-            }
-            $gross = (float) $grossNodes[0];
-            $grossTotal += $gross;
-            $hasGross = true;
-
-            $grossHufNodes = $summary->xpath('./*[local-name()="vatContentGrossAmountHUF"]');
-            $grossHuf = null;
-            if ($grossHufNodes && trim((string) $grossHufNodes[0]) !== '') {
-                $grossHuf = (float) $grossHufNodes[0];
-                $grossHufTotal += $grossHuf;
-                $hasGrossHuf = true;
-            }
-
-            $contentNodes = $summary->xpath('./*[local-name()="vatRate"]/*[local-name()="vatContent"]');
-            if ($contentNodes && trim((string) $contentNodes[0]) !== '') {
-                $content = (float) $contentNodes[0];
-                $vatTotal += $gross * $content;
-                if ($grossHuf !== null) {
-                    $vatHufTotal += $grossHuf * $content;
-                }
-                continue;
-            }
-
-            $zeroVatNodes = $summary->xpath(
-                './*[local-name()="vatRate"]/*[local-name()="vatExemption" or local-name()="vatOutOfScope" or local-name()="vatDomesticReverseCharge"]'
-            );
-            if (!$zeroVatNodes) {
-                $canDerive = false;
-                break;
-            }
-        }
-
-        if (!$canDerive || !$hasGross) {
-            return $result;
-        }
-
-        $result['invoice_vat_amount'] = $this->decimalFromFloat($vatTotal);
-        $result['invoice_net_amount'] = $this->decimalFromFloat($grossTotal - $vatTotal);
-        if ($hasGrossHuf) {
-            $result['invoice_vat_amount_huf'] = $this->decimalFromFloat($vatHufTotal);
-            $result['invoice_net_amount_huf'] = $this->decimalFromFloat($grossHufTotal - $vatHufTotal);
-        }
-
         return $result;
-    }
-
-    private function decimalFromFloat(float $value): string
-    {
-        $formatted = number_format(round($value, 8), 8, '.', '');
-        $formatted = rtrim(rtrim($formatted, '0'), '.');
-        return $formatted === '-0' || $formatted === '' ? '0' : $formatted;
     }
 
     /** @param callable|null $callback */
@@ -656,7 +622,6 @@ class NavInvoiceSync
         try {
             $callback($state);
         } catch (Throwable $e) {
-            // Progress reporting is advisory and must never abort the NAV mirror.
             dol_syslog(__METHOD__.': progress callback failed: '.$e->getMessage(), LOG_WARNING);
         }
     }
