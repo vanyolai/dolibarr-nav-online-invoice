@@ -2,16 +2,18 @@
 
 /**
  * Parse NAV Online Invoice XML into a stable, read-only structure that can
- * later be reused for Dolibarr invoice imports.
+ * later be reused by every downstream workflow.
+ *
+ * The parser is the single source of truth for NAV XML semantics. Consumers
+ * must not reparse the raw XML to recover discounts, aggregate-line data or
+ * other business fields that belong in this normalized model.
  *
  * Current NAV 3.0 InvoiceData payloads and legacy NAV 1.x Invoice/
  * invoiceExchange payloads are both normalized to the same internal model.
  */
 class NavInvoiceParser
 {
-    /**
-     * @return array<string, mixed>
-     */
+    /** @return array<string,mixed> */
     public function parse(string $xml): array
     {
         libxml_use_internal_errors(true);
@@ -41,8 +43,7 @@ class NavInvoiceParser
         } else {
             // NAV OSA 1.x queryInvoiceData returned the historical Invoice payload
             // directly. Its business content lives under invoiceExchange rather
-            // than InvoiceData/invoiceMain/invoice, but it can be normalized to
-            // the same internal representation used by the 3.0 parser.
+            // than InvoiceData/invoiceMain/invoice.
             $legacyExchange = $this->node($document, './*[local-name()="invoiceExchange"]');
             if ($legacyExchange === null) {
                 throw new Exception('Stored NAV XML does not contain an invoice payload.');
@@ -75,7 +76,7 @@ class NavInvoiceParser
         }
 
         // Legacy HUF invoices often omitted the duplicated *HUF amount fields.
-        // The source currency and exchange rate make those values deterministic.
+        // Currency=HUF makes the missing duplicate values deterministic.
         if (strtoupper($currency) === 'HUF') {
             foreach (array('net', 'vat', 'gross') as $key) {
                 if ($totals[$key.'_huf'] === null && $totals[$key] !== null) {
@@ -105,6 +106,7 @@ class NavInvoiceParser
             'detail' => array(
                 'category' => $detail ? $this->text($detail, './*[local-name()="invoiceCategory"]') : '',
                 'delivery_date' => $detail ? $this->text($detail, './*[local-name()="invoiceDeliveryDate"]') : '',
+                'accounting_delivery_date' => $detail ? $this->text($detail, './*[local-name()="invoiceAccountingDeliveryDate"]') : '',
                 'delivery_period_start' => $detail ? $this->text($detail, './*[local-name()="invoiceDeliveryPeriodStart"]') : '',
                 'delivery_period_end' => $detail ? $this->text($detail, './*[local-name()="invoiceDeliveryPeriodEnd"]') : '',
                 'payment_date' => $detail ? $this->text($detail, './*[local-name()="paymentDate"]') : '',
@@ -126,9 +128,7 @@ class NavInvoiceParser
         );
     }
 
-    /**
-     * @return array<string, mixed>
-     */
+    /** @return array<string,mixed> */
     private function parseSupplier(?SimpleXMLElement $node): array
     {
         if ($node === null) {
@@ -141,26 +141,22 @@ class NavInvoiceParser
             'vat_code' => $this->text($node, './*[local-name()="supplierTaxNumber"]/*[local-name()="vatCode"]'),
             'county_code' => $this->text($node, './*[local-name()="supplierTaxNumber"]/*[local-name()="countyCode"]'),
             'group_member_tax_number' => $this->text($node, './*[local-name()="groupMemberTaxNumber"]/*[local-name()="taxpayerId"]'),
-            'community_vat_number' => '',
-            'third_state_tax_id' => '',
+            'community_vat_number' => $this->text($node, './*[local-name()="communityVatNumber"]'),
+            'third_state_tax_id' => $this->text($node, './*[local-name()="thirdStateTaxId"]'),
             'bank_account' => $this->text($node, './*[local-name()="supplierBankAccountNumber"]'),
             'address' => $this->parseAddress($this->node($node, './*[local-name()="supplierAddress"]')),
         );
     }
 
-    /**
-     * @return array<string, mixed>
-     */
+    /** @return array<string,mixed> */
     private function parseCustomer(?SimpleXMLElement $node): array
     {
         if ($node === null) {
             return $this->emptyParty();
         }
 
-        // Do not rely on SimpleXMLElement boolean conversion here. In NAV 3.0
-        // the customerTaxNumber element contains ns2-namespaced children, and a
-        // structural SimpleXMLElement can evaluate to false even though the node
-        // exists. Read the scalar values directly through namespace-agnostic XPath.
+        // Structural SimpleXMLElement objects containing namespaced children may
+        // evaluate to false. Always read scalar values directly by local-name().
         $taxNumber = $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]/*[local-name()="taxpayerId"]');
         $vatCode = $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]/*[local-name()="vatCode"]');
         $countyCode = $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]/*[local-name()="countyCode"]');
@@ -194,9 +190,7 @@ class NavInvoiceParser
         );
     }
 
-    /**
-     * @return array<string, mixed>
-     */
+    /** @return array<string,mixed> */
     private function emptyParty(): array
     {
         return array(
@@ -213,9 +207,7 @@ class NavInvoiceParser
         );
     }
 
-    /**
-     * @return array<string, string>
-     */
+    /** @return array<string,string> */
     private function parseAddress(?SimpleXMLElement $address): array
     {
         if ($address === null) {
@@ -263,13 +255,10 @@ class NavInvoiceParser
             }
         }
         $result['formatted'] = implode(', ', $parts);
-
         return $result;
     }
 
-    /**
-     * @return array<string, string>
-     */
+    /** @return array<string,string> */
     private function emptyAddress(): array
     {
         return array(
@@ -290,9 +279,7 @@ class NavInvoiceParser
         );
     }
 
-    /**
-     * @return array<string, mixed>
-     */
+    /** @return array<string,mixed> */
     private function parseTotals(SimpleXMLElement $invoice): array
     {
         $result = array(
@@ -330,9 +317,6 @@ class NavInvoiceParser
         }
 
         if ($normal) {
-            // summaryGrossData is optional in NAV InvoiceData. For a normal
-            // invoice, net and VAT from summaryNormal are authoritative and
-            // make the gross amount deterministic when it is omitted.
             if ($result['gross'] === null && $result['net'] !== null && $result['vat'] !== null) {
                 $result['gross'] = $this->decimal((float) $result['net'] + (float) $result['vat']);
                 $result['gross_derived'] = true;
@@ -341,10 +325,6 @@ class NavInvoiceParser
                 $result['gross_huf'] = $this->decimal((float) $result['net_huf'] + (float) $result['vat_huf']);
                 $result['gross_huf_derived'] = true;
             }
-            return $result;
-        }
-
-        if ($result['gross'] === null) {
             return $result;
         }
 
@@ -403,13 +383,10 @@ class NavInvoiceParser
                 $result['net_huf'] = $this->decimal($grossHuf - $vatHuf);
             }
         }
-
         return $result;
     }
 
-    /**
-     * @return array<string, mixed>
-     */
+    /** @return array<string,mixed> */
     private function parseLine(SimpleXMLElement $line): array
     {
         $normal = $this->node($line, './*[local-name()="lineAmountsNormal"]');
@@ -436,31 +413,21 @@ class NavInvoiceParser
             $amounts['gross'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountData"]/*[local-name()="lineGrossAmountNormal"]');
             $amounts['gross_huf'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountData"]/*[local-name()="lineGrossAmountNormalHUF"]');
 
-            // NAV 1.x kept these amounts directly under lineAmountsNormal.
-            if ($amounts['net'] === null) {
-                $amounts['net'] = $this->nullableText($normal, './*[local-name()="lineNetAmount"]');
-            }
-            if ($amounts['net_huf'] === null) {
-                $amounts['net_huf'] = $this->nullableText($normal, './*[local-name()="lineNetAmountHUF"]');
-            }
-            if ($amounts['vat'] === null) {
-                $amounts['vat'] = $this->nullableText($normal, './*[local-name()="lineVatAmount"]');
-            }
-            if ($amounts['vat_huf'] === null) {
-                $amounts['vat_huf'] = $this->nullableText($normal, './*[local-name()="lineVatAmountHUF"]');
-            }
-            if ($amounts['gross'] === null) {
-                $amounts['gross'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountNormal"]');
-            }
-            if ($amounts['gross_huf'] === null) {
-                $amounts['gross_huf'] = $this->nullableText($normal, './*[local-name()="lineGrossAmountNormalHUF"]');
+            // NAV 1.x kept these values directly under lineAmountsNormal.
+            foreach (array(
+                'net' => 'lineNetAmount',
+                'net_huf' => 'lineNetAmountHUF',
+                'vat' => 'lineVatAmount',
+                'vat_huf' => 'lineVatAmountHUF',
+                'gross' => 'lineGrossAmountNormal',
+                'gross_huf' => 'lineGrossAmountNormalHUF',
+            ) as $key => $legacyElement) {
+                if ($amounts[$key] === null) {
+                    $amounts[$key] = $this->nullableText($normal, './*[local-name()="'.$legacyElement.'"]');
+                }
             }
 
             $vat = $this->parseVatRate($this->node($normal, './*[local-name()="lineVatRate"]'), false);
-
-            // NAV may omit lineVatData and lineGrossAmountData even though line
-            // net and VAT rate are present. Keep the source net authoritative,
-            // and derive only the mathematically deterministic missing values.
             if ($amounts['net'] !== null) {
                 if ($amounts['vat'] === null && $vat['kind'] === 'percentage') {
                     $amounts['vat'] = $this->decimal((float) $amounts['net'] * (float) $vat['value']);
@@ -490,8 +457,7 @@ class NavInvoiceParser
         } elseif ($simplified) {
             $amounts['gross'] = $this->nullableText($simplified, './*[local-name()="lineGrossAmountSimplified"]');
             $amounts['gross_huf'] = $this->nullableText($simplified, './*[local-name()="lineGrossAmountSimplifiedHUF"]');
-            $vatNode = $this->node($simplified, './*[local-name()="lineVatRate"]');
-            $vat = $this->parseVatRate($vatNode, true);
+            $vat = $this->parseVatRate($this->node($simplified, './*[local-name()="lineVatRate"]'), true);
             if ($amounts['gross'] !== null) {
                 if ($vat['kind'] === 'content') {
                     $vatAmount = (float) $amounts['gross'] * (float) $vat['value'];
@@ -538,21 +504,50 @@ class NavInvoiceParser
             }
         }
 
+        $additionalData = array();
+        $additionalNodes = $line->xpath('./*[local-name()="additionalLineData"]');
+        foreach ($additionalNodes ?: array() as $additionalNode) {
+            $additionalData[] = array(
+                'name' => $this->text($additionalNode, './*[local-name()="dataName"]'),
+                'description' => $this->text($additionalNode, './*[local-name()="dataDescription"]'),
+                'value' => $this->text($additionalNode, './*[local-name()="dataValue"]'),
+            );
+        }
+
+        $advance = $this->boolText($line, './*[local-name()="advanceData"]/*[local-name()="advanceIndicator"]');
+        if ($advance === null) {
+            // NAV 1.x compatibility.
+            $advance = $this->boolText($line, './*[local-name()="advanceIndicator"]');
+        }
+
+        $discountNode = $this->node($line, './*[local-name()="lineDiscountData"]');
+        $aggregateNode = $this->node($line, './*[local-name()="aggregateInvoiceLineData"]');
+
         return array(
             'number' => $this->text($line, './*[local-name()="lineNumber"]'),
             'description' => $this->text($line, './*[local-name()="lineDescription"]'),
             'nature' => $this->text($line, './*[local-name()="lineNatureIndicator"]'),
             'expression' => $this->boolText($line, './*[local-name()="lineExpressionIndicator"]'),
-            'advance' => $this->boolText($line, './*[local-name()="advanceIndicator"]'),
+            'advance' => $advance,
             'quantity' => $this->nullableText($line, './*[local-name()="quantity"]'),
             'unit' => $this->text($line, './*[local-name()="unitOfMeasure"]'),
             'unit_own' => $this->text($line, './*[local-name()="unitOfMeasureOwn"]'),
             'unit_price' => $this->nullableText($line, './*[local-name()="unitPrice"]'),
             'unit_price_huf' => $this->nullableText($line, './*[local-name()="unitPriceHUF"]'),
+            'discount' => array(
+                'description' => $discountNode ? $this->text($discountNode, './*[local-name()="discountDescription"]') : '',
+                'value' => $discountNode ? $this->nullableText($discountNode, './*[local-name()="discountValue"]') : null,
+                'rate' => $discountNode ? $this->nullableText($discountNode, './*[local-name()="discountRate"]') : null,
+            ),
+            'aggregate' => array(
+                'delivery_date' => $aggregateNode ? $this->text($aggregateNode, './*[local-name()="lineDeliveryDate"]') : '',
+                'exchange_rate' => $aggregateNode ? $this->nullableText($aggregateNode, './*[local-name()="lineExchangeRate"]') : null,
+            ),
             'vat' => $vat,
             'amounts' => $amounts,
             'product_codes' => $codes,
             'item_numbers' => $itemNumbers,
+            'additional_data' => $additionalData,
             'modification' => array(
                 'reference' => $this->text($line, './*[local-name()="lineModificationReference"]/*[local-name()="lineNumberReference"]'),
                 'operation' => $this->text($line, './*[local-name()="lineModificationReference"]/*[local-name()="lineOperation"]'),
@@ -560,9 +555,7 @@ class NavInvoiceParser
         );
     }
 
-    /**
-     * @return array{kind:string,value:string,label:string}
-     */
+    /** @return array{kind:string,value:string,label:string} */
     private function parseVatRate(?SimpleXMLElement $vatRate, bool $simplified): array
     {
         if (!$vatRate) {
@@ -571,11 +564,7 @@ class NavInvoiceParser
 
         $percentage = $this->nullableText($vatRate, './*[local-name()="vatPercentage"]');
         if ($percentage !== null) {
-            return array(
-                'kind' => 'percentage',
-                'value' => $percentage,
-                'label' => $this->percent((float) $percentage),
-            );
+            return array('kind' => 'percentage', 'value' => $percentage, 'label' => $this->percent((float) $percentage));
         }
 
         $content = $this->nullableText($vatRate, './*[local-name()="vatContent"]');
@@ -601,8 +590,7 @@ class NavInvoiceParser
             }
         }
 
-        $noVatCharge = $this->text($vatRate, './*[local-name()="noVatCharge"]');
-        if (strtolower($noVatCharge) === 'true') {
+        if (strtolower($this->text($vatRate, './*[local-name()="noVatCharge"]')) === 'true') {
             return array('kind' => 'zero', 'value' => '0', 'label' => 'NO_VAT_CHARGE');
         }
 
@@ -643,8 +631,7 @@ class NavInvoiceParser
 
     private function text(SimpleXMLElement $node, string $xpath): string
     {
-        $value = $this->nullableText($node, $xpath);
-        return $value ?? '';
+        return $this->nullableText($node, $xpath) ?? '';
     }
 
     private function nullableText(SimpleXMLElement $node, string $xpath): ?string
