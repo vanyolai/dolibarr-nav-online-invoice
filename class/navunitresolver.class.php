@@ -58,26 +58,29 @@ class NavUnitResolver
             return $result;
         }
 
-        // NAV standard unit enum -> stable Dolibarr dictionary code.
-        // LINEAR_METER is dimensionally the same core Dolibarr unit as METER.
+        // NAV standard unit enum -> stable Dolibarr dictionary code and type.
+        // Constraining by unit_type avoids rejecting a canonical dictionary
+        // entry merely because an installation contains a custom unit reusing
+        // the same code in another dimension. LINEAR_METER is dimensionally
+        // the same core Dolibarr unit as METER.
         $codeMap = array(
-            'PIECE' => 'P',
-            'KILOGRAM' => 'KG',
-            'TON' => 'T',
-            'KWH' => 'KWH',
-            'DAY' => 'D',
-            'HOUR' => 'H',
-            'MINUTE' => 'MI',
-            'MONTH' => 'MO',
-            'LITER' => 'L',
-            'KILOMETER' => 'KM',
-            'CUBIC_METER' => 'M3',
-            'METER' => 'M',
-            'LINEAR_METER' => 'M',
+            'PIECE' => array('P', 'qty'),
+            'KILOGRAM' => array('KG', 'weight'),
+            'TON' => array('T', 'weight'),
+            'KWH' => array('KWH', ''),
+            'DAY' => array('D', 'time'),
+            'HOUR' => array('H', 'time'),
+            'MINUTE' => array('MI', 'time'),
+            'MONTH' => array('MO', 'time'),
+            'LITER' => array('L', 'volume'),
+            'KILOMETER' => array('KM', 'distance'),
+            'CUBIC_METER' => array('M3', 'volume'),
+            'METER' => array('M', 'size'),
+            'LINEAR_METER' => array('M', 'size'),
         );
 
         if ($navUnit !== 'OWN' && isset($codeMap[$navUnit])) {
-            $match = $this->findUniqueByCode($codeMap[$navUnit]);
+            $match = $this->findUniqueByCode($codeMap[$navUnit][0], $codeMap[$navUnit][1]);
             if ($match !== null) {
                 return $this->resolvedResult($result, $match, 'code');
             }
@@ -163,11 +166,14 @@ class NavUnitResolver
     }
 
     /** @return array<string,mixed>|null */
-    private function findUniqueByCode(string $code): ?array
+    private function findUniqueByCode(string $code, string $unitType = ''): ?array
     {
         $matches = array();
         foreach ($this->loadUnits() as $unit) {
-            if (strcasecmp((string) $unit['code'], $code) === 0) {
+            if ($unitType !== '' && strcasecmp(trim((string) $unit['unit_type']), trim($unitType)) !== 0) {
+                continue;
+            }
+            if (strcasecmp(trim((string) $unit['code']), trim($code)) === 0) {
                 $matches[] = $unit;
             }
         }
@@ -179,7 +185,7 @@ class NavUnitResolver
     {
         $matches = array();
         foreach ($this->loadUnits() as $unit) {
-            if ($unitType !== '' && strcasecmp((string) $unit['unit_type'], $unitType) !== 0) {
+            if ($unitType !== '' && strcasecmp(trim((string) $unit['unit_type']), trim($unitType)) !== 0) {
                 continue;
             }
             if ($this->normalize((string) $unit['short_label']) === $this->normalize($symbol)) {
