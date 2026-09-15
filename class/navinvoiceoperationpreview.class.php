@@ -57,8 +57,10 @@ class NavInvoiceOperationPreview
      */
     public function build(array $parsed, $record, ?array $partnerMatch): array
     {
+        $sourceXml = (string) ($record->invoice_data ?? '');
         $preview = $this->basePreview->build($parsed, $record, $partnerMatch);
-        $preview = $this->aggregateSupport->enrich($preview, (string) ($record->invoice_data ?? ''));
+        $preview = $this->aggregateSupport->enrich($preview, $sourceXml);
+        $preview = $this->applyNavLineDiscounts($preview, $sourceXml);
         $preview = $this->applyProductMatches($preview);
 
         $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
@@ -121,6 +123,130 @@ class NavInvoiceOperationPreview
         $preview['warnings'] = array_values(array_unique($warnings));
         $preview['state'] = $preview['blockers'] ? 'blocked' : ($preview['warnings'] ? 'review' : 'ready');
         return $preview;
+    }
+
+    /**
+     * Replace an effective preview unit price with the original NAV unitPrice
+     * when lineDiscountData deterministically explains the authoritative line
+     * net amount. This makes the preview match the native Dolibarr
+     * unit-price + remise_percent representation restored by the import trigger.
+     *
+     * @param array<string,mixed> $preview
+     * @return array<string,mixed>
+     */
+    private function applyNavLineDiscounts(array $preview, string $xml): array
+    {
+        if ($xml === '' || empty($preview['lines']) || !is_array($preview['lines'])) {
+            return $preview;
+        }
+
+        libxml_use_internal_errors(true);
+        $document = simplexml_load_string($xml, 'SimpleXMLElement', LIBXML_NONET | LIBXML_NOCDATA);
+        libxml_clear_errors();
+        if (!$document instanceof SimpleXMLElement) {
+            return $preview;
+        }
+
+        $navLines = $document->xpath('//*[local-name()="invoiceLines"]/*[local-name()="line"]');
+        if (!$navLines || count($navLines) !== count($preview['lines'])) {
+            return $preview;
+        }
+
+        foreach ($navLines as $index => $navLine) {
+            if (!isset($preview['lines'][$index]) || !is_array($preview['lines'][$index])) {
+                continue;
+            }
+
+            $preview['lines'][$index]['discount_percent'] = 0.0;
+            $preview['lines'][$index]['discount_value'] = null;
+            $preview['lines'][$index]['discount_rate'] = null;
+            $preview['lines'][$index]['discount_description'] = '';
+            $preview['lines'][$index]['discount_native'] = false;
+
+            $quantityText = $this->xmlText($navLine, './*[local-name()="quantity"]');
+            $unitPriceText = $this->xmlText($navLine, './*[local-name()="unitPrice"]');
+            $netText = $this->xmlText($navLine, './*[local-name()="lineAmountsNormal"]/*[local-name()="lineNetAmountData"]/*[local-name()="lineNetAmount"]');
+            if ($quantityText === '' || $unitPriceText === '' || $netText === ''
+                || !is_numeric($quantityText) || !is_numeric($unitPriceText) || !is_numeric($netText)) {
+                continue;
+            }
+
+            $quantity = (float) $quantityText;
+            $unitPrice = (float) $unitPriceText;
+            $net = (float) $netText;
+            if (abs($quantity) <= 0.000000001) {
+                continue;
+            }
+
+            $extended = $quantity * $unitPrice;
+            if ($this->amountsClose($extended, $net)) {
+                continue;
+            }
+
+            $discountPercent = $this->validatedDiscountPercent($navLine, $extended, $net);
+            if ($discountPercent === null) {
+                continue;
+            }
+
+            $valueText = $this->xmlText($navLine, './*[local-name()="lineDiscountData"]/*[local-name()="discountValue"]');
+            $rateText = $this->xmlText($navLine, './*[local-name()="lineDiscountData"]/*[local-name()="discountRate"]');
+            $description = $this->xmlText($navLine, './*[local-name()="lineDiscountData"]/*[local-name()="discountDescription"]');
+
+            $preview['lines'][$index]['unit_price_ht'] = $unitPrice;
+            $preview['lines'][$index]['unit_price_adjusted'] = false;
+            $preview['lines'][$index]['discount_percent'] = $discountPercent;
+            $preview['lines'][$index]['discount_value'] = $valueText !== '' && is_numeric($valueText) ? (float) $valueText : null;
+            $preview['lines'][$index]['discount_rate'] = $rateText !== '' && is_numeric($rateText) ? (float) $rateText : null;
+            $preview['lines'][$index]['discount_description'] = $description;
+            $preview['lines'][$index]['discount_native'] = true;
+        }
+
+        return $preview;
+    }
+
+    /** @return float|null */
+    private function validatedDiscountPercent(SimpleXMLElement $navLine, float $extended, float $net): ?float
+    {
+        if (abs($extended) <= 0.000000001) {
+            return null;
+        }
+
+        $rateText = $this->xmlText($navLine, './*[local-name()="lineDiscountData"]/*[local-name()="discountRate"]');
+        if ($rateText !== '' && is_numeric($rateText)) {
+            $rate = abs((float) $rateText);
+            if ($rate <= 1.0) {
+                $percent = $rate * 100.0;
+                if ($percent <= 100.0 && $this->amountsClose($extended * (1.0 - $rate), $net)) {
+                    return $percent;
+                }
+            }
+        }
+
+        $valueText = $this->xmlText($navLine, './*[local-name()="lineDiscountData"]/*[local-name()="discountValue"]');
+        if ($valueText !== '' && is_numeric($valueText)) {
+            $discountValue = abs((float) $valueText);
+            $percent = 100.0 * $discountValue / abs($extended);
+            if ($percent >= 0.0 && $percent <= 100.0
+                && $this->amountsClose($extended * (1.0 - ($percent / 100.0)), $net)) {
+                return $percent;
+            }
+        }
+
+        return null;
+    }
+
+    private function amountsClose(float $left, float $right): bool
+    {
+        return abs($left - $right) <= 0.01;
+    }
+
+    private function xmlText(SimpleXMLElement $node, string $xpath): string
+    {
+        $nodes = $node->xpath($xpath);
+        if (!$nodes) {
+            return '';
+        }
+        return trim((string) $nodes[0]);
     }
 
     /**
