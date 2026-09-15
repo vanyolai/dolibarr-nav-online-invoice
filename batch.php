@@ -597,8 +597,6 @@ if ($snapshotValid && $displayRows) {
     print $renderPager();
 } elseif ($snapshotValid && $filteredTotal === 0) {
     print '<div class="opacitymedium">'.$langs->trans('BatchNoStateMatchesGlobal').'</div>';
-} elseif (!$snapshotValid && $loadError === '') {
-    print '<div class="opacitymedium">'.$langs->trans('BatchNoSnapshot').'</div>';
 }
 
 llxFooter();
