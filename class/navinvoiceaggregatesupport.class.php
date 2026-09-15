@@ -1,56 +1,37 @@
 <?php
 
 /**
- * Enrich an import preview with the NAV data that is specific to AGGREGATE
- * invoices. The generic parser intentionally stays version-neutral; this helper
- * reads only the aggregate fields we need for a deterministic Dolibarr import.
+ * Validate and expose the already-parsed NAV semantics specific to AGGREGATE
+ * invoices. Raw XML parsing belongs exclusively to NavInvoiceParser.
  */
 class NavInvoiceAggregateSupport
 {
     /**
      * @param array<string,mixed> $preview
+     * @param array<string,mixed> $parsed
      * @return array<string,mixed>
      */
-    public function enrich(array $preview, string $xml): array
+    public function enrich(array $preview, array $parsed): array
     {
         if (strtoupper(trim((string) ($preview['category'] ?? ''))) !== 'AGGREGATE') {
             return $preview;
         }
 
+        // NavInvoiceImportPreview remains usable on its own for the original
+        // NORMAL/SIMPLIFIED scope. The operation preview adds AGGREGATE support
+        // here and owns the category-specific validation below.
         $blockers = array_values(array_diff(
             array_map('strval', $preview['blockers'] ?? array()),
             array('category_unsupported')
         ));
         $warnings = array_values(array_unique(array_map('strval', $preview['warnings'] ?? array())));
 
-        libxml_use_internal_errors(true);
-        $document = simplexml_load_string($xml, 'SimpleXMLElement', LIBXML_NONET | LIBXML_NOCDATA);
-        libxml_clear_errors();
-        if (!$document instanceof SimpleXMLElement) {
-            $blockers[] = 'aggregate_xml_invalid';
-            return $this->finish($preview, $blockers, $warnings);
-        }
-
-        $invoiceNodes = $document->xpath(
-            '//*[local-name()="invoiceMain"]/*[local-name()="invoice"]'
-            .' | //*[local-name()="invoiceMain"]/*[local-name()="batchInvoice"]/*[local-name()="invoice"]'
-        );
-        if (!$invoiceNodes) {
-            $blockers[] = 'aggregate_xml_invalid';
-            return $this->finish($preview, $blockers, $warnings);
-        }
-
-        $invoice = $invoiceNodes[0];
-        $head = $this->node($invoice, './*[local-name()="invoiceHead"]');
-        $detail = $head ? $this->node($head, './*[local-name()="invoiceDetail"]') : null;
-        $accountingDeliveryDate = $detail ? $this->text($detail, './*[local-name()="invoiceAccountingDeliveryDate"]') : '';
+        $detail = is_array($parsed['detail'] ?? null) ? $parsed['detail'] : array();
+        $accountingDeliveryDate = trim((string) ($detail['accounting_delivery_date'] ?? ''));
         $headerDeliveryDate = trim((string) ($preview['header']['delivery_date'] ?? ''));
 
-        // Keep NAV's accounting-delivery date available for audit/reporting, but
-        // do not reinterpret it as Dolibarr's point-of-tax date. The importer has
-        // historically mapped invoiceDeliveryDate to date_pointoftax, and an
-        // aggregate invoice's header delivery date remains the latest line-level
-        // delivery date by NAV semantics.
+        // Preserve the accounting delivery date as source/audit data. Dolibarr's
+        // point-of-tax date continues to follow invoiceDeliveryDate.
         $preview['header']['accounting_delivery_date'] = $accountingDeliveryDate;
         $preview['header']['point_of_tax_date'] = $headerDeliveryDate;
 
@@ -58,19 +39,15 @@ class NavInvoiceAggregateSupport
             $blockers[] = 'aggregate_accounting_delivery_date_invalid';
         }
 
-        $aggregateByLineNumber = array();
-        $aggregateByIndex = array();
-        $lineNodes = $invoice->xpath('./*[local-name()="invoiceLines"]/*[local-name()="line"]');
-        foreach ($lineNodes ?: array() as $index => $lineNode) {
-            $lineNumber = $this->text($lineNode, './*[local-name()="lineNumber"]');
-            $aggregateNode = $this->node($lineNode, './*[local-name()="aggregateInvoiceLineData"]');
-            $data = array(
-                'delivery_date' => $aggregateNode ? $this->text($aggregateNode, './*[local-name()="lineDeliveryDate"]') : '',
-                'exchange_rate' => $aggregateNode ? $this->text($aggregateNode, './*[local-name()="lineExchangeRate"]') : '',
-            );
-            $aggregateByIndex[(int) $index] = $data;
-            if ($lineNumber !== '') {
-                $aggregateByLineNumber[$lineNumber] = $data;
+        $parsedLines = is_array($parsed['lines'] ?? null) ? $parsed['lines'] : array();
+        $parsedByNumber = array();
+        foreach ($parsedLines as $index => $parsedLine) {
+            if (!is_array($parsedLine)) {
+                continue;
+            }
+            $number = trim((string) ($parsedLine['number'] ?? ''));
+            if ($number !== '') {
+                $parsedByNumber[$number] = $parsedLine;
             }
         }
 
@@ -80,14 +57,17 @@ class NavInvoiceAggregateSupport
                 continue;
             }
             $lineNumber = trim((string) ($line['number'] ?? ''));
-            $data = $lineNumber !== '' && isset($aggregateByLineNumber[$lineNumber])
-                ? $aggregateByLineNumber[$lineNumber]
-                : ($aggregateByIndex[(int) $index] ?? array('delivery_date' => '', 'exchange_rate' => ''));
+            $sourceLine = $lineNumber !== '' && isset($parsedByNumber[$lineNumber])
+                ? $parsedByNumber[$lineNumber]
+                : ($parsedLines[(int) $index] ?? array());
+            $aggregate = is_array($sourceLine['aggregate'] ?? null) ? $sourceLine['aggregate'] : array();
 
-            $deliveryDate = trim((string) ($data['delivery_date'] ?? ''));
-            $exchangeRate = trim((string) ($data['exchange_rate'] ?? ''));
+            $deliveryDate = trim((string) ($aggregate['delivery_date'] ?? ''));
+            $exchangeRate = $aggregate['exchange_rate'] ?? null;
+            $exchangeRateText = $exchangeRate === null ? '' : trim((string) $exchangeRate);
+
             $preview['lines'][$index]['aggregate_delivery_date'] = $deliveryDate;
-            $preview['lines'][$index]['aggregate_exchange_rate'] = $exchangeRate;
+            $preview['lines'][$index]['aggregate_exchange_rate'] = $exchangeRateText;
 
             if (!$this->validDate($deliveryDate)) {
                 $blockers[] = 'aggregate_line_delivery_date_missing';
@@ -95,16 +75,14 @@ class NavInvoiceAggregateSupport
                 $maxDeliveryDate = $deliveryDate;
             }
 
-            // lineExchangeRate is optional in the NAV 3.0 XSD. Validate it only
-            // when present; zero is also a schema-valid ExchangeRateType value.
-            if ($exchangeRate !== '' && (!is_numeric($exchangeRate) || (float) $exchangeRate < 0)) {
+            // lineExchangeRate is optional in the NAV XSD. Validate only when present.
+            if ($exchangeRateText !== '' && (!is_numeric($exchangeRateText) || (float) $exchangeRateText < 0)) {
                 $blockers[] = 'aggregate_line_exchange_rate_invalid';
             }
         }
 
-        // NAV aggregate semantics require the invoice-level delivery date to be
-        // the latest line delivery date. This check makes sure we do not silently
-        // flatten a malformed aggregate invoice into a single-date Dolibarr bill.
+        // For an aggregate invoice invoiceDeliveryDate must equal the latest
+        // lineDeliveryDate. Do not silently flatten malformed source data.
         if ($maxDeliveryDate !== ''
             && (!$this->validDate($headerDeliveryDate) || $headerDeliveryDate !== $maxDeliveryDate)) {
             $blockers[] = 'aggregate_delivery_date_mismatch';
@@ -120,21 +98,6 @@ class NavInvoiceAggregateSupport
         $preview['warnings'] = array_values(array_unique(array_map('strval', $warnings)));
         $preview['state'] = $preview['blockers'] ? 'blocked' : ($preview['warnings'] ? 'review' : 'ready');
         return $preview;
-    }
-
-    private function node(SimpleXMLElement $node, string $xpath): ?SimpleXMLElement
-    {
-        $nodes = $node->xpath($xpath);
-        return $nodes ? $nodes[0] : null;
-    }
-
-    private function text(SimpleXMLElement $node, string $xpath): string
-    {
-        $nodes = $node->xpath($xpath);
-        if (!$nodes) {
-            return '';
-        }
-        return trim((string) $nodes[0]);
     }
 
     private function validDate(string $date): bool
