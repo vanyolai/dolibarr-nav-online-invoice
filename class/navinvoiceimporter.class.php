@@ -3,11 +3,11 @@
 dol_include_once('/navinvoice/class/navunitresolver.class.php');
 
 /**
- * Import a validated NAV import preview into Dolibarr as a draft invoice.
+ * Import a validated NAV import preview into Dolibarr.
  *
- * The importer deliberately creates drafts only. Outbound NAV invoice numbers
- * are stored as customer reference and can later be used as the forced Dolibarr
- * invoice number when the draft is explicitly validated.
+ * Invoices are created and reconciled as drafts first. Inbound supplier
+ * invoices may then be validated through Dolibarr's native validation flow when
+ * the module setting allows it and the preflight state is fully READY.
  */
 class NavInvoiceImporter
 {
@@ -32,9 +32,8 @@ class NavInvoiceImporter
     }
 
     /**
-     * @param array<string,mixed> $preview Result of NavInvoiceImportPreview::build().
-     * @param object $record NAV mirror record.
-     * @param User $user Current Dolibarr user.
+     * @param array<string,mixed> $preview
+     * @param object $record
      * @return array<string,mixed>
      */
     public function importDraft(array $preview, $record, User $user): array
@@ -52,8 +51,34 @@ class NavInvoiceImporter
             throw new Exception('Only invoices in the Dolibarr base currency can currently be imported.');
         }
 
-        $direction = strtoupper((string) $preview['direction']);
+        $operation = strtoupper(trim((string) ($preview['operation'] ?? $record->invoice_operation ?? 'CREATE')));
+        $operationMapping = trim((string) ($preview['operation_mapping'] ?? ($operation === 'CREATE' ? 'standard' : '')));
+        $sourceInvoiceId = (int) ($preview['source_invoice_id'] ?? 0);
+        $direction = strtoupper((string) ($preview['direction'] ?? $record->invoice_direction ?? 'OUTBOUND'));
         $inbound = $direction === 'INBOUND';
+        $standaloneWithoutMaster = !empty($preview['standalone_without_master'])
+            || !empty($preview['operation_policy']['standalone_without_master']);
+
+        if ($operation === 'CREATE') {
+            if (!in_array($operationMapping, array('standard', 'deposit'), true)) {
+                throw new Exception('CREATE NAV invoice has no supported Dolibarr mapping.');
+            }
+            if ($operationMapping === 'deposit' && !$inbound) {
+                throw new Exception('Outbound NAV deposit invoice import is not enabled yet.');
+            }
+        } elseif ($operation === 'MODIFY') {
+            if (!in_array($operationMapping, array('credit_note', 'standard_adjustment'), true)
+                || ($sourceInvoiceId <= 0 && !$standaloneWithoutMaster)) {
+                throw new Exception('MODIFY NAV invoice has no deterministic Dolibarr mapping/source invoice.');
+            }
+        } elseif ($operation === 'STORNO') {
+            if ($operationMapping !== 'credit_note' || ($sourceInvoiceId <= 0 && !$standaloneWithoutMaster)) {
+                throw new Exception('STORNO NAV invoice must map to a verified Dolibarr credit note.');
+            }
+        } else {
+            throw new Exception('Unsupported NAV invoice operation: '.$operation);
+        }
+
         $category = strtoupper((string) ($preview['category'] ?? ''));
         $invoiceId = 0;
         $invoice = null;
@@ -68,14 +93,8 @@ class NavInvoiceImporter
             $invoiceId = (int) $result['id'];
             $invoice = $result['object'];
 
-            // Prefer Dolibarr's native calculation rules. First keep the result
-            // produced by create() when it already matches NAV, otherwise try the
-            // same Mode 1 / Mode 2 recalculations that are available on the invoice
-            // card. If only the invoice-level summary differs while a native mode
-            // reproduces every NAV line total, preserve the lines and reconcile the
-            // summary only. Full NAV line/header fallback is the last resort.
             $reconciliation = $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
-            if ($reconciliation === 'none' && $inbound && $category === 'NORMAL') {
+            if ($reconciliation === 'none' && $inbound && in_array($category, array('NORMAL', 'AGGREGATE'), true)) {
                 if ($this->prepareSupplierLinesForNavSummary($invoice, $preview)) {
                     $this->preserveSupplierNavSummary($invoice, $preview, $user);
                     $reconciliation = 'nav_summary';
@@ -86,7 +105,10 @@ class NavInvoiceImporter
             }
 
             $this->assertCreatedTotals($invoice, $preview);
+            $this->assertOperationMapping($invoice, $preview);
             $this->linkMirrorRecord((int) $record->rowid, $direction, $invoiceId);
+
+            $validation = $this->maybeAutoValidateInbound($invoice, $preview, $user, $inbound);
 
             return array(
                 'id' => $invoiceId,
@@ -96,6 +118,14 @@ class NavInvoiceImporter
                     ? DOL_URL_ROOT.'/fourn/facture/card.php?facid='.$invoiceId
                     : DOL_URL_ROOT.'/compta/facture/card.php?facid='.$invoiceId,
                 'reconciliation' => $reconciliation,
+                'operation' => $operation,
+                'operation_mapping' => $operationMapping,
+                'source_invoice_id' => $sourceInvoiceId,
+                'standalone_without_master' => $standaloneWithoutMaster,
+                'validation_attempted' => (bool) $validation['attempted'],
+                'validated' => (bool) $validation['validated'],
+                'validation_skipped_reason' => (string) $validation['skipped_reason'],
+                'validation_error' => (string) $validation['error'],
             );
         } catch (Throwable $e) {
             if ($invoiceId > 0 && is_object($invoice)) {
@@ -115,11 +145,17 @@ class NavInvoiceImporter
         require_once DOL_DOCUMENT_ROOT.'/compta/facture/class/facture.class.php';
         require_once DOL_DOCUMENT_ROOT.'/compta/facture/class/factureligne.class.php';
 
+        $mapping = (string) ($preview['operation_mapping'] ?? 'standard');
         $invoice = new Facture($this->db);
         $invoice->socid = (int) $preview['partner']['id'];
-        $invoice->type = Facture::TYPE_STANDARD;
+        $invoice->type = $mapping === 'credit_note' ? Facture::TYPE_CREDIT_NOTE : Facture::TYPE_STANDARD;
+        $invoice->fk_facture_source = (int) ($preview['source_invoice_id'] ?? 0);
         $invoice->date = $this->dateToTimestamp((string) $preview['header']['invoice_date']);
-        $invoice->date_pointoftax = $this->dateToTimestampOrZero((string) ($preview['header']['delivery_date'] ?? ''));
+        $pointOfTaxSource = (string) ($preview['header']['point_of_tax_date']
+            ?? $preview['header']['accounting_delivery_date']
+            ?? $preview['header']['delivery_date']
+            ?? '');
+        $invoice->date_pointoftax = $this->dateToTimestampOrZero($pointOfTaxSource);
         $invoice->ref_customer = (string) $preview['invoice_number'];
         $invoice->ref_ext = (string) $preview['external_key'];
         $invoice->module_source = 'navinvoice';
@@ -131,17 +167,18 @@ class NavInvoiceImporter
 
         $rank = 0;
         foreach ($preview['lines'] as $mapped) {
+            $values = $this->dolibarrLineValues($mapped, $mapping);
             $line = new FactureLigne($this->db);
             $line->id = 0;
             $line->desc = (string) $mapped['description'];
             $line->label = '';
-            $line->subprice = (float) $mapped['unit_price_ht'];
-            $line->qty = (float) $mapped['quantity'];
+            $line->subprice = $values['unit_price'];
+            $line->qty = $values['quantity'];
             $line->tva_tx = (float) $mapped['vat_rate'];
             $line->vat_src_code = '';
             $line->localtax1_tx = 0;
             $line->localtax2_tx = 0;
-            $line->fk_product = 0;
+            $line->fk_product = (int) ($mapped['product_id'] ?? 0);
             $line->remise_percent = 0;
             $line->date_start = null;
             $line->date_end = null;
@@ -186,11 +223,23 @@ class NavInvoiceImporter
         require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.facture.class.php';
         require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.facture.ligne.class.php';
 
+        $mapping = (string) ($preview['operation_mapping'] ?? 'standard');
         $invoice = new FactureFournisseur($this->db);
         $invoice->socid = (int) $preview['partner']['id'];
-        $invoice->type = FactureFournisseur::TYPE_STANDARD;
+        if ($mapping === 'credit_note') {
+            $invoice->type = FactureFournisseur::TYPE_CREDIT_NOTE;
+        } elseif ($mapping === 'deposit') {
+            $invoice->type = FactureFournisseur::TYPE_DEPOSIT;
+        } else {
+            $invoice->type = FactureFournisseur::TYPE_STANDARD;
+        }
+        $invoice->fk_facture_source = (int) ($preview['source_invoice_id'] ?? 0);
         $invoice->date = $this->dateToTimestamp((string) $preview['header']['invoice_date']);
-        $pointOfTaxDate = $this->dateToTimestampOrZero((string) ($preview['header']['delivery_date'] ?? ''));
+        $pointOfTaxSource = (string) ($preview['header']['point_of_tax_date']
+            ?? $preview['header']['accounting_delivery_date']
+            ?? $preview['header']['delivery_date']
+            ?? '');
+        $pointOfTaxDate = $this->dateToTimestampOrZero($pointOfTaxSource);
         $invoice->date_pointoftax = $pointOfTaxDate;
         $dueDate = $this->dateToTimestampOrZero((string) ($preview['header']['due_date'] ?? ''));
         $invoice->date_echeance = $dueDate > 0 ? $dueDate : null;
@@ -205,16 +254,17 @@ class NavInvoiceImporter
 
         $rank = 0;
         foreach ($preview['lines'] as $mapped) {
+            $values = $this->dolibarrLineValues($mapped, $mapping);
             $line = new SupplierInvoiceLine($this->db);
             $line->desc = (string) $mapped['description'];
             $line->description = (string) $mapped['description'];
-            $line->subprice = (float) $mapped['unit_price_ht'];
-            $line->qty = (float) $mapped['quantity'];
+            $line->subprice = $values['unit_price'];
+            $line->qty = $values['quantity'];
             $line->tva_tx = (float) $mapped['vat_rate'];
             $line->vat_src_code = '';
             $line->localtax1_tx = 0;
             $line->localtax2_tx = 0;
-            $line->fk_product = 0;
+            $line->fk_product = (int) ($mapped['product_id'] ?? 0);
             $line->remise_percent = 0;
             $line->date_start = null;
             $line->date_end = null;
@@ -242,16 +292,41 @@ class NavInvoiceImporter
     }
 
     /**
-     * Dolibarr 23 exposes facture_fourn.date_pointoftax in the data model but
-     * FactureFournisseur::create() does not persist it. Keep the NAV delivery
-     * date in the native core column so accounting/reporting can use it later.
+     * Normalize NAV signs to Dolibarr invoice-type conventions. Credit notes use
+     * positive quantities, while each line's unit-price sign follows that NAV
+     * line's authoritative financial effect. This preserves mixed-sign MODIFY
+     * documents instead of incorrectly forcing every credit-note line negative.
+     * Standard and deposit invoices preserve the NAV values.
+     *
+     * @param array<string,mixed> $mapped
+     * @return array{quantity:float,unit_price:float}
      */
+    private function dolibarrLineValues(array $mapped, string $mapping): array
+    {
+        $quantity = (float) ($mapped['quantity'] ?? 0);
+        $unitPrice = (float) ($mapped['unit_price_ht'] ?? 0);
+        if ($mapping === 'credit_note') {
+            $quantity = abs($quantity);
+            $lineAmount = null;
+            if (($mapped['net'] ?? null) !== null && ($mapped['net'] ?? '') !== '' && is_numeric($mapped['net'])) {
+                $lineAmount = (float) $mapped['net'];
+            } elseif (($mapped['gross'] ?? null) !== null && ($mapped['gross'] ?? '') !== '' && is_numeric($mapped['gross'])) {
+                $lineAmount = (float) $mapped['gross'];
+            }
+            if ($lineAmount !== null && $lineAmount > 0.0000001) {
+                $unitPrice = abs($unitPrice);
+            } else {
+                $unitPrice = -abs($unitPrice);
+            }
+        }
+        return array('quantity' => $quantity, 'unit_price' => $unitPrice);
+    }
+
     private function persistSupplierPointOfTax(int $invoiceId, int $timestamp): void
     {
         if ($timestamp <= 0) {
             return;
         }
-
         $sql = 'UPDATE '.MAIN_DB_PREFIX.'facture_fourn';
         $sql .= " SET date_pointoftax = '".$this->db->idate($timestamp)."'";
         $sql .= ' WHERE rowid = '.$invoiceId;
@@ -261,11 +336,6 @@ class NavInvoiceImporter
         }
     }
 
-    /**
-     * Facture::create() derives a due date from payment terms when no forced
-     * date is supplied. NAV imports must not invent data that the source did
-     * not provide, so clear that derived value when NAV has no payment date.
-     */
     private function clearCustomerDueDate(int $invoiceId): void
     {
         $sql = 'UPDATE '.MAIN_DB_PREFIX.'facture';
@@ -287,7 +357,6 @@ class NavInvoiceImporter
         if (!$resql) {
             throw new Exception('Could not load created supplier invoice line identifiers: '.$this->db->lasterror());
         }
-
         $lineIds = array();
         while ($obj = $this->db->fetch_object($resql)) {
             $lineIds[] = (int) $obj->rowid;
@@ -296,29 +365,21 @@ class NavInvoiceImporter
         return $lineIds;
     }
 
-    /**
-     * Return true when every created supplier line already reproduces the NAV
-     * authoritative line totals. This lets invoice-level rounding be reconciled
-     * without rewriting correct line data.
-     */
     private function supplierLinesMatchNav(FactureFournisseur $invoice, array $preview): bool
     {
         $mappedLines = is_array($preview['lines'] ?? null) ? $preview['lines'] : array();
         if (!$mappedLines) {
             return false;
         }
-
         $lineIds = $this->supplierLineIds($invoice);
         if (count($lineIds) !== count($mappedLines)) {
             return false;
         }
-
         foreach ($lineIds as $index => $lineId) {
             $mapped = $mappedLines[$index];
             if (($mapped['net'] ?? null) === null || ($mapped['vat'] ?? null) === null || ($mapped['gross'] ?? null) === null) {
                 return false;
             }
-
             $line = new SupplierInvoiceLine($this->db);
             if ($line->fetch($lineId) <= 0) {
                 throw new Exception('Could not reload created supplier invoice line '.$lineId.'.');
@@ -329,27 +390,18 @@ class NavInvoiceImporter
                 return false;
             }
         }
-
         return true;
     }
 
-    /**
-     * After invoice-level reconciliation failed, find a native Dolibarr
-     * calculation mode that still reproduces every NAV line exactly. The main
-     * reconciliation already tried the same modes for header totals; repeating
-     * them here is intentional because it may have left the invoice in Mode 2.
-     */
     private function prepareSupplierLinesForNavSummary(FactureFournisseur $invoice, array $preview): bool
     {
         if ($this->supplierLinesMatchNav($invoice, $preview)) {
             return true;
         }
-
         $result = $invoice->fetch_thirdparty();
         if ($result < 0 || !is_object($invoice->thirdparty)) {
             throw new Exception('Could not load supplier for NAV line reconciliation.');
         }
-
         foreach (array('0', '1') as $roundingMode) {
             $result = $invoice->update_price(1, $roundingMode, 0, $invoice->thirdparty);
             if ($result <= 0) {
@@ -362,15 +414,9 @@ class NavInvoiceImporter
                 return true;
             }
         }
-
         return false;
     }
 
-    /**
-     * Keep matching NAV/Dolibarr lines intact and reconcile only the invoice
-     * header summary. This covers issued invoices where line totals are exact
-     * but the supplier applied a separate invoice-level rounding rule.
-     */
     private function preserveSupplierNavSummary(FactureFournisseur $invoice, array $preview, User $user): void
     {
         $expected = $preview['totals'] ?? array();
@@ -380,44 +426,30 @@ class NavInvoiceImporter
         if (!$this->supplierLinesMatchNav($invoice, $preview)) {
             throw new Exception('Cannot apply NAV summary-only reconciliation because supplier line totals differ.');
         }
-
         $invoice->total_ht = (float) $expected['net'];
         $invoice->total_tva = (float) $expected['vat'];
         $invoice->total_ttc = (float) $expected['gross'];
         if (strpos((string) $invoice->note_private, 'nav_summary_reconciled=1') === false) {
             $invoice->note_private = rtrim((string) $invoice->note_private)."\nnav_summary_reconciled=1";
         }
-
         if ($invoice->update($user, 1) <= 0) {
             throw new Exception('Could not preserve authoritative NAV supplier invoice summary: '.$this->objectError($invoice));
         }
         if ($invoice->fetch((int) $invoice->id) <= 0) {
             throw new Exception('Supplier invoice could not be reloaded after preserving NAV summary.');
         }
-
-        dol_syslog(
-            'NavInvoiceImporter preserved authoritative NAV summary without rewriting lines on supplier invoice '.((int) $invoice->id),
-            LOG_INFO
-        );
+        dol_syslog('NavInvoiceImporter preserved authoritative NAV summary without rewriting lines on supplier invoice '.((int) $invoice->id), LOG_INFO);
     }
 
-    /**
-     * Preserve authoritative NAV line and header totals for a NORMAL supplier
-     * invoice only when no native Dolibarr calculation can reproduce the lines.
-     */
     private function preserveSupplierNavTotals(FactureFournisseur $invoice, array $preview, User $user): void
     {
         $mappedLines = is_array($preview['lines'] ?? null) ? $preview['lines'] : array();
         if (!$mappedLines) {
             throw new Exception('Cannot preserve NAV totals without invoice lines.');
         }
-
         $lineIds = $this->supplierLineIds($invoice);
         if (count($lineIds) !== count($mappedLines)) {
-            throw new Exception(
-                'Created supplier invoice line count differs from NAV preview: Dolibarr '
-                .count($lineIds).' vs NAV '.count($mappedLines)
-            );
+            throw new Exception('Created supplier invoice line count differs from NAV preview: Dolibarr '.count($lineIds).' vs NAV '.count($mappedLines));
         }
 
         $changed = false;
@@ -426,12 +458,10 @@ class NavInvoiceImporter
             if (($mapped['net'] ?? null) === null || ($mapped['vat'] ?? null) === null || ($mapped['gross'] ?? null) === null) {
                 throw new Exception('NAV authoritative line totals are incomplete for line '.($index + 1).'.');
             }
-
             $line = new SupplierInvoiceLine($this->db);
             if ($line->fetch($lineId) <= 0) {
                 throw new Exception('Could not reload created supplier invoice line '.$lineId.'.');
             }
-
             $navNet = (float) $mapped['net'];
             $navVat = (float) $mapped['vat'];
             $navGross = (float) $mapped['gross'];
@@ -441,15 +471,10 @@ class NavInvoiceImporter
             if (!$lineChanged) {
                 continue;
             }
-
             $changed = true;
             $line->total_ht = $navNet;
             $line->total_tva = $navVat;
             $line->total_ttc = $navGross;
-
-            // Do not emit a second modification trigger for the same imported
-            // line. The invoice is still a draft and the initial create path has
-            // already executed the normal Dolibarr business flow.
             if ($line->update(1) <= 0) {
                 throw new Exception('Could not preserve NAV totals on supplier invoice line '.$lineId.': '.$this->objectError($line));
             }
@@ -459,7 +484,6 @@ class NavInvoiceImporter
         if (($expected['net'] ?? null) === null || ($expected['vat'] ?? null) === null || ($expected['gross'] ?? null) === null) {
             throw new Exception('NAV authoritative invoice totals are incomplete.');
         }
-
         $navNet = (float) $expected['net'];
         $navVat = (float) $expected['vat'];
         $navGross = (float) $expected['gross'];
@@ -468,44 +492,29 @@ class NavInvoiceImporter
             || !$this->amountsEqual((float) $invoice->total_ttc, $navGross)) {
             $changed = true;
         }
-
         $invoice->total_ht = $navNet;
         $invoice->total_tva = $navVat;
         $invoice->total_ttc = $navGross;
         if ($changed && strpos((string) $invoice->note_private, 'nav_totals_preserved=1') === false) {
             $invoice->note_private = rtrim((string) $invoice->note_private)."\nnav_totals_preserved=1";
         }
-
         if ($invoice->update($user, 1) <= 0) {
             throw new Exception('Could not preserve authoritative NAV supplier invoice totals: '.$this->objectError($invoice));
         }
         if ($invoice->fetch((int) $invoice->id) <= 0) {
             throw new Exception('Supplier invoice could not be reloaded after preserving NAV totals.');
         }
-
         if ($changed) {
-            dol_syslog(
-                'NavInvoiceImporter preserved authoritative NAV totals on supplier invoice '.((int) $invoice->id),
-                LOG_INFO
-            );
+            dol_syslog('NavInvoiceImporter preserved authoritative NAV totals on supplier invoice '.((int) $invoice->id), LOG_INFO);
         }
     }
 
-    /**
-     * Try the native Dolibarr totals produced by create(), then the same two
-     * calculation rules exposed on the supplier invoice card:
-     * Mode 1 = total of rounded lines (update_price(..., '0', ...))
-     * Mode 2 = rounding of total      (update_price(..., '1', ...))
-     *
-     * @return string One of default, mode1, mode2, none.
-     */
     private function reconcileRoundingWithNav($invoice, array $preview, bool $inbound): string
     {
         if ($this->totalsMatch($invoice, $preview)) {
             dol_syslog('NavInvoiceImporter matched NAV totals using Dolibarr create/default calculation', LOG_INFO);
             return 'default';
         }
-
         global $mysoc;
         $seller = $mysoc;
         if ($inbound) {
@@ -515,7 +524,6 @@ class NavInvoiceImporter
             }
             $seller = $invoice->thirdparty;
         }
-
         foreach (array('0', '1') as $roundingMode) {
             $result = $invoice->update_price(1, $roundingMode, 0, $seller);
             if ($result <= 0) {
@@ -530,25 +538,16 @@ class NavInvoiceImporter
                 return $roundingMode === '0' ? 'mode1' : 'mode2';
             }
         }
-
-        dol_syslog(
-            'NavInvoiceImporter could not reproduce NAV totals with either native Dolibarr calculation mode',
-            LOG_INFO
-        );
+        dol_syslog('NavInvoiceImporter could not reproduce NAV totals with either native Dolibarr calculation mode', LOG_INFO);
         return 'none';
     }
 
     private function totalsMatch($invoice, array $preview): bool
     {
         $expected = $preview['totals'];
-
         if (strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED') {
-            // On simplified invoices NAV gross is authoritative. Compare the
-            // actual monetary value instead of assuming HUF has zero decimals;
-            // NAV may legally contain fractional HUF amounts.
             return $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
         }
-
         return $this->amountsEqual((float) $invoice->total_ht, (float) $expected['net'])
             && $this->amountsEqual((float) $invoice->total_tva, (float) $expected['vat'])
             && $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
@@ -556,9 +555,6 @@ class NavInvoiceImporter
 
     private function amountsEqual(float $actual, float $expected): bool
     {
-        // Dolibarr stores invoice amounts with substantially more precision than
-        // NAV line/summary amounts. A tiny epsilon handles binary-float noise only;
-        // it is not a business tolerance and will not hide cent/forint differences.
         return abs($actual - $expected) <= 0.00001;
     }
 
@@ -567,20 +563,50 @@ class NavInvoiceImporter
         if ($this->totalsMatch($invoice, $preview)) {
             return;
         }
-
         $expected = $preview['totals'];
         if (strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED') {
-            throw new Exception(
-                'Created Dolibarr simplified invoice gross differs from NAV gross: Dolibarr '
-                .$invoice->total_ttc.' vs NAV '.$expected['gross']
-            );
+            throw new Exception('Created Dolibarr simplified invoice gross differs from NAV gross: Dolibarr '.$invoice->total_ttc.' vs NAV '.$expected['gross']);
         }
-
         throw new Exception(
             'Created Dolibarr invoice totals differ from NAV totals: Dolibarr '
             .$invoice->total_ht.'/'.$invoice->total_tva.'/'.$invoice->total_ttc
             .' vs NAV '.$expected['net'].'/'.$expected['vat'].'/'.$expected['gross']
         );
+    }
+
+    private function assertOperationMapping($invoice, array $preview): void
+    {
+        $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
+        $mapping = (string) ($preview['operation_mapping'] ?? ($operation === 'CREATE' ? 'standard' : ''));
+        $sourceInvoiceId = (int) ($preview['source_invoice_id'] ?? 0);
+        $standaloneWithoutMaster = !empty($preview['standalone_without_master'])
+            || !empty($preview['operation_policy']['standalone_without_master']);
+        if ($mapping === 'credit_note') {
+            $expectedType = 2;
+        } elseif ($mapping === 'deposit') {
+            $expectedType = 3;
+        } else {
+            $expectedType = 0;
+        }
+
+        if ((int) ($invoice->type ?? -1) !== $expectedType) {
+            throw new Exception('Created Dolibarr invoice type does not match the NAV operation mapping.');
+        }
+        if ($operation !== 'CREATE') {
+            $actualSourceId = (int) ($invoice->fk_facture_source ?? 0);
+            if ($sourceInvoiceId > 0 && $actualSourceId !== $sourceInvoiceId) {
+                throw new Exception('Created Dolibarr modification/storno invoice lost its source-invoice relationship.');
+            }
+            if ($sourceInvoiceId <= 0 && $standaloneWithoutMaster && $actualSourceId > 0) {
+                throw new Exception('Standalone modifyWithoutMaster correction unexpectedly acquired a Dolibarr source invoice.');
+            }
+        }
+        if ($mapping === 'credit_note' && (float) ($invoice->total_ht ?? 0) > 0.00001) {
+            throw new Exception('Created Dolibarr credit note has a positive HT total.');
+        }
+        if ($mapping === 'deposit' && (float) ($invoice->total_ht ?? 0) < -0.00001) {
+            throw new Exception('Created Dolibarr deposit invoice has a negative HT total.');
+        }
     }
 
     /** @param array<string,mixed> $mapped */
@@ -592,7 +618,6 @@ class NavInvoiceImporter
         if (!empty($mapped['unit_id'])) {
             return (int) $mapped['unit_id'];
         }
-
         $resolution = $this->unitResolver->resolve(array(
             'unit' => (string) ($mapped['unit'] ?? ''),
             'unit_own' => '',
@@ -613,7 +638,6 @@ class NavInvoiceImporter
         if (!$resql) {
             throw new Exception('Failed to link the created Dolibarr invoice to the NAV mirror record: '.$this->db->lasterror());
         }
-
         $sql = 'SELECT '.$field.' AS linked_id FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
         $sql .= ' WHERE rowid = '.$mirrorId.' AND entity = '.$this->entity;
         $resql = $this->db->query($sql);
@@ -627,18 +651,68 @@ class NavInvoiceImporter
         }
     }
 
+    /** @return array{attempted:bool,validated:bool,skipped_reason:string,error:string} */
+    private function maybeAutoValidateInbound($invoice, array $preview, User $user, bool $inbound): array
+    {
+        $status = array('attempted' => false, 'validated' => false, 'skipped_reason' => '', 'error' => '');
+        if (!$inbound || !getDolGlobalInt('NAVINVOICE_AUTO_VALIDATE_INBOUND')) {
+            return $status;
+        }
+        if ((string) ($preview['state'] ?? '') !== 'ready') {
+            $status['skipped_reason'] = 'preview_not_ready';
+            return $status;
+        }
+
+        $canValidate = (!getDolGlobalString('MAIN_USE_ADVANCED_PERMS')
+            && ($user->hasRight('fournisseur', 'facture', 'creer') || $user->hasRight('supplier_invoice', 'creer')))
+            || (getDolGlobalString('MAIN_USE_ADVANCED_PERMS')
+                && $user->hasRight('fournisseur', 'supplier_invoice_advance', 'validate'));
+        if (!$canValidate) {
+            $status['skipped_reason'] = 'validation_permission_missing';
+            dol_syslog('NavInvoiceImporter skipped automatic validation for supplier invoice '.((int) ($invoice->id ?? 0)).' because user '.$user->id.' has no supplier invoice validation permission', LOG_WARNING);
+            return $status;
+        }
+
+        if (isModEnabled('stock') && getDolGlobalString('STOCK_CALCULATE_ON_SUPPLIER_BILL')) {
+            $status['skipped_reason'] = 'stock_warehouse_required';
+            dol_syslog('NavInvoiceImporter skipped automatic validation for supplier invoice '.((int) ($invoice->id ?? 0)).' because STOCK_CALCULATE_ON_SUPPLIER_BILL is enabled', LOG_WARNING);
+            return $status;
+        }
+        if (!($invoice instanceof FactureFournisseur)) {
+            $status['skipped_reason'] = 'not_supplier_invoice';
+            return $status;
+        }
+
+        $status['attempted'] = true;
+        try {
+            $result = $invoice->validate($user);
+            if ($result < 0) {
+                $status['error'] = $this->objectError($invoice);
+                dol_syslog('NavInvoiceImporter automatic validation failed for supplier invoice '.((int) $invoice->id).': '.$status['error'], LOG_WARNING);
+                return $status;
+            }
+            if ($invoice->fetch((int) $invoice->id) <= 0) {
+                $status['error'] = 'Validated supplier invoice could not be reloaded.';
+                return $status;
+            }
+            $status['validated'] = (int) ($invoice->status ?? 0) >= FactureFournisseur::STATUS_VALIDATED;
+            if (!$status['validated']) {
+                $status['error'] = 'Dolibarr validation returned without moving the invoice out of draft status.';
+            }
+        } catch (Throwable $e) {
+            $status['error'] = $e->getMessage();
+            dol_syslog('NavInvoiceImporter automatic validation threw for supplier invoice '.((int) ($invoice->id ?? 0)).': '.$e->getMessage(), LOG_WARNING);
+        }
+        return $status;
+    }
+
     private function paymentModeId(string $navMethod): int
     {
-        $map = array(
-            'CASH' => 'LIQ',
-            'TRANSFER' => 'VIR',
-            'CARD' => 'CB',
-        );
+        $map = array('CASH' => 'LIQ', 'TRANSFER' => 'VIR', 'CARD' => 'CB');
         $code = $map[strtoupper(trim($navMethod))] ?? '';
         if ($code === '') {
             return 0;
         }
-
         $sql = 'SELECT id FROM '.MAIN_DB_PREFIX.'c_paiement';
         $sql .= " WHERE code = '".$this->db->escape($code)."'";
         $sql .= ' LIMIT 1';
@@ -653,9 +727,13 @@ class NavInvoiceImporter
 
     private function auditNote(array $preview, $record): string
     {
+        $operation = strtoupper(trim((string) ($preview['operation'] ?? $record->invoice_operation ?? 'CREATE')));
         $parts = array(
             'NAV Online Invoice import',
             'direction='.(string) $preview['direction'],
+            'operation='.$operation,
+            'operation_mapping='.(string) ($preview['operation_mapping'] ?? ($operation === 'CREATE' ? 'standard' : '')),
+            'source_invoice_id='.(int) ($preview['source_invoice_id'] ?? 0),
             'invoice='.(string) $preview['invoice_number'],
             'mirror_rowid='.(int) $record->rowid,
             'external_key='.(string) $preview['external_key'],
@@ -666,6 +744,55 @@ class NavInvoiceImporter
         if (!empty($preview['header']['delivery_date'])) {
             $parts[] = 'delivery_date='.(string) $preview['header']['delivery_date'];
         }
+        if (!empty($preview['header']['accounting_delivery_date'])) {
+            $parts[] = 'accounting_delivery_date='.(string) $preview['header']['accounting_delivery_date'];
+        }
+        if (!empty($preview['header']['point_of_tax_date'])) {
+            $parts[] = 'point_of_tax_date='.(string) $preview['header']['point_of_tax_date'];
+        }
+
+        $relation = is_array($preview['operation_policy']['relation'] ?? null)
+            ? $preview['operation_policy']['relation']
+            : array();
+        if (!empty($relation['original_invoice_number'])) {
+            $parts[] = 'original_invoice_number='.(string) $relation['original_invoice_number'];
+        }
+        if (array_key_exists('modify_without_master', $relation) && $relation['modify_without_master'] !== null) {
+            $parts[] = 'modify_without_master='.(!empty($relation['modify_without_master']) ? '1' : '0');
+        }
+        if (!empty($relation['modification_index'])) {
+            $parts[] = 'modification_index='.(int) $relation['modification_index'];
+        }
+        if (!empty($preview['standalone_without_master']) || !empty($preview['operation_policy']['standalone_without_master'])) {
+            $parts[] = 'standalone_without_master=1';
+        }
+
+        if (strtoupper((string) ($preview['category'] ?? '')) === 'AGGREGATE') {
+            $lineDeliveryDates = array();
+            $lineExchangeRates = array();
+            foreach (($preview['lines'] ?? array()) as $index => $line) {
+                if (!is_array($line)) {
+                    continue;
+                }
+                $lineKey = trim((string) ($line['number'] ?? ''));
+                if ($lineKey === '') {
+                    $lineKey = (string) ($index + 1);
+                }
+                if (!empty($line['aggregate_delivery_date'])) {
+                    $lineDeliveryDates[] = $lineKey.':'.(string) $line['aggregate_delivery_date'];
+                }
+                if (($line['aggregate_exchange_rate'] ?? '') !== '') {
+                    $lineExchangeRates[] = $lineKey.':'.(string) $line['aggregate_exchange_rate'];
+                }
+            }
+            if ($lineDeliveryDates) {
+                $parts[] = 'aggregate_line_delivery_dates='.implode(',', $lineDeliveryDates);
+            }
+            if ($lineExchangeRates) {
+                $parts[] = 'aggregate_line_exchange_rates='.implode(',', $lineExchangeRates);
+            }
+        }
+
         return implode("\n", $parts);
     }
 

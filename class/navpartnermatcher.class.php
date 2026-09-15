@@ -1,5 +1,7 @@
 <?php
 
+dol_include_once('/navinvoice/class/navtaxpayer.class.php');
+
 /**
  * Read-only matcher between a NAV invoice party and Dolibarr third parties.
  *
@@ -22,11 +24,66 @@ class NavPartnerMatcher
     }
 
     /**
+     * Match a NAV party to Dolibarr.
+     *
+     * Historical invoice data is tried first. If it no longer matches strongly
+     * (for example because the registered address changed), a Hungarian tax
+     * number allows one fresh queryTaxpayer lookup and a second match against
+     * the current NAV master data. Only deterministic tax/name+location results
+     * from that fallback are accepted automatically.
+     *
      * @param array<string,mixed> $party Parsed NAV supplier/customer data.
      * @param string $expectedRole supplier|customer
      * @return array<string,mixed>
      */
     public function match(array $party, string $expectedRole): array
+    {
+        $historical = $this->matchLocal($party, $expectedRole);
+        $historical['resolution_source'] = 'invoice';
+
+        $status = (string) ($historical['status'] ?? 'none');
+        if (in_array($status, array('tax', 'name_address'), true)) {
+            return $historical;
+        }
+
+        $navTax = $this->normalizeTaxNumber((string) ($party['tax_number'] ?? ''));
+        if ($navTax === '') {
+            return $historical;
+        }
+
+        try {
+            $taxpayerService = new NavTaxpayerService();
+            $master = $taxpayerService->lookup($navTax);
+            if (empty($master['valid'])) {
+                return $historical;
+            }
+
+            $current = $this->matchLocal($taxpayerService->toParty($master), $expectedRole);
+            $currentStatus = (string) ($current['status'] ?? 'none');
+            if (!in_array($currentStatus, array('tax', 'name_address'), true)) {
+                return $historical;
+            }
+
+            $current['resolution_source'] = 'current_nav_master';
+            $current['historical_match'] = $historical;
+            $current['current_nav_master'] = $master;
+            return $current;
+        } catch (Throwable $e) {
+            // Matching must remain usable even when NAV master-data lookup is
+            // temporarily unavailable. Keep the historical result and expose
+            // the diagnostic without converting an API outage into a hard error.
+            $historical['fallback_error'] = $e->getMessage();
+            return $historical;
+        }
+    }
+
+    /**
+     * Pure local matching against Dolibarr state, with no NAV API calls.
+     *
+     * @param array<string,mixed> $party
+     * @return array<string,mixed>
+     */
+    private function matchLocal(array $party, string $expectedRole): array
     {
         $navTax = $this->normalizeTaxNumber((string) ($party['tax_number'] ?? ''));
         $navName = $this->normalizeCompanyName((string) ($party['name'] ?? ''));

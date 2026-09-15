@@ -1,0 +1,11 @@
+PartnerSelectionColumn=Apply
+PartnerSelectionNotice=Fields that can be safely completed are selected by default. Existing differing values can be selected manually; selecting them overwrites the current Dolibarr value. Bank accounts are not modified from this screen.
+PartnerSelectionDefault=selected by default
+PartnerSelectionManual=can be selected manually
+PartnerSelectionLocked=cannot be modified from this screen
+PartnerSelectionApply=Apply selected partner data
+PartnerSelectionConfirm=Apply the selected NAV data to the Dolibarr third party? Manually selected differing fields overwrite the current Dolibarr value.
+PartnerSelectionNothingSelected=No partner data is selected.
+PartnerSelectionApplied=%s selected partner fields were updated from NAV.
+PartnerSelectionFailed=Failed to apply the selected partner data
+PartnerSelectionTaxCoreMismatch=The taxpayer core differs; this tax number cannot be overwritten from this screen.

@@ -1,0 +1,590 @@
+(function () {
+    'use strict';
+
+    function decodeEscapedWhitespace(value) {
+        var current = String(value || '');
+        for (var i = 0; i < 4; i++) {
+            var next = current
+                .replace(/\\r\\n/g, '\n')
+                .replace(/\\n/g, '\n')
+                .replace(/\\r/g, '\n')
+                .replace(/\\t/g, '\t');
+            if (next === current) {
+                break;
+            }
+            current = next;
+        }
+        return current.replace(/^\uFEFF/, '');
+    }
+
+    function prettyXml(value) {
+        var xml = decodeEscapedWhitespace(value).trim();
+        if (!xml) {
+            return xml;
+        }
+
+        try {
+            var parsed = new DOMParser().parseFromString(xml, 'application/xml');
+            if (parsed.getElementsByTagName('parsererror').length) {
+                return xml;
+            }
+        } catch (e) {
+            return xml;
+        }
+
+        var lines = xml.replace(/>\s*</g, '>\n<').split('\n');
+        var depth = 0;
+        var output = [];
+
+        lines.forEach(function (line) {
+            var trimmed = line.trim();
+            if (!trimmed) {
+                return;
+            }
+
+            if (/^<\//.test(trimmed)) {
+                depth = Math.max(0, depth - 1);
+            }
+
+            output.push(new Array(depth + 1).join('  ') + trimmed);
+
+            var isOpeningOnly = /^<[^!?/][^>]*>\s*$/.test(trimmed)
+                && !/\/>\s*$/.test(trimmed)
+                && !/<\/[^>]+>\s*$/.test(trimmed);
+            if (isOpeningOnly) {
+                depth++;
+            }
+        });
+
+        return output.join('\n');
+    }
+
+    function enhanceTechnicalXml() {
+        if (window.location.pathname.indexOf('/navinvoice/detail.php') === -1) {
+            return;
+        }
+
+        document.querySelectorAll('details pre').forEach(function (pre) {
+            var source = pre.textContent || '';
+            if (source.indexOf('<') === -1 || (source.indexOf('InvoiceData') === -1 && source.indexOf('<?xml') === -1)) {
+                return;
+            }
+
+            pre.textContent = prettyXml(source);
+
+            var details = pre.closest('details');
+            if (details) {
+                details.style.display = 'block';
+                details.style.width = '100%';
+                details.style.maxWidth = '100%';
+                details.style.minWidth = '0';
+                details.style.overflow = 'hidden';
+                details.style.boxSizing = 'border-box';
+            }
+
+            pre.style.display = 'block';
+            pre.style.width = '100%';
+            pre.style.maxWidth = '100%';
+            pre.style.minWidth = '0';
+            pre.style.maxHeight = '700px';
+            pre.style.overflow = 'auto';
+            pre.style.boxSizing = 'border-box';
+            pre.style.whiteSpace = 'pre-wrap';
+            pre.style.overflowWrap = 'anywhere';
+            pre.style.wordBreak = 'break-word';
+            pre.style.tabSize = '2';
+        });
+    }
+
+    function removeRedundantInvoiceAction() {
+        if (window.location.pathname.indexOf('/navinvoice/detail.php') === -1) {
+            return;
+        }
+
+        document.querySelectorAll('.tabsAction a.butAction').forEach(function (link) {
+            var href = link.getAttribute('href') || '';
+            if (href.indexOf('/fourn/facture/card.php?facid=') !== -1
+                || href.indexOf('/compta/facture/card.php?facid=') !== -1) {
+                link.remove();
+            }
+        });
+
+        document.querySelectorAll('.tabsAction').forEach(function (actions) {
+            if (!actions.querySelector('a,button,input')) {
+                actions.remove();
+            }
+        });
+    }
+
+    function isAllCaps(value) {
+        var text = String(value || '').trim();
+        if (!text) {
+            return false;
+        }
+        var upper = text.toLocaleUpperCase('hu-HU');
+        var lower = text.toLocaleLowerCase('hu-HU');
+        return text === upper && text !== lower;
+    }
+
+    function titleCaseHungarian(value) {
+        var text = String(value || '').toLocaleLowerCase('hu-HU');
+        return text.replace(/(^|[\s,./()\-])([\p{L}])/gu, function (_, prefix, letter) {
+            return prefix + letter.toLocaleUpperCase('hu-HU');
+        });
+    }
+
+    function normalizeAllCapsPartyText(value) {
+        var original = String(value || '').trim();
+        if (!isAllCaps(original)) {
+            return original;
+        }
+
+        var normalized = titleCaseHungarian(original);
+
+        [
+            'Utca', 'Út', 'Körút', 'Köz', 'Tér', 'Rakpart', 'Sugárút', 'Sétány',
+            'Sor', 'Dűlő', 'Lejtő', 'Liget', 'Park'
+        ].forEach(function (word) {
+            var re = new RegExp('(^|[^\\p{L}])' + word + '(?=$|[^\\p{L}])', 'gu');
+            normalized = normalized.replace(re, function (match, prefix) {
+                return prefix + word.toLocaleLowerCase('hu-HU');
+            });
+        });
+
+        ['MÁV', 'OTP', 'MOL', 'DSC', 'IBM', 'SAP'].forEach(function (acronym) {
+            var re = new RegExp('(^|[^\\p{L}\\p{N}])' + acronym + '(?=$|[^\\p{L}\\p{N}])', 'giu');
+            normalized = normalized.replace(re, function (match, prefix) {
+                return prefix + acronym;
+            });
+        });
+
+        return normalized;
+    }
+
+    function normalizeInvoicePartyCards() {
+        if (window.location.pathname.indexOf('/navinvoice/detail.php') === -1) {
+            return;
+        }
+
+        document.querySelectorAll('.fichehalfleft table.border, .fichehalfright table.border').forEach(function (table) {
+            var titleRow = table.querySelector('tr.liste_titre');
+            if (!titleRow) {
+                return;
+            }
+
+            table.querySelectorAll('tr').forEach(function (row) {
+                if (row.classList.contains('liste_titre')) {
+                    return;
+                }
+                var cells = row.querySelectorAll(':scope > td');
+                if (cells.length < 2) {
+                    return;
+                }
+                var valueCell = cells[1];
+                if (valueCell.children.length) {
+                    return;
+                }
+                var raw = String(valueCell.textContent || '').trim();
+                var normalized = normalizeAllCapsPartyText(raw);
+                if (normalized !== raw) {
+                    valueCell.textContent = normalized;
+                }
+            });
+        });
+    }
+
+    function element(tag, text, className) {
+        var node = document.createElement(tag);
+        if (className) {
+            node.className = className;
+        }
+        if (text !== undefined && text !== null) {
+            node.textContent = String(text);
+        }
+        return node;
+    }
+
+    function insertBeforeTechnicalXml(section) {
+        var technicalDetails = null;
+        document.querySelectorAll('details').forEach(function (details) {
+            if (!technicalDetails && details.querySelector('pre')) {
+                technicalDetails = details;
+            }
+        });
+        if (technicalDetails && technicalDetails.parentNode) {
+            var anchor = technicalDetails.parentNode;
+            if (anchor.parentNode) {
+                anchor.parentNode.insertBefore(section, anchor);
+                return true;
+            }
+        }
+        var fiche = document.querySelector('.fichecenter');
+        if (fiche) {
+            fiche.appendChild(section);
+            return true;
+        }
+        return false;
+    }
+
+    function productStatusLabel(labels, status) {
+        return labels[status] || status || '—';
+    }
+
+    function renderProductRelations(payload) {
+        if (!payload || !payload.labels || !Array.isArray(payload.lines) || !payload.lines.length) {
+            return;
+        }
+        if (document.querySelector('.navinvoice-product-relations')) {
+            return;
+        }
+
+        var labels = payload.labels;
+        var section = element('div', null, 'navinvoice-product-relations');
+        section.style.marginTop = '18px';
+        section.style.width = '100%';
+        section.style.maxWidth = '100%';
+        section.style.minWidth = '0';
+
+        section.appendChild(element('div', labels.title, 'titre'));
+        section.appendChild(element('div', labels.help, 'opacitymedium small marginbottomonly'));
+
+        var summary = payload.summary || {};
+        var summaryParts = [
+            (labels.summary_matched || 'Matched') + ': ' + (summary.matched || 0),
+            (labels.summary_unmatched || 'No match') + ': ' + (summary.unmatched || 0),
+            (labels.summary_review || 'Needs review') + ': ' + (summary.review || 0),
+            (labels.summary_ambiguous || 'Ambiguous') + ': ' + (summary.ambiguous || 0)
+        ];
+        section.appendChild(element('div', (labels.summary || '') + ': ' + summaryParts.join(' · '), 'small marginbottomonly'));
+
+        var wrap = element('div', null, 'div-table-responsive');
+        var table = element('table', null, 'noborder centpercent');
+        var head = element('tr', null, 'liste_titre');
+        ['line', 'description', 'nav_reference', 'dolibarr_product', 'match_status'].forEach(function (key) {
+            head.appendChild(element('td', labels[key] || key));
+        });
+        table.appendChild(head);
+
+        payload.lines.forEach(function (line) {
+            var tr = element('tr', null, 'oddeven');
+            tr.appendChild(element('td', line.number || '—'));
+            tr.appendChild(element('td', line.description || '—'));
+            tr.appendChild(element('td', line.supplier_ref || '—'));
+
+            var match = line.match || {};
+            var productCell = element('td');
+            if (match.product && match.product.id) {
+                var productLink = element('a', (match.product.ref || ('#' + match.product.id)) + (match.product.label ? ' — ' + match.product.label : ''));
+                productLink.href = '../../product/card.php?id=' + encodeURIComponent(match.product.id);
+                productCell.appendChild(productLink);
+            } else {
+                productCell.appendChild(element('span', '—', 'opacitymedium'));
+            }
+            tr.appendChild(productCell);
+
+            var status = String(match.status || 'none');
+            var statusClass = status === 'matched' ? 'ok' : (status === 'none' || status === 'no_reference' || status === 'partner_required' ? 'opacitymedium' : 'warning');
+            tr.appendChild(element('td', productStatusLabel(labels, status), statusClass));
+            table.appendChild(tr);
+        });
+
+        wrap.appendChild(table);
+        section.appendChild(wrap);
+        insertBeforeTechnicalXml(section);
+    }
+
+    function detailId() {
+        if (window.location.pathname.indexOf('/navinvoice/detail.php') === -1) {
+            return '';
+        }
+        var params = new URLSearchParams(window.location.search);
+        var id = params.get('id');
+        return id && /^\d+$/.test(id) ? id : '';
+    }
+
+    function appendIssueMessages(statusCell, messages, className) {
+        if (!Array.isArray(messages) || !messages.length) {
+            return;
+        }
+        var list = element('div', null, className + ' small');
+        list.style.marginTop = '4px';
+        messages.forEach(function (message) {
+            var row = element('div', '• ' + String(message));
+            row.style.marginTop = '2px';
+            list.appendChild(row);
+        });
+        statusCell.appendChild(list);
+    }
+
+    function renderImportStatus(payload) {
+        if (!payload || !payload.labels || !payload.state) {
+            return;
+        }
+
+        var proposalLabel = String(payload.labels.proposal_status || '').trim();
+        if (!proposalLabel) {
+            return;
+        }
+
+        var statusCell = null;
+        document.querySelectorAll('table.border td').forEach(function (cell) {
+            if (!statusCell && String(cell.textContent || '').trim() === proposalLabel && cell.nextElementSibling) {
+                statusCell = cell.nextElementSibling;
+            }
+        });
+        if (!statusCell) {
+            return;
+        }
+
+        statusCell.textContent = '';
+        var state = String(payload.state || 'blocked');
+        var prefix = (state === 'ready' || state === 'imported') ? '✓ ' : '⚠ ';
+        var link = element('a', prefix + String(payload.label || state));
+
+        if (state === 'imported' && payload.linked_url) {
+            link.href = payload.linked_url;
+        } else {
+            link.href = 'import.php?id=' + encodeURIComponent(detailId());
+        }
+
+        if (state === 'ready' || state === 'imported') {
+            link.className = 'ok';
+        } else if (state === 'review') {
+            link.className = 'warning';
+        } else {
+            link.className = 'error';
+        }
+        statusCell.appendChild(link);
+
+        if (state === 'blocked') {
+            appendIssueMessages(statusCell, payload.blocker_messages, 'error');
+        } else if (state === 'review') {
+            appendIssueMessages(statusCell, payload.warning_messages, 'warning');
+        }
+    }
+
+    function loadImportStatus() {
+        var id = detailId();
+        if (!id) {
+            return;
+        }
+
+        var url = new URL('importstatus.php', window.location.href);
+        url.search = '?id=' + encodeURIComponent(id);
+        fetch(url.toString(), {credentials: 'same-origin', headers: {'Accept': 'application/json'}, cache: 'no-store'})
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error('import status request failed');
+                }
+                return response.json();
+            })
+            .then(renderImportStatus)
+            .catch(function () {
+            });
+    }
+
+    function findPartnerEnrichmentTable(labels) {
+        var result = null;
+        document.querySelectorAll('table.noborder').forEach(function (table) {
+            if (result) {
+                return;
+            }
+            var head = table.querySelector('tr.liste_titre');
+            if (!head) {
+                return;
+            }
+            var cells = Array.prototype.map.call(head.querySelectorAll(':scope > td'), function (cell) {
+                return String(cell.textContent || '').trim();
+            });
+            if (cells.length === 4
+                && cells[0] === String(labels.field || '').trim()
+                && cells[1] === String(labels.current || '').trim()
+                && cells[2] === String(labels.nav || '').trim()
+                && cells[3] === String(labels.status || '').trim()) {
+                result = table;
+            }
+        });
+        return result;
+    }
+
+    function renderPartnerEnrichmentSelection(payload) {
+        if (!payload || !payload.ok || !payload.labels || !Array.isArray(payload.items) || !payload.items.length) {
+            return;
+        }
+        if (document.querySelector('.navinvoice-partner-selection-checkbox')) {
+            return;
+        }
+
+        var labels = payload.labels;
+        var table = findPartnerEnrichmentTable(labels);
+        if (!table) {
+            return;
+        }
+
+        var wrap = table.closest('.div-table-responsive');
+        var head = table.querySelector('tr.liste_titre');
+        var selectHead = element('td', labels.selection || '');
+        selectHead.style.width = '1%';
+        selectHead.style.whiteSpace = 'nowrap';
+        head.insertBefore(selectHead, head.firstElementChild);
+
+        var rows = Array.prototype.filter.call(table.querySelectorAll('tr'), function (row) {
+            return !row.classList.contains('liste_titre');
+        });
+
+        rows.forEach(function (row, index) {
+            var item = payload.items[index];
+            if (!item) {
+                return;
+            }
+
+            var selectCell = element('td');
+            selectCell.className = 'center';
+            var checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'navinvoice-partner-selection-checkbox';
+            checkbox.value = String(item.field || '');
+            checkbox.checked = !!item.default_selected;
+            checkbox.disabled = !item.selectable || !payload.can_update;
+            checkbox.setAttribute('aria-label', String(item.label || item.field || ''));
+            selectCell.appendChild(checkbox);
+            row.insertBefore(selectCell, row.firstElementChild);
+
+            var statusCell = row.lastElementChild;
+            if (statusCell) {
+                statusCell.textContent = '';
+                var prefix = item.default_selected ? '✓ ' : (item.selectable ? '⚠ ' : '— ');
+                var status = element('span', prefix + String(item.selection_status || ''));
+                status.className = item.default_selected ? 'ok' : (item.selectable ? 'warning' : 'opacitymedium');
+                statusCell.appendChild(status);
+            }
+        });
+
+        if (wrap) {
+            var oldNotice = wrap.previousElementSibling;
+            if (oldNotice && (oldNotice.classList.contains('info') || oldNotice.classList.contains('warning') || oldNotice.classList.contains('opacitymedium'))) {
+                oldNotice.style.display = 'none';
+            }
+            var notice = element('div', labels.notice || '', 'info marginbottomonly navinvoice-partner-selection-notice');
+            wrap.parentNode.insertBefore(notice, wrap);
+        }
+
+        var oldAction = document.querySelector('form input[name="action"][value="apply_partner_enrichment"]');
+        if (oldAction && oldAction.form) {
+            oldAction.form.style.display = 'none';
+        }
+
+        if (!payload.can_update || !wrap) {
+            return;
+        }
+
+        var actions = element('div', null, 'center tabsAction navinvoice-partner-selection-actions');
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'button button-save';
+        button.textContent = labels.apply || 'Apply selected partner data';
+        actions.appendChild(button);
+        wrap.parentNode.insertBefore(actions, wrap.nextSibling);
+
+        button.addEventListener('click', function () {
+            var selected = Array.prototype.filter.call(
+                table.querySelectorAll('.navinvoice-partner-selection-checkbox'),
+                function (checkbox) { return checkbox.checked && !checkbox.disabled; }
+            ).map(function (checkbox) { return checkbox.value; });
+
+            if (!selected.length) {
+                window.alert(labels.nothing_selected || 'No partner data is selected.');
+                return;
+            }
+            if (!window.confirm(labels.confirm || 'Apply selected partner data?')) {
+                return;
+            }
+
+            button.disabled = true;
+            var body = new URLSearchParams();
+            body.append('id', detailId());
+            body.append('token', String(payload.token || ''));
+            selected.forEach(function (field) {
+                body.append('fields[]', field);
+            });
+
+            fetch('partnerenrichment.php', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                cache: 'no-store',
+                body: body.toString()
+            }).then(function (response) {
+                return response.json().catch(function () { return {}; }).then(function (data) {
+                    if (!response.ok || !data.ok) {
+                        throw new Error(data.error || ('HTTP ' + response.status));
+                    }
+                    return data;
+                });
+            }).then(function () {
+                window.location.reload();
+            }).catch(function (error) {
+                button.disabled = false;
+                window.alert((labels.failed || 'Failed to apply selected partner data') + ': ' + error.message);
+            });
+        });
+    }
+
+    function loadPartnerEnrichmentSelection() {
+        var id = detailId();
+        if (!id) {
+            return;
+        }
+        var url = new URL('partnerenrichment.php', window.location.href);
+        url.search = '?id=' + encodeURIComponent(id);
+        fetch(url.toString(), {credentials: 'same-origin', headers: {'Accept': 'application/json'}, cache: 'no-store'})
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error('partner enrichment request failed');
+                }
+                return response.json();
+            })
+            .then(renderPartnerEnrichmentSelection)
+            .catch(function () {
+                // Keep the server-rendered safe-only enrichment UI as fallback.
+            });
+    }
+
+    function loadProductRelations() {
+        var id = detailId();
+        if (!id) {
+            return;
+        }
+
+        var url = new URL('productmatches.php', window.location.href);
+        url.search = '?id=' + encodeURIComponent(id);
+        fetch(url.toString(), {credentials: 'same-origin', headers: {'Accept': 'application/json'}, cache: 'no-store'})
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error('product relation request failed');
+                }
+                return response.json();
+            })
+            .then(renderProductRelations)
+            .catch(function () {
+            });
+    }
+
+    function init() {
+        enhanceTechnicalXml();
+        removeRedundantInvoiceAction();
+        normalizeInvoicePartyCards();
+        loadImportStatus();
+        loadPartnerEnrichmentSelection();
+        loadProductRelations();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();

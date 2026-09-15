@@ -4,8 +4,9 @@
  * Resolve NAV invoice units to active Dolibarr c_units entries.
  *
  * The resolver intentionally prefers stable dictionary codes over translated
- * labels. Custom NAV OWN units may be matched against an exact Dolibarr code,
- * short label or literal label, but ambiguous matches are never selected.
+ * labels. Custom NAV OWN units may be matched against known business aliases
+ * or an exact Dolibarr code, short label or literal label, but ambiguous
+ * matches are never selected.
  */
 class NavUnitResolver
 {
@@ -58,28 +59,44 @@ class NavUnitResolver
             return $result;
         }
 
-        // NAV standard unit enum -> stable Dolibarr dictionary code.
-        // LINEAR_METER is dimensionally the same core Dolibarr unit as METER.
+        // NAV standard unit enum -> stable Dolibarr dictionary code and type.
+        // Constraining by unit_type avoids rejecting a canonical dictionary
+        // entry merely because an installation contains a custom unit reusing
+        // the same code in another dimension. LINEAR_METER is dimensionally
+        // the same core Dolibarr unit as METER.
         $codeMap = array(
-            'PIECE' => 'P',
-            'KILOGRAM' => 'KG',
-            'TON' => 'T',
-            'KWH' => 'KWH',
-            'DAY' => 'D',
-            'HOUR' => 'H',
-            'MINUTE' => 'MI',
-            'MONTH' => 'MO',
-            'LITER' => 'L',
-            'KILOMETER' => 'KM',
-            'CUBIC_METER' => 'M3',
-            'METER' => 'M',
-            'LINEAR_METER' => 'M',
+            'PIECE' => array('P', 'qty'),
+            'KILOGRAM' => array('KG', 'weight'),
+            'TON' => array('T', 'weight'),
+            'KWH' => array('KWH', ''),
+            'DAY' => array('D', 'time'),
+            'HOUR' => array('H', 'time'),
+            'MINUTE' => array('MI', 'time'),
+            'MONTH' => array('MO', 'time'),
+            'LITER' => array('L', 'volume'),
+            'KILOMETER' => array('KM', 'distance'),
+            'CUBIC_METER' => array('M3', 'volume'),
+            'METER' => array('M', 'size'),
+            'LINEAR_METER' => array('M', 'size'),
         );
 
-        if ($navUnit !== 'OWN' && isset($codeMap[$navUnit])) {
-            $match = $this->findUniqueByCode($codeMap[$navUnit]);
+        // Some issuers legally send unitOfMeasure=OWN but put one of NAV's
+        // standard enum names into unitOfMeasureOwn (for example
+        // "LINEAR_METER "). Treat such values as aliases of the standard enum,
+        // otherwise literal matching would look for a Dolibarr unit actually
+        // named LINEAR_METER instead of mapping it to M / size.
+        $mappedNavUnit = $navUnit;
+        if ($navUnit === 'OWN' && $ownUnit !== '') {
+            $ownEnum = strtoupper(trim($ownUnit));
+            if (isset($codeMap[$ownEnum])) {
+                $mappedNavUnit = $ownEnum;
+            }
+        }
+
+        if (isset($codeMap[$mappedNavUnit])) {
+            $match = $this->findUniqueByCode($codeMap[$mappedNavUnit][0], $codeMap[$mappedNavUnit][1]);
             if ($match !== null) {
-                return $this->resolvedResult($result, $match, 'code');
+                return $this->resolvedResult($result, $match, $navUnit === 'OWN' ? 'own_standard_code' : 'code');
             }
 
             // Some installations use a custom code while retaining the
@@ -98,11 +115,24 @@ class NavUnitResolver
                 'METER' => array('m', 'size'),
                 'LINEAR_METER' => array('m', 'size'),
             );
-            if (isset($symbolMap[$navUnit])) {
-                $match = $this->findUniqueByShortLabel($symbolMap[$navUnit][0], $symbolMap[$navUnit][1]);
+            if (isset($symbolMap[$mappedNavUnit])) {
+                $match = $this->findUniqueByShortLabel($symbolMap[$mappedNavUnit][0], $symbolMap[$mappedNavUnit][1]);
                 if ($match !== null) {
-                    return $this->resolvedResult($result, $match, 'symbol');
+                    return $this->resolvedResult($result, $match, $navUnit === 'OWN' ? 'own_standard_symbol' : 'symbol');
                 }
+            }
+        }
+
+        // Hungarian and common invoice software frequently uses OWN even for
+        // conventional units (for example OWN/m or OWN/db). Resolve these
+        // known aliases to the installation's stable Dolibarr unit code before
+        // generic literal matching. This also disambiguates "m": in the active
+        // dictionary it means M/size (meter), while MO/time may also expose
+        // "m" as its short label.
+        if ($navUnit === 'OWN' && $ownUnit !== '') {
+            $match = $this->findOwnAlias($ownUnit);
+            if ($match !== null) {
+                return $this->resolvedResult($result, $match, 'own_alias');
             }
         }
 
@@ -129,6 +159,75 @@ class NavUnitResolver
         }
 
         return $result;
+    }
+
+    /**
+     * Resolve common OWN values against the stable codes used by the current
+     * Dolibarr unit dictionary. Alias keys are normalized exactly like source
+     * values, so m³ and m3 are equivalent and dots/whitespace are ignored.
+     *
+     * The deliberately wrong-looking MI short label "piece" seen in some
+     * dictionaries is not treated as a minute alias; semantic aliases always
+     * target the canonical code and unit type instead of trusting that label.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function findOwnAlias(string $value): ?array
+    {
+        $aliases = array(
+            'km' => array('KM', 'distance'),
+            't' => array('T', 'weight'),
+            'tonna' => array('T', 'weight'),
+            'kg' => array('KG', 'weight'),
+            'g' => array('G', 'weight'),
+            'mg' => array('MG', 'weight'),
+            'm' => array('M', 'size'),
+            'dm' => array('DM', 'size'),
+            'cm' => array('CM', 'size'),
+            'mm' => array('MM', 'size'),
+            'm3' => array('M3', 'volume'),
+            'l' => array('L', 'volume'),
+            'liter' => array('L', 'volume'),
+            'litre' => array('L', 'volume'),
+            'db' => array('P', 'qty'),
+            'darab' => array('P', 'qty'),
+            'piece' => array('P', 'qty'),
+            'pc' => array('P', 'qty'),
+            'pcs' => array('P', 'qty'),
+            'klt' => array('SET', 'qty'),
+            'készlet' => array('SET', 'qty'),
+            'keszlet' => array('SET', 'qty'),
+            'set' => array('SET', 'qty'),
+            's' => array('S', 'time'),
+            'másodperc' => array('S', 'time'),
+            'masodperc' => array('S', 'time'),
+            'min' => array('MI', 'time'),
+            'mn' => array('MI', 'time'),
+            'perc' => array('MI', 'time'),
+            'h' => array('H', 'time'),
+            'óra' => array('H', 'time'),
+            'ora' => array('H', 'time'),
+            'd' => array('D', 'time'),
+            'nap' => array('D', 'time'),
+            'w' => array('W', 'time'),
+            'hét' => array('W', 'time'),
+            'het' => array('W', 'time'),
+            'mo' => array('MO', 'time'),
+            'hó' => array('MO', 'time'),
+            'ho' => array('MO', 'time'),
+            'hónap' => array('MO', 'time'),
+            'honap' => array('MO', 'time'),
+            'y' => array('Y', 'time'),
+            'év' => array('Y', 'time'),
+            'ev' => array('Y', 'time'),
+        );
+
+        $needle = $this->normalize($value);
+        if (!isset($aliases[$needle])) {
+            return null;
+        }
+
+        return $this->findUniqueByCode($aliases[$needle][0], $aliases[$needle][1]);
     }
 
     /** @return array<int,array<string,mixed>> */
@@ -163,11 +262,14 @@ class NavUnitResolver
     }
 
     /** @return array<string,mixed>|null */
-    private function findUniqueByCode(string $code): ?array
+    private function findUniqueByCode(string $code, string $unitType = ''): ?array
     {
         $matches = array();
         foreach ($this->loadUnits() as $unit) {
-            if (strcasecmp((string) $unit['code'], $code) === 0) {
+            if ($unitType !== '' && strcasecmp(trim((string) $unit['unit_type']), trim($unitType)) !== 0) {
+                continue;
+            }
+            if (strcasecmp(trim((string) $unit['code']), trim($code)) === 0) {
                 $matches[] = $unit;
             }
         }
@@ -179,7 +281,7 @@ class NavUnitResolver
     {
         $matches = array();
         foreach ($this->loadUnits() as $unit) {
-            if ($unitType !== '' && strcasecmp((string) $unit['unit_type'], $unitType) !== 0) {
+            if ($unitType !== '' && strcasecmp(trim((string) $unit['unit_type']), trim($unitType)) !== 0) {
                 continue;
             }
             if ($this->normalize((string) $unit['short_label']) === $this->normalize($symbol)) {

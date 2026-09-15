@@ -12,9 +12,9 @@ if (!$res) {
 
 dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
-dol_include_once('/navinvoice/class/navinvoiceimportpreview.class.php');
+dol_include_once('/navinvoice/class/navinvoiceoperationpreview.class.php');
 dol_include_once('/navinvoice/class/navinvoiceimporter.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navinvoiceui@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -70,7 +70,7 @@ if ($parsed !== null) {
 
     if ($partnerMatchError === '') {
         try {
-            $previewBuilder = new NavInvoiceImportPreview($db, (int) $conf->entity, $baseCurrency);
+            $previewBuilder = new NavInvoiceOperationPreview($db, (int) $conf->entity, $baseCurrency);
             $preview = $previewBuilder->build($parsed, $record, $partnerMatch);
         } catch (Throwable $e) {
             $previewError = $e->getMessage();
@@ -96,6 +96,23 @@ if ($action === 'import_draft') {
             $importer = new NavInvoiceImporter($db, (int) $conf->entity, $baseCurrency);
             $result = $importer->importDraft($preview, $record, $user);
             setEventMessages($langs->trans('ImportSucceeded', $preview['invoice_number']), null, 'mesgs');
+
+            if ($isInbound && getDolGlobalInt('NAVINVOICE_AUTO_VALIDATE_INBOUND')) {
+                if (!empty($result['validated'])) {
+                    setEventMessages($langs->trans('InboundAutoValidationSucceeded'), null, 'mesgs');
+                } elseif (!empty($result['validation_error'])) {
+                    setEventMessages(
+                        $langs->trans('InboundAutoValidationFailed', (string) $result['validation_error']),
+                        null,
+                        'warnings'
+                    );
+                } elseif (($result['validation_skipped_reason'] ?? '') === 'stock_warehouse_required') {
+                    setEventMessages($langs->trans('InboundAutoValidationSkippedStock'), null, 'warnings');
+                } elseif (($result['validation_skipped_reason'] ?? '') === 'preview_not_ready') {
+                    setEventMessages($langs->trans('InboundAutoValidationSkippedReview'), null, 'warnings');
+                }
+            }
+
             header('Location: '.$result['url']);
             exit;
         } catch (Throwable $e) {
@@ -157,6 +174,9 @@ if ($linkedId > 0) {
 if (is_array($preview)) {
     $state = (string) $preview['state'];
     $isSimplified = strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED';
+    $operation = strtoupper((string) ($preview['operation'] ?? 'CREATE'));
+    $operationMapping = (string) ($preview['operation_mapping'] ?? ($operation === 'CREATE' ? 'standard' : ''));
+    $sourceInvoiceId = (int) ($preview['source_invoice_id'] ?? 0);
     if ($state === 'ready') {
         $stateDisplay = img_picto('', 'tick').' <span class="ok">'.$langs->trans('ImportStateReady').'</span>';
     } elseif ($state === 'review') {
@@ -170,6 +190,14 @@ if (is_array($preview)) {
     print '<tr><td class="titlefield">'.$langs->trans('ProposalStatus').'</td><td>'.$stateDisplay.'</td></tr>';
     print '<tr><td>'.$langs->trans('ImportTarget').'</td><td>'.$langs->trans($isInbound ? 'ImportAsSupplierInvoice' : 'ImportAsCustomerInvoice').'</td></tr>';
     print '<tr><td>'.$langs->trans('NavInvoiceNumber').'</td><td>'.$display($preview['invoice_number']).'</td></tr>';
+    print '<tr><td>'.$langs->trans('Operation').'</td><td>'.$display($operation).'</td></tr>';
+    print '<tr><td>'.$langs->trans('OperationMapping').'</td><td>'.$display($langs->trans('OperationMapping_'.$operationMapping)).'</td></tr>';
+    if ($sourceInvoiceId > 0) {
+        $sourceUrl = $isInbound
+            ? DOL_URL_ROOT.'/fourn/facture/card.php?facid='.$sourceInvoiceId
+            : DOL_URL_ROOT.'/compta/facture/card.php?facid='.$sourceInvoiceId;
+        print '<tr><td>'.$langs->trans('SourceDolibarrInvoice').'</td><td><a href="'.dol_escape_htmltag($sourceUrl).'">#'.$sourceInvoiceId.'</a></td></tr>';
+    }
     print '<tr><td>'.$langs->trans('InvoiceCategory').'</td><td>'.$display($preview['category']).'</td></tr>';
     print '<tr><td>'.$langs->trans('InvoiceIssueDate').'</td><td>'.$display($preview['header']['invoice_date']).'</td></tr>';
     print '<tr><td>'.$langs->trans('InvoiceDeliveryDate').'</td><td>'.$display($preview['header']['delivery_date']).'</td></tr>';
@@ -228,6 +256,7 @@ if (is_array($preview)) {
     }
     print '<td class="right">'.$langs->trans($isSimplified ? 'NavGrossUnitPrice' : 'NavUnitPrice').'</td>';
     print '<td class="right">'.$langs->trans('DolibarrNetUnitPrice').'</td>';
+    print '<td class="right">'.$langs->trans('Discount').'</td>';
     print '<td class="right">'.$langs->trans('VAT').'</td>';
     print '<td class="right">'.$langs->trans('AmountHT').($isSimplified ? ' *' : '').'</td>';
     print '<td class="right">'.$langs->trans('AmountTTC').'</td>';
@@ -275,6 +304,19 @@ if (is_array($preview)) {
             print ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>';
         }
         print '</td>';
+        $discountPercent = (float) ($line['discount_percent'] ?? 0);
+        if ($discountPercent > 0.0000001) {
+            $discountText = price($discountPercent).'%';
+            if (($line['discount_value'] ?? null) !== null && $line['discount_value'] !== '') {
+                $discountText .= '<br><span class="opacitymedium small">'.$money($line['discount_value'], $preview['header']['currency']).'</span>';
+            }
+            if (!empty($line['discount_description'])) {
+                $discountText .= '<br><span class="opacitymedium small">'.dol_escape_htmltag((string) $line['discount_description']).'</span>';
+            }
+            print '<td class="right">'.$discountText.'</td>';
+        } else {
+            print '<td class="right">'.$display(null).'</td>';
+        }
         $vatDisplay = $line['vat_rate'] !== null ? price($line['vat_rate']).'%' : $display(null);
         print '<td class="right">'.$vatDisplay.'</td>';
         print '<td class="right">'.$money($line['net'], $preview['header']['currency']).'</td>';
@@ -293,7 +335,9 @@ if (is_array($preview)) {
     }
     print '<br>';
 
-    if (!$isInbound) {
+    if ($operation !== 'CREATE') {
+        print '<div class="info marginbottomonly">'.$langs->trans('ImportNonCreateDraftNotice').'</div>';
+    } elseif (!$isInbound) {
         print '<div class="info marginbottomonly">'.$langs->trans('ImportOutboundDraftNumberNotice').'</div>';
     } else {
         print '<div class="info marginbottomonly">'.$langs->trans('ImportSupplierReferenceNotice').'</div>';

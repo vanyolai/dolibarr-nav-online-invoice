@@ -47,10 +47,11 @@ class NavPartnerEnrichmentPreview
         $this->compareTaxNumber($items, (string) $partner['tva_intra'], $navTax, $strongMatch);
 
         $address = is_array($party['address'] ?? null) ? $party['address'] : array();
-        $navStreet = $this->streetAddress($address);
+        $navStreet = $this->normalizeAddressText($this->streetAddress($address));
+        $navTown = $this->normalizeProperText((string) ($address['city'] ?? ''));
         $this->compareField($items, 'address', 'Address', (string) $partner['address'], $navStreet, $strongMatch);
         $this->compareField($items, 'zip', 'Zip', (string) $partner['zip'], (string) ($address['postal_code'] ?? ''), $strongMatch);
-        $this->compareField($items, 'town', 'Town', (string) $partner['town'], (string) ($address['city'] ?? ''), $strongMatch);
+        $this->compareField($items, 'town', 'Town', (string) $partner['town'], $navTown, $strongMatch);
 
         $navCountryCode = strtoupper(trim((string) ($address['country_code'] ?? '')));
         if ($navCountryCode !== '') {
@@ -218,12 +219,10 @@ class NavPartnerEnrichmentPreview
         $proposedCore = strlen($proposedDigits) >= 8 ? substr($proposedDigits, 0, 8) : '';
 
         if ($currentCore !== '' && $proposedCore !== '' && $currentCore === $proposedCore) {
-            // Exact value or Dolibarr already contains at least as much tax data.
             if ($currentDigits === $proposedDigits || strlen($currentDigits) > 8 && strlen($proposedDigits) === 8) {
                 return;
             }
 
-            // Dolibarr only stores the taxpayer core; NAV has the complete form.
             if (strlen($currentDigits) === 8 && strlen($proposedDigits) > 8) {
                 $items[] = array(
                     'field' => 'tva_intra',
@@ -236,7 +235,6 @@ class NavPartnerEnrichmentPreview
                 return;
             }
 
-            // Same taxpayer core but different suffix: keep it visible for review.
             $items[] = array(
                 'field' => 'tva_intra',
                 'label' => 'TaxNumber',
@@ -333,6 +331,48 @@ class NavPartnerEnrichmentPreview
             return implode(', ', $extras);
         }
         return trim($street.($extras ? ', '.implode(', ', $extras) : ''));
+    }
+
+    private function normalizeProperText(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '' || !$this->isAllCaps($value)) {
+            return $value;
+        }
+        return $this->titleCase($value);
+    }
+
+    private function normalizeAddressText(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '' || !$this->isAllCaps($value)) {
+            return $value;
+        }
+
+        $normalized = $this->titleCase($value);
+        $common = array('Utca', 'Út', 'Körút', 'Köz', 'Tér', 'Rakpart', 'Sugárút', 'Sétány', 'Sor', 'Dűlő', 'Lejtő', 'Liget', 'Park');
+        foreach ($common as $word) {
+            $lower = function_exists('mb_strtolower') ? mb_strtolower($word, 'UTF-8') : strtolower($word);
+            $normalized = preg_replace('/(?<![\p{L}])'.preg_quote($word, '/').'(?![\p{L}])/u', $lower, $normalized) ?? $normalized;
+        }
+        return $normalized;
+    }
+
+    private function titleCase(string $value): string
+    {
+        if (function_exists('mb_convert_case')) {
+            return mb_convert_case(mb_strtolower($value, 'UTF-8'), MB_CASE_TITLE, 'UTF-8');
+        }
+        return ucwords(strtolower($value));
+    }
+
+    private function isAllCaps(string $value): bool
+    {
+        if (function_exists('mb_strtoupper') && function_exists('mb_strtolower')) {
+            return mb_strtoupper($value, 'UTF-8') === $value
+                && mb_strtolower($value, 'UTF-8') !== $value;
+        }
+        return strtoupper($value) === $value && strtolower($value) !== $value;
     }
 
     private function normalize(string $value): string

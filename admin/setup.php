@@ -11,15 +11,77 @@ if (!$res) {
 }
 
 require_once DOL_DOCUMENT_ROOT.'/core/lib/admin.lib.php';
+require_once DOL_DOCUMENT_ROOT.'/cron/class/cronjob.class.php';
 dol_include_once('/navinvoice/class/navapi.class.php');
 
-$langs->loadLangs(array('admin', 'navinvoice@navinvoice'));
+$langs->loadLangs(array('admin', 'navinvoice@navinvoice', 'navinvoiceui@navinvoice', 'navpurchase@navinvoice'));
 if (!$user->admin) {
     accessforbidden();
 }
 
+/**
+ * Keep the module-level scheduled-sync switch and the Dolibarr cron entry in
+ * one state. Older module versions registered the cron disabled, so merely
+ * changing the module descriptor is not enough for already installed systems.
+ */
+function navinvoiceSetScheduledSyncCronState($db, int $entity, bool $enabled, $user): void
+{
+    $label = 'NavInvoiceScheduledSync';
+    $findCronId = static function () use ($db, $entity, $label): int {
+        $sql = 'SELECT rowid FROM '.MAIN_DB_PREFIX.'cronjob';
+        $sql .= " WHERE label = '".$db->escape($label)."' AND entity = ".$entity;
+        $sql .= ' ORDER BY rowid DESC LIMIT 1';
+        $resql = $db->query($sql);
+        if (!$resql) {
+            throw new Exception($db->lasterror());
+        }
+        $obj = $db->fetch_object($resql);
+        $db->free($resql);
+        return $obj ? (int) $obj->rowid : 0;
+    };
+
+    $cronId = $findCronId();
+    if ($cronId <= 0) {
+        dol_include_once('/navinvoice/core/modules/modNavInvoice.class.php');
+        $module = new modNavInvoice($db);
+        if ($module->insert_cronjobs() < 0) {
+            throw new Exception('The NAV scheduled synchronization job could not be registered.');
+        }
+        $cronId = $findCronId();
+    }
+    if ($cronId <= 0) {
+        throw new Exception('The NAV scheduled synchronization job is missing.');
+    }
+
+    $cron = new Cronjob($db);
+    if ($cron->fetch($cronId) <= 0) {
+        throw new Exception('The NAV scheduled synchronization job could not be loaded.');
+    }
+
+    $wasEnabled = ((int) $cron->status === Cronjob::STATUS_ENABLED);
+    $cron->status = $enabled ? Cronjob::STATUS_ENABLED : Cronjob::STATUS_DISABLED;
+    $cron->frequency = 1;
+    $cron->unitfrequency = '3600';
+    $cron->test = 'isModEnabled("navinvoice") && getDolGlobalInt("NAVINVOICE_SYNC_ENABLED")';
+
+    // When switching the job on, make it immediately due. The next Dolibarr
+    // cron-runner pass can then execute it without waiting for a full hour.
+    if ($enabled && !$wasEnabled) {
+        $cron->datenextrun = dol_now();
+    }
+
+    if ($cron->update($user) < 0) {
+        $message = trim((string) $cron->error);
+        if ($message === '' && !empty($cron->errors)) {
+            $message = implode('; ', $cron->errors);
+        }
+        throw new Exception($message !== '' ? $message : 'The NAV scheduled synchronization job could not be updated.');
+    }
+}
+
 $action = GETPOST('action', 'aZ09');
 $isConfigPost = in_array($action, array('save', 'test'), true);
+$storedSyncEnabled = (bool) getDolGlobalInt('NAVINVOICE_SYNC_ENABLED');
 
 $formEnvironment = $isConfigPost
     ? (GETPOST('environment', 'alpha') === 'production' ? 'production' : 'test')
@@ -29,8 +91,11 @@ $formTaxNumber = $isConfigPost
     ? preg_replace('/\D+/', '', GETPOST('tax_number', 'alphanohtml'))
     : getDolGlobalString('NAVINVOICE_TAX_NUMBER');
 $formLookbackDays = $isConfigPost ? max(1, min(35, GETPOSTINT('lookback_days'))) : getDolGlobalInt('NAVINVOICE_SYNC_LOOKBACK_DAYS', 7);
-$formSyncEnabled = $isConfigPost ? (bool) GETPOSTINT('sync_enabled') : (bool) getDolGlobalInt('NAVINVOICE_SYNC_ENABLED');
+$formSyncEnabled = $isConfigPost ? (bool) GETPOSTINT('sync_enabled') : $storedSyncEnabled;
 $formFetchFullData = $isConfigPost ? (bool) GETPOSTINT('fetch_full_data') : (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1);
+$formAutoValidateInbound = $isConfigPost ? (bool) GETPOSTINT('auto_validate_inbound') : (bool) getDolGlobalInt('NAVINVOICE_AUTO_VALIDATE_INBOUND');
+$formPurchaseWorkbench = $isConfigPost ? (bool) GETPOSTINT('purchase_workbench_enabled') : (bool) getDolGlobalInt('NAVINVOICE_PURCHASE_WORKBENCH_ENABLED');
+$formShowTechnicalXml = $isConfigPost ? (bool) GETPOSTINT('show_technical_xml') : (bool) getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1);
 
 if ($isConfigPost) {
     $password = GETPOST('password', 'none');
@@ -59,6 +124,9 @@ if ($isConfigPost) {
         dolibarr_set_const($db, 'NAVINVOICE_SYNC_ENABLED', $formSyncEnabled ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_FETCH_FULL_DATA', $formFetchFullData ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_SYNC_LOOKBACK_DAYS', (string) $formLookbackDays, 'chaine', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_AUTO_VALIDATE_INBOUND', $formAutoValidateInbound ? '1' : '0', 'yesno', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_PURCHASE_WORKBENCH_ENABLED', $formPurchaseWorkbench ? '1' : '0', 'yesno', 0, '', $conf->entity);
+        dolibarr_set_const($db, 'NAVINVOICE_SHOW_TECHNICAL_XML', $formShowTechnicalXml ? '1' : '0', 'yesno', 0, '', $conf->entity);
 
         if ($password !== '') {
             dolibarr_set_const($db, 'NAVINVOICE_PASSWORD', $password, 'chaine', 0, '', $conf->entity);
@@ -67,6 +135,18 @@ if ($isConfigPost) {
             dolibarr_set_const($db, 'NAVINVOICE_SIGNING_KEY', $signingKey, 'chaine', 0, '', $conf->entity);
         }
 
+        try {
+            navinvoiceSetScheduledSyncCronState($db, (int) $conf->entity, $formSyncEnabled, $user);
+        } catch (Throwable $e) {
+            // Do not leave the module flag claiming scheduled sync is enabled
+            // when the underlying Dolibarr cron entry could not be synchronized.
+            dolibarr_set_const($db, 'NAVINVOICE_SYNC_ENABLED', $storedSyncEnabled ? '1' : '0', 'yesno', 0, '', $conf->entity);
+            $formSyncEnabled = $storedSyncEnabled;
+            $validationErrors[] = $langs->trans('ScheduledSync').': '.$e->getMessage();
+        }
+    }
+
+    if (empty($validationErrors)) {
         if ($action === 'save') {
             setEventMessages($langs->trans('SettingsSaved'), null, 'mesgs');
         }
@@ -99,6 +179,11 @@ $hasStoredSigningKey = getDolGlobalString('NAVINVOICE_SIGNING_KEY') !== '';
 $secretHint = static function (bool $hasValue) use ($langs): string {
     return $hasValue ? $langs->trans('StoredSecretPresent') : $langs->trans('StoredSecretMissing');
 };
+$stockValidationNeedsWarehouse = isModEnabled('stock') && getDolGlobalString('STOCK_CALCULATE_ON_SUPPLIER_BILL');
+$isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu';
+$fetchFullXmlHelp = $isHungarianUi
+    ? 'Bekapcsolva az új vagy módosult számlák teljes NAV XML-je is letöltődik. Ez szükséges a tételszintű részletekhez, az importhoz és a beszerzési workbenchhez. Kikapcsolva csak az összesítő NAV-adatok frissülnek; a korábban letöltött XML-ek megmaradnak.'
+    : 'When enabled, the complete NAV XML is downloaded for new or changed invoices. It is required for line-level details, invoice import and the purchase workbench. When disabled, only summary NAV data is refreshed; XML files downloaded earlier are kept.';
 
 llxHeader('', $langs->trans('NavInvoiceSetup'));
 print load_fiche_titre($langs->trans('NavInvoiceSetup'), '', 'title_setup');
@@ -118,9 +203,20 @@ print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnic
 print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnicalUserPassword').'</td><td><input class="minwidth300" type="password" name="password" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint($hasStoredPassword).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
 print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTaxNumber').'</td><td><input class="minwidth200" maxlength="8" inputmode="numeric" type="text" name="tax_number" value="'.dol_escape_htmltag((string) $formTaxNumber).'"> <span class="opacitymedium">'.$langs->trans('NavTaxNumberHelp').'</span></td></tr>';
 print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavSigningKey').'</td><td><input class="minwidth300" type="password" name="signing_key" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint($hasStoredSigningKey).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
-print '<tr class="oddeven"><td>'.$langs->trans('ScheduledSync').'</td><td><input type="checkbox" name="sync_enabled" value="1"'.($formSyncEnabled ? ' checked' : '').'></td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('ScheduledSync').'</td><td><input type="checkbox" name="sync_enabled" value="1"'.($formSyncEnabled ? ' checked' : '').'> <span class="opacitymedium">1 × 3600 s; '.$langs->trans('DirectionBoth').'</span></td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('SyncLookbackDays').'</td><td><input type="number" min="1" max="35" name="lookback_days" value="'.((int) $formLookbackDays).'"></td></tr>';
-print '<tr class="oddeven"><td>'.$langs->trans('DownloadFullInvoiceXml').'</td><td><input type="checkbox" name="fetch_full_data" value="1"'.($formFetchFullData ? ' checked' : '').'></td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('DownloadFullInvoiceXml').'</td><td><input type="checkbox" name="fetch_full_data" value="1"'.($formFetchFullData ? ' checked' : '').'> <span class="opacitymedium">'.dol_escape_htmltag($fetchFullXmlHelp).'</span></td></tr>';
+
+print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavImportConfiguration').'</td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('AutoValidateInboundInvoices').'</td><td><input type="checkbox" name="auto_validate_inbound" value="1"'.($formAutoValidateInbound ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('AutoValidateInboundInvoicesHelp').'</span>';
+if ($stockValidationNeedsWarehouse) {
+    print '<br><span class="warning">'.img_picto('', 'warning').' '.$langs->trans('AutoValidateInboundStockWarning').'</span>';
+}
+print '</td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('PurchaseWorkbenchEnabled').'</td><td><input type="checkbox" name="purchase_workbench_enabled" value="1"'.($formPurchaseWorkbench ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('PurchaseWorkbenchEnabledHelp').'</span></td></tr>';
+
+print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavDisplayConfiguration').'</td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('ShowTechnicalNavXml').'</td><td><input type="checkbox" name="show_technical_xml" value="1"'.($formShowTechnicalXml ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('ShowTechnicalNavXmlHelp').'</span></td></tr>';
 print '</table>';
 print '<div class="center">';
 print '<button class="button button-save" type="submit" name="action" value="save">'.$langs->trans('Save').'</button> ';
