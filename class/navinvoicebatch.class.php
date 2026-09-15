@@ -47,24 +47,39 @@ class NavInvoiceBatchService
         $this->importer = new NavInvoiceImporter($db, $entity, $this->baseCurrency);
     }
 
-    /** @return array<int,object> */
-    public function loadInboundRecords(string $dateFrom, string $dateTo, int $limit = 300): array
+    public function countInboundRecords(string $dateFrom, string $dateTo): int
     {
-        if (!$this->validDate($dateFrom) || !$this->validDate($dateTo)) {
-            throw new InvalidArgumentException('Invalid batch import date range.');
-        }
-        if ($dateFrom > $dateTo) {
-            throw new InvalidArgumentException('Batch import start date must not be after end date.');
-        }
+        $this->assertDateRange($dateFrom, $dateTo);
 
-        $limit = max(1, min($limit, 1000));
+        $sql = 'SELECT COUNT(*) AS cnt FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
+        $sql .= ' WHERE entity = '.$this->entity;
+        $sql .= " AND invoice_direction = 'INBOUND'";
+        $sql .= " AND invoice_issue_date >= '".$this->db->escape($dateFrom)."'";
+        $sql .= " AND invoice_issue_date <= '".$this->db->escape($dateTo)."'";
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception($this->db->lasterror());
+        }
+        $obj = $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        return $obj ? (int) $obj->cnt : 0;
+    }
+
+    /** @return array<int,object> */
+    public function loadInboundRecords(string $dateFrom, string $dateTo, int $limit = 100, int $offset = 0, int $dependencyLimit = 100): array
+    {
+        $this->assertDateRange($dateFrom, $dateTo);
+
+        $limit = max(1, min($limit, 300));
+        $offset = max(0, $offset);
+        $dependencyLimit = max(0, min($dependencyLimit, 300));
         $sql = 'SELECT * FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
         $sql .= ' WHERE entity = '.$this->entity;
         $sql .= " AND invoice_direction = 'INBOUND'";
         $sql .= " AND invoice_issue_date >= '".$this->db->escape($dateFrom)."'";
         $sql .= " AND invoice_issue_date <= '".$this->db->escape($dateTo)."'";
         $sql .= ' ORDER BY invoice_issue_date DESC, rowid DESC';
-        $sql .= ' LIMIT '.$limit;
+        $sql .= ' LIMIT '.$limit.' OFFSET '.$offset;
 
         $resql = $this->db->query($sql);
         if (!$resql) {
@@ -78,7 +93,7 @@ class NavInvoiceBatchService
         }
         $this->db->free($resql);
 
-        return $this->expandRelationDependencies($records, $limit);
+        return $this->expandRelationDependencies($records, $dependencyLimit);
     }
 
     /** @return array<string,mixed> */
@@ -230,20 +245,25 @@ class NavInvoiceBatchService
     }
 
     /**
-     * Include the prerequisite members of any non-CREATE chain found inside the
-     * requested date range. This makes an old master invoice visible/importable
-     * without forcing the user to widen the batch date filter manually.
+     * Include prerequisite members of non-CREATE chains found on the current
+     * page. Dependencies are additional to the requested page size so an old
+     * master/modification never displaces a normal record from that page.
      *
      * @param array<int,object> $records
      * @return array<int,object>
      */
-    private function expandRelationDependencies(array $records, int $limit): array
+    private function expandRelationDependencies(array $records, int $dependencyLimit): array
     {
         $byId = array();
         foreach ($records as $record) {
             $byId[(int) $record->rowid] = $record;
         }
 
+        if ($dependencyLimit <= 0) {
+            return array_values($byId);
+        }
+
+        $dependenciesAdded = 0;
         foreach ($records as $record) {
             $operation = strtoupper(trim((string) ($record->invoice_operation ?? 'CREATE')));
             if ($operation === '' || $operation === 'CREATE') {
@@ -293,8 +313,9 @@ class NavInvoiceBatchService
                 $candidate->_nav_batch_dependency = true;
                 $candidate->_nav_batch_dependency_for = (string) ($record->invoice_number ?? '');
                 $byId[$candidateId] = $candidate;
+                $dependenciesAdded++;
 
-                if (count($byId) >= $limit) {
+                if ($dependenciesAdded >= $dependencyLimit) {
                     break 2;
                 }
             }
@@ -397,6 +418,16 @@ class NavInvoiceBatchService
         $obj = $this->db->fetch_object($resql);
         $this->db->free($resql);
         return $obj ?: null;
+    }
+
+    private function assertDateRange(string $dateFrom, string $dateTo): void
+    {
+        if (!$this->validDate($dateFrom) || !$this->validDate($dateTo)) {
+            throw new InvalidArgumentException('Invalid batch import date range.');
+        }
+        if ($dateFrom > $dateTo) {
+            throw new InvalidArgumentException('Batch import start date must not be after end date.');
+        }
     }
 
     private function validDate(string $value): bool
