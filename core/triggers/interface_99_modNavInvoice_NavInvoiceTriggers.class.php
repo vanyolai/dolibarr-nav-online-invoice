@@ -67,9 +67,11 @@ class InterfaceNavInvoiceTriggers extends DolibarrTriggers
      *
      * The NAV importer deliberately places the source record key into ref_ext,
      * so only invoices created by this module are touched here. The source XML
-     * remains authoritative: quantity, line net amount and any NAV line discount
-     * are used to restore a mathematically consistent Dolibarr row before the
-     * importer performs its normal invoice-total reconciliation.
+     * remains authoritative: quantity and line net amount are used to restore
+     * the same effective unit price that the import preview calculated. This
+     * keeps preview and imported draft identical, including NAV lines whose
+     * source unitPrice differs from lineNetAmount/quantity because of a NAV
+     * lineDiscountData discount.
      *
      * @param CommonObject $object
      * @param Conf $conf
@@ -148,42 +150,17 @@ class InterfaceNavInvoiceTriggers extends DolibarrTriggers
                 continue;
             }
 
-            $sourceQuantity = (float) $quantityText;
-            $quantity = abs($sourceQuantity);
+            $quantity = abs((float) $quantityText);
             $net = (float) $netText;
             if ($quantity <= 0.000000001 || abs($net) <= 0.000000001) {
                 continue;
             }
 
-            $unitPriceText = $this->xmlText($navLine, './*[local-name()="unitPrice"]');
-            $sourceUnitPrice = $unitPriceText !== '' && is_numeric($unitPriceText) ? abs((float) $unitPriceText) : 0.0;
-            $sign = $net < 0 ? -1.0 : 1.0;
-            $discountPercent = 0.0;
-
-            if ($sourceUnitPrice > 0.0) {
-                $unitPrice = $sign * $sourceUnitPrice;
-                $discountValueText = $this->xmlText($navLine, './*[local-name()="lineDiscountData"]/*[local-name()="discountValue"]');
-                if ($discountValueText !== '' && is_numeric($discountValueText)) {
-                    $extended = $sourceUnitPrice * $quantity;
-                    $discountValue = abs((float) $discountValueText);
-                    if ($extended > 0.0 && $discountValue <= $extended + 0.01) {
-                        $discountPercent = 100.0 * $discountValue / $extended;
-                        $calculatedNet = $sign * $extended * (1.0 - ($discountPercent / 100.0));
-                        if (abs($calculatedNet - $net) > 0.01) {
-                            // NAV lineNetAmount is authoritative. If discount
-                            // metadata does not reproduce it, fall back to an
-                            // effective unit price instead of storing an
-                            // inconsistent Dolibarr row.
-                            $unitPrice = $net / $quantity;
-                            $discountPercent = 0.0;
-                        }
-                    }
-                } elseif (abs(($sign * $sourceUnitPrice * $quantity) - $net) > 0.01) {
-                    $unitPrice = $net / $quantity;
-                }
-            } else {
-                $unitPrice = $net / $quantity;
-            }
+            // lineNetAmount is the authoritative financial amount. Using the
+            // effective price reproduces the import-preview behaviour and also
+            // naturally incorporates lineDiscountData without inventing a
+            // percentage discount that was not present in the source XML.
+            $unitPrice = $net / $quantity;
 
             $vatAmountText = $this->xmlText($navLine, './*[local-name()="lineAmountsNormal"]/*[local-name()="lineVatData"]/*[local-name()="lineVatAmount"]');
             $grossText = $this->xmlText($navLine, './*[local-name()="lineAmountsNormal"]/*[local-name()="lineGrossAmountData"]/*[local-name()="lineGrossAmountNormal"]');
@@ -199,7 +176,7 @@ class InterfaceNavInvoiceTriggers extends DolibarrTriggers
             $sql .= ' qty = '.$this->sqlNumber($quantity);
             $sql .= ', pu_ht = '.$this->sqlNumber($unitPrice);
             $sql .= ', pu_ttc = '.$this->sqlNumber($unitPriceTtc);
-            $sql .= ', remise_percent = '.$this->sqlNumber($discountPercent);
+            $sql .= ', remise_percent = 0';
             $sql .= ', total_ht = '.$this->sqlNumber($net);
             $sql .= ', tva = '.$this->sqlNumber($vatAmount);
             $sql .= ', total_ttc = '.$this->sqlNumber($gross);
@@ -210,7 +187,7 @@ class InterfaceNavInvoiceTriggers extends DolibarrTriggers
         }
 
         dol_syslog(
-            'NavInvoice trigger restored NAV mixed-sign/discount supplier credit-note rows on invoice '.((int) $object->id),
+            'NavInvoice trigger restored NAV mixed-sign supplier credit-note rows on invoice '.((int) $object->id),
             LOG_INFO
         );
         return 1;
