@@ -56,6 +56,8 @@ class NavInvoiceImporter
         $sourceInvoiceId = (int) ($preview['source_invoice_id'] ?? 0);
         $direction = strtoupper((string) ($preview['direction'] ?? $record->invoice_direction ?? 'OUTBOUND'));
         $inbound = $direction === 'INBOUND';
+        $standaloneWithoutMaster = !empty($preview['standalone_without_master'])
+            || !empty($preview['operation_policy']['standalone_without_master']);
 
         if ($operation === 'CREATE') {
             if (!in_array($operationMapping, array('standard', 'deposit'), true)) {
@@ -65,12 +67,13 @@ class NavInvoiceImporter
                 throw new Exception('Outbound NAV deposit invoice import is not enabled yet.');
             }
         } elseif ($operation === 'MODIFY') {
-            if (!in_array($operationMapping, array('credit_note', 'standard_adjustment'), true) || $sourceInvoiceId <= 0) {
+            if (!in_array($operationMapping, array('credit_note', 'standard_adjustment'), true)
+                || ($sourceInvoiceId <= 0 && !$standaloneWithoutMaster)) {
                 throw new Exception('MODIFY NAV invoice has no deterministic Dolibarr mapping/source invoice.');
             }
         } elseif ($operation === 'STORNO') {
-            if ($operationMapping !== 'credit_note' || $sourceInvoiceId <= 0) {
-                throw new Exception('STORNO NAV invoice must map to a source-linked Dolibarr credit note.');
+            if ($operationMapping !== 'credit_note' || ($sourceInvoiceId <= 0 && !$standaloneWithoutMaster)) {
+                throw new Exception('STORNO NAV invoice must map to a verified Dolibarr credit note.');
             }
         } else {
             throw new Exception('Unsupported NAV invoice operation: '.$operation);
@@ -91,7 +94,7 @@ class NavInvoiceImporter
             $invoice = $result['object'];
 
             $reconciliation = $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
-            if ($reconciliation === 'none' && $inbound && $category === 'NORMAL') {
+            if ($reconciliation === 'none' && $inbound && in_array($category, array('NORMAL', 'AGGREGATE'), true)) {
                 if ($this->prepareSupplierLinesForNavSummary($invoice, $preview)) {
                     $this->preserveSupplierNavSummary($invoice, $preview, $user);
                     $reconciliation = 'nav_summary';
@@ -118,6 +121,7 @@ class NavInvoiceImporter
                 'operation' => $operation,
                 'operation_mapping' => $operationMapping,
                 'source_invoice_id' => $sourceInvoiceId,
+                'standalone_without_master' => $standaloneWithoutMaster,
                 'validation_attempted' => (bool) $validation['attempted'],
                 'validated' => (bool) $validation['validated'],
                 'validation_skipped_reason' => (string) $validation['skipped_reason'],
@@ -147,7 +151,11 @@ class NavInvoiceImporter
         $invoice->type = $mapping === 'credit_note' ? Facture::TYPE_CREDIT_NOTE : Facture::TYPE_STANDARD;
         $invoice->fk_facture_source = (int) ($preview['source_invoice_id'] ?? 0);
         $invoice->date = $this->dateToTimestamp((string) $preview['header']['invoice_date']);
-        $invoice->date_pointoftax = $this->dateToTimestampOrZero((string) ($preview['header']['delivery_date'] ?? ''));
+        $pointOfTaxSource = (string) ($preview['header']['point_of_tax_date']
+            ?? $preview['header']['accounting_delivery_date']
+            ?? $preview['header']['delivery_date']
+            ?? '');
+        $invoice->date_pointoftax = $this->dateToTimestampOrZero($pointOfTaxSource);
         $invoice->ref_customer = (string) $preview['invoice_number'];
         $invoice->ref_ext = (string) $preview['external_key'];
         $invoice->module_source = 'navinvoice';
@@ -227,7 +235,11 @@ class NavInvoiceImporter
         }
         $invoice->fk_facture_source = (int) ($preview['source_invoice_id'] ?? 0);
         $invoice->date = $this->dateToTimestamp((string) $preview['header']['invoice_date']);
-        $pointOfTaxDate = $this->dateToTimestampOrZero((string) ($preview['header']['delivery_date'] ?? ''));
+        $pointOfTaxSource = (string) ($preview['header']['point_of_tax_date']
+            ?? $preview['header']['accounting_delivery_date']
+            ?? $preview['header']['delivery_date']
+            ?? '');
+        $pointOfTaxDate = $this->dateToTimestampOrZero($pointOfTaxSource);
         $invoice->date_pointoftax = $pointOfTaxDate;
         $dueDate = $this->dateToTimestampOrZero((string) ($preview['header']['due_date'] ?? ''));
         $invoice->date_echeance = $dueDate > 0 ? $dueDate : null;
@@ -280,9 +292,11 @@ class NavInvoiceImporter
     }
 
     /**
-     * Normalize NAV signs to Dolibarr invoice-type conventions. Credit notes in
-     * Dolibarr use positive quantities and negative unit prices. Standard and
-     * deposit invoices preserve the NAV values.
+     * Normalize NAV signs to Dolibarr invoice-type conventions. Credit notes use
+     * positive quantities, while each line's unit-price sign follows that NAV
+     * line's authoritative financial effect. This preserves mixed-sign MODIFY
+     * documents instead of incorrectly forcing every credit-note line negative.
+     * Standard and deposit invoices preserve the NAV values.
      *
      * @param array<string,mixed> $mapped
      * @return array{quantity:float,unit_price:float}
@@ -293,7 +307,17 @@ class NavInvoiceImporter
         $unitPrice = (float) ($mapped['unit_price_ht'] ?? 0);
         if ($mapping === 'credit_note') {
             $quantity = abs($quantity);
-            $unitPrice = -abs($unitPrice);
+            $lineAmount = null;
+            if (($mapped['net'] ?? null) !== null && ($mapped['net'] ?? '') !== '' && is_numeric($mapped['net'])) {
+                $lineAmount = (float) $mapped['net'];
+            } elseif (($mapped['gross'] ?? null) !== null && ($mapped['gross'] ?? '') !== '' && is_numeric($mapped['gross'])) {
+                $lineAmount = (float) $mapped['gross'];
+            }
+            if ($lineAmount !== null && $lineAmount > 0.0000001) {
+                $unitPrice = abs($unitPrice);
+            } else {
+                $unitPrice = -abs($unitPrice);
+            }
         }
         return array('quantity' => $quantity, 'unit_price' => $unitPrice);
     }
@@ -555,6 +579,8 @@ class NavInvoiceImporter
         $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
         $mapping = (string) ($preview['operation_mapping'] ?? ($operation === 'CREATE' ? 'standard' : ''));
         $sourceInvoiceId = (int) ($preview['source_invoice_id'] ?? 0);
+        $standaloneWithoutMaster = !empty($preview['standalone_without_master'])
+            || !empty($preview['operation_policy']['standalone_without_master']);
         if ($mapping === 'credit_note') {
             $expectedType = 2;
         } elseif ($mapping === 'deposit') {
@@ -566,8 +592,14 @@ class NavInvoiceImporter
         if ((int) ($invoice->type ?? -1) !== $expectedType) {
             throw new Exception('Created Dolibarr invoice type does not match the NAV operation mapping.');
         }
-        if ($operation !== 'CREATE' && (int) ($invoice->fk_facture_source ?? 0) !== $sourceInvoiceId) {
-            throw new Exception('Created Dolibarr modification/storno invoice lost its source-invoice relationship.');
+        if ($operation !== 'CREATE') {
+            $actualSourceId = (int) ($invoice->fk_facture_source ?? 0);
+            if ($sourceInvoiceId > 0 && $actualSourceId !== $sourceInvoiceId) {
+                throw new Exception('Created Dolibarr modification/storno invoice lost its source-invoice relationship.');
+            }
+            if ($sourceInvoiceId <= 0 && $standaloneWithoutMaster && $actualSourceId > 0) {
+                throw new Exception('Standalone modifyWithoutMaster correction unexpectedly acquired a Dolibarr source invoice.');
+            }
         }
         if ($mapping === 'credit_note' && (float) ($invoice->total_ht ?? 0) > 0.00001) {
             throw new Exception('Created Dolibarr credit note has a positive HT total.');
@@ -712,6 +744,55 @@ class NavInvoiceImporter
         if (!empty($preview['header']['delivery_date'])) {
             $parts[] = 'delivery_date='.(string) $preview['header']['delivery_date'];
         }
+        if (!empty($preview['header']['accounting_delivery_date'])) {
+            $parts[] = 'accounting_delivery_date='.(string) $preview['header']['accounting_delivery_date'];
+        }
+        if (!empty($preview['header']['point_of_tax_date'])) {
+            $parts[] = 'point_of_tax_date='.(string) $preview['header']['point_of_tax_date'];
+        }
+
+        $relation = is_array($preview['operation_policy']['relation'] ?? null)
+            ? $preview['operation_policy']['relation']
+            : array();
+        if (!empty($relation['original_invoice_number'])) {
+            $parts[] = 'original_invoice_number='.(string) $relation['original_invoice_number'];
+        }
+        if (array_key_exists('modify_without_master', $relation) && $relation['modify_without_master'] !== null) {
+            $parts[] = 'modify_without_master='.(!empty($relation['modify_without_master']) ? '1' : '0');
+        }
+        if (!empty($relation['modification_index'])) {
+            $parts[] = 'modification_index='.(int) $relation['modification_index'];
+        }
+        if (!empty($preview['standalone_without_master']) || !empty($preview['operation_policy']['standalone_without_master'])) {
+            $parts[] = 'standalone_without_master=1';
+        }
+
+        if (strtoupper((string) ($preview['category'] ?? '')) === 'AGGREGATE') {
+            $lineDeliveryDates = array();
+            $lineExchangeRates = array();
+            foreach (($preview['lines'] ?? array()) as $index => $line) {
+                if (!is_array($line)) {
+                    continue;
+                }
+                $lineKey = trim((string) ($line['number'] ?? ''));
+                if ($lineKey === '') {
+                    $lineKey = (string) ($index + 1);
+                }
+                if (!empty($line['aggregate_delivery_date'])) {
+                    $lineDeliveryDates[] = $lineKey.':'.(string) $line['aggregate_delivery_date'];
+                }
+                if (($line['aggregate_exchange_rate'] ?? '') !== '') {
+                    $lineExchangeRates[] = $lineKey.':'.(string) $line['aggregate_exchange_rate'];
+                }
+            }
+            if ($lineDeliveryDates) {
+                $parts[] = 'aggregate_line_delivery_dates='.implode(',', $lineDeliveryDates);
+            }
+            if ($lineExchangeRates) {
+                $parts[] = 'aggregate_line_exchange_rates='.implode(',', $lineExchangeRates);
+            }
+        }
+
         return implode("\n", $parts);
     }
 
