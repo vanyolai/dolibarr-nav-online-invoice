@@ -7,10 +7,9 @@ dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 /**
  * Targeted synchronization for one authoritative NAV invoice chain.
  *
- * This is intentionally separate from the date-window synchronization. It is
- * used when a MODIFY/STORNO refers to an older master invoice (or an earlier
- * modification) that is missing from the local mirror. Only members returned
- * by queryInvoiceChainDigest are downloaded and mirrored.
+ * Used when a MODIFY/STORNO refers to an older master invoice (or an earlier
+ * modification) missing from the local mirror. Mirror identity is issuer scoped:
+ * invoice numbers are not assumed to be globally unique across suppliers.
  */
 class NavInvoiceChainSyncService
 {
@@ -39,8 +38,6 @@ class NavInvoiceChainSyncService
     }
 
     /**
-     * Synchronize every authoritative member of the chain containing $record.
-     *
      * @param object $record NAV mirror record
      * @param array<string,mixed>|null $parsed parsed InvoiceData for $record
      * @return array<string,mixed>
@@ -66,16 +63,13 @@ class NavInvoiceChainSyncService
             throw new Exception('The NAV modification does not identify its original invoice.');
         }
 
-        $supplierTaxNumber = '';
-        if ($direction === 'INBOUND') {
-            $supplier = is_array($parsed['supplier'] ?? null) ? $parsed['supplier'] : array();
-            $supplierTaxNumber = trim((string) ($supplier['tax_number'] ?? $record->supplier_tax_number ?? ''));
-        }
+        $supplier = is_array($parsed['supplier'] ?? null) ? $parsed['supplier'] : array();
+        $supplierTaxNumber = trim((string) ($supplier['tax_number'] ?? $record->supplier_tax_number ?? ''));
 
         $chain = $this->chainService->fetch(
             $rootInvoiceNumber,
             $direction,
-            $supplierTaxNumber !== '' ? $supplierTaxNumber : null
+            $direction === 'INBOUND' && $supplierTaxNumber !== '' ? $supplierTaxNumber : null
         );
         $elements = is_array($chain['elements'] ?? null) ? $chain['elements'] : array();
         if (!$elements) {
@@ -184,9 +178,11 @@ class NavInvoiceChainSyncService
     /** @param array<string,mixed> $data */
     private function upsert(array $data): bool
     {
+        $supplierTaxNumber = trim((string) ($data['supplier_tax_number'] ?? ''));
         $sql = 'SELECT rowid FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
         $sql .= ' WHERE entity = '.$this->entity;
         $sql .= " AND invoice_direction = '".$this->db->escape((string) $data['invoice_direction'])."'";
+        $sql .= " AND supplier_tax_number = '".$this->db->escape($supplierTaxNumber)."'";
         $sql .= " AND invoice_number = '".$this->db->escape((string) $data['invoice_number'])."'";
         $sql .= ' AND batch_index = '.((int) $data['batch_index']);
         $sql .= ' LIMIT 1';
@@ -200,10 +196,11 @@ class NavInvoiceChainSyncService
         $inserted = !$existing;
         if ($inserted) {
             $sql = 'INSERT INTO '.MAIN_DB_PREFIX.'navinvoice_invoice (';
-            $sql .= 'entity, invoice_direction, invoice_number, batch_index, datec, last_sync';
+            $sql .= 'entity, invoice_direction, supplier_tax_number, invoice_number, batch_index, datec, last_sync';
             $sql .= ') VALUES (';
             $sql .= $this->entity;
             $sql .= ", '".$this->db->escape((string) $data['invoice_direction'])."'";
+            $sql .= ", '".$this->db->escape($supplierTaxNumber)."'";
             $sql .= ", '".$this->db->escape((string) $data['invoice_number'])."'";
             $sql .= ', '.((int) $data['batch_index']);
             $sql .= ", '".$this->db->idate(dol_now())."'";
@@ -218,7 +215,7 @@ class NavInvoiceChainSyncService
 
         $set = array();
         foreach (array(
-            'invoice_operation', 'invoice_category', 'supplier_tax_number', 'supplier_name',
+            'invoice_operation', 'invoice_category', 'supplier_name',
             'customer_tax_number', 'customer_name', 'payment_method', 'invoice_appearance',
             'source', 'currency', 'transaction_id', 'original_invoice_number'
         ) as $key) {
@@ -227,6 +224,7 @@ class NavInvoiceChainSyncService
                 $set[] = $key." = '".$this->db->escape($value)."'";
             }
         }
+        $set[] = "supplier_tax_number = '".$this->db->escape($supplierTaxNumber)."'";
         foreach (array('invoice_issue_date', 'payment_date', 'invoice_delivery_date') as $key) {
             $value = trim((string) ($data[$key] ?? ''));
             if ($inserted || $value !== '') {
@@ -248,9 +246,6 @@ class NavInvoiceChainSyncService
         $set[] = 'completeness_indicator = '.((int) ($data['completeness_indicator'] ?? 0));
         if ($inserted) {
             $set[] = "raw_digest = '".$this->db->escape((string) $data['raw_digest'])."'";
-            // queryInvoiceChainDigest is not byte-for-byte the normal invoice
-            // digest. Leave digest_hash NULL so a later date sync can replace
-            // it with the ordinary queryInvoiceDigest fingerprint.
             $set[] = 'digest_hash = NULL';
         }
         $set[] = "invoice_data = '".$this->db->escape((string) $data['invoice_data'])."'";
