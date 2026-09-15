@@ -4,6 +4,7 @@ dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
 dol_include_once('/navinvoice/class/navinvoiceoperationpreview.class.php');
 dol_include_once('/navinvoice/class/navinvoiceimporter.class.php');
+dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
 
 /**
  * Preflight and execute batch imports for NAV inbound invoices.
@@ -36,6 +37,9 @@ class NavInvoiceBatchService
     /** @var NavInvoiceImporter */
     private $importer;
 
+    /** @var NavInvoiceLinkManager */
+    private $linkManager;
+
     public function __construct($db, int $entity, string $baseCurrency)
     {
         $this->db = $db;
@@ -45,6 +49,7 @@ class NavInvoiceBatchService
         $this->matcher = new NavPartnerMatcher($db, $entity);
         $this->previewBuilder = new NavInvoiceOperationPreview($db, $entity, $this->baseCurrency);
         $this->importer = new NavInvoiceImporter($db, $entity, $this->baseCurrency);
+        $this->linkManager = new NavInvoiceLinkManager($db, $entity);
     }
 
     public function countInboundRecords(string $dateFrom, string $dateTo): int
@@ -110,6 +115,25 @@ class NavInvoiceBatchService
         if (strtoupper((string) ($record->invoice_direction ?? '')) !== 'INBOUND') {
             $row['error'] = 'Only inbound invoices are supported by batch import.';
             return $row;
+        }
+
+        // Already imported mirror records do not need XML parsing, partner
+        // matching, product resolution or a full operation preview. We still
+        // resolve the stored link so a deleted Dolibarr invoice is detected and
+        // the stale mirror link can be repaired before normal preflight resumes.
+        if ((int) ($record->fk_facture_fourn ?? 0) > 0) {
+            try {
+                $linkedId = $this->linkManager->resolve($record, 'INBOUND');
+                if ($linkedId > 0) {
+                    $preview = $this->buildImportedPreview($record, $linkedId);
+                    $row['preview'] = $preview;
+                    $row['state'] = 'imported';
+                    return $row;
+                }
+            } catch (Throwable $e) {
+                $row['error'] = $e->getMessage();
+                return $row;
+            }
         }
 
         if (empty($record->invoice_data)) {
@@ -337,6 +361,57 @@ class NavInvoiceBatchService
         });
 
         return $expanded;
+    }
+
+    /**
+     * Build the lightweight preview used for an already imported mirror row.
+     * Only fields needed by the batch snapshot/list are populated from the NAV
+     * mirror table, avoiding XML parsing and all expensive matching work.
+     *
+     * @return array<string,mixed>
+     */
+    private function buildImportedPreview($record, int $linkedId): array
+    {
+        $net = $record->invoice_net_amount ?? null;
+        $vat = $record->invoice_vat_amount ?? null;
+        $gross = null;
+        if ($net !== null && $net !== '' && $vat !== null && $vat !== '') {
+            $gross = (float) $net + (float) $vat;
+        }
+
+        $currency = strtoupper(trim((string) ($record->currency ?? '')));
+        if ($currency === '') {
+            $currency = $this->baseCurrency;
+        }
+
+        return array(
+            'state' => 'imported',
+            'direction' => 'INBOUND',
+            'operation' => strtoupper(trim((string) ($record->invoice_operation ?? 'CREATE'))),
+            'category' => strtoupper(trim((string) ($record->invoice_category ?? ''))),
+            'invoice_number' => (string) ($record->invoice_number ?? ''),
+            'partner' => null,
+            'duplicate' => array(
+                'id' => $linkedId,
+                'type' => 'supplier',
+                'source' => 'mirror_link',
+            ),
+            'blockers' => array(),
+            'warnings' => array(),
+            'notices' => array(),
+            'header' => array(
+                'invoice_date' => (string) ($record->invoice_issue_date ?? ''),
+                'delivery_date' => (string) ($record->invoice_delivery_date ?? ''),
+                'due_date' => (string) ($record->payment_date ?? ''),
+                'payment_method' => (string) ($record->payment_method ?? ''),
+                'currency' => $currency,
+            ),
+            'totals' => array(
+                'net' => $net,
+                'vat' => $vat,
+                'gross' => $gross,
+            ),
+        );
     }
 
     /**
