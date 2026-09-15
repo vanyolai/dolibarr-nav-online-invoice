@@ -26,6 +26,7 @@ $defaultFrom = $today->modify('-30 days')->format('Y-m-d');
 $dateFrom = trim((string) GETPOST('date_from', 'alphanohtml')) ?: $defaultFrom;
 $dateTo = trim((string) GETPOST('date_to', 'alphanohtml')) ?: $today->format('Y-m-d');
 $action = GETPOST('action', 'aZ09');
+
 $pageSizeOptions = array(50, 100, 200);
 $pageSize = (int) GETPOST('page_size', 'int');
 if (!in_array($pageSize, $pageSizeOptions, true)) {
@@ -37,47 +38,11 @@ $stateFilter = strtoupper(trim((string) GETPOST('state_filter', 'alpha')));
 if (!in_array($stateFilter, $allowedStateFilters, true)) {
     $stateFilter = 'ALL';
 }
+
 $baseCurrency = strtoupper((string) $conf->currency);
 $service = new NavInvoiceBatchService($db, (int) $conf->entity, $baseCurrency);
 $batchResult = null;
-
-if ($action === 'batch_import') {
-    if (!$canImport) {
-        accessforbidden();
-    }
-    $selected = GETPOST('selected', 'array:int');
-    $selected = is_array($selected) ? $selected : array();
-    if (!$selected) {
-        setEventMessages($langs->trans('BatchNoSelection'), null, 'warnings');
-    } else {
-        try {
-            $batchResult = $service->importSelected($selected, $user);
-            setEventMessages(
-                $langs->trans('BatchImportResultSummary', count($batchResult['success']), count($batchResult['skipped']), count($batchResult['errors'])),
-                null,
-                empty($batchResult['errors']) ? 'mesgs' : 'warnings'
-            );
-        } catch (Throwable $e) {
-            setEventMessages($langs->trans('BatchImportFailed').': '.$e->getMessage(), null, 'errors');
-        }
-    }
-}
-
-$rows = array();
 $loadError = '';
-$totalRecords = 0;
-$pageCount = 1;
-try {
-    $totalRecords = $service->countInboundRecords($dateFrom, $dateTo);
-    $pageCount = max(1, (int) ceil($totalRecords / $pageSize));
-    $page = min($page, $pageCount);
-    $offset = ($page - 1) * $pageSize;
-    $dependencyLimit = min(100, max(0, 300 - $pageSize));
-    $records = $service->loadInboundRecords($dateFrom, $dateTo, $pageSize, $offset, $dependencyLimit);
-    $rows = $service->preflightMany($records);
-} catch (Throwable $e) {
-    $loadError = $e->getMessage();
-}
 
 $chainPendingCodes = array(
     'operation_relation_original_not_imported',
@@ -91,38 +56,234 @@ $isChainPending = static function (array $preview, string $state) use ($chainPen
     $blockers = array_values(array_unique(array_map('strval', $preview['blockers'] ?? array())));
     return $blockers && !array_diff($blockers, $chainPendingCodes);
 };
-$rowStateKey = static function (array $row) use ($isChainPending): string {
-    $state = (string) ($row['state'] ?? 'blocked');
+
+$compactRow = static function (array $row) use ($isChainPending, $baseCurrency): array {
+    $record = $row['record'];
     $preview = is_array($row['preview'] ?? null) ? $row['preview'] : array();
-    if ($isChainPending($preview, $state)) {
-        return 'CHAIN_PENDING';
-    }
-    return strtoupper($state);
+    $state = (string) ($row['state'] ?? 'blocked');
+    $chainPending = $isChainPending($preview, $state);
+    $partner = is_array($preview['partner'] ?? null) ? $preview['partner'] : array();
+    $header = is_array($preview['header'] ?? null) ? $preview['header'] : array();
+    $totals = is_array($preview['totals'] ?? null) ? $preview['totals'] : array();
+
+    return array(
+        'id' => (int) ($record->rowid ?? 0),
+        'invoice_number' => (string) ($record->invoice_number ?? ''),
+        'supplier_name' => (string) ($record->supplier_name ?? ''),
+        'record_invoice_date' => (string) ($record->invoice_issue_date ?? ''),
+        'record_category' => (string) ($record->invoice_category ?? ''),
+        'record_operation' => strtoupper(trim((string) ($record->invoice_operation ?? 'CREATE'))),
+        'dependency' => !empty($record->_nav_batch_dependency),
+        'state' => $state,
+        'display_state' => $chainPending ? 'CHAIN_PENDING' : strtoupper($state),
+        'chain_pending' => $chainPending,
+        'partner_name' => (string) ($partner['name'] ?? ''),
+        'invoice_date' => (string) ($header['invoice_date'] ?? $record->invoice_issue_date ?? ''),
+        'delivery_date' => (string) ($header['delivery_date'] ?? ''),
+        'due_date' => (string) ($header['due_date'] ?? ''),
+        'category' => (string) ($preview['category'] ?? $record->invoice_category ?? ''),
+        'operation' => strtoupper(trim((string) ($preview['operation'] ?? $record->invoice_operation ?? 'CREATE'))),
+        'currency' => (string) ($header['currency'] ?? $record->currency ?? $baseCurrency),
+        'gross' => $totals['gross'] ?? null,
+        'blockers' => array_values(array_unique(array_map('strval', $preview['blockers'] ?? array()))),
+        'warnings' => array_values(array_unique(array_map('strval', $preview['warnings'] ?? array()))),
+        'notices' => array_values(array_unique(array_map('strval', $preview['notices'] ?? array()))),
+        'error' => (string) ($row['error'] ?? ''),
+    );
 };
 
-$counts = array('ready' => 0, 'review' => 0, 'partner_required' => 0, 'blocked' => 0, 'imported' => 0, 'dependency' => 0, 'chain_pending' => 0);
-foreach ($rows as $row) {
-    $state = (string) ($row['state'] ?? 'blocked');
-    $preview = is_array($row['preview'] ?? null) ? $row['preview'] : array();
-    if (isset($counts[$state])) {
-        $counts[$state]++;
+$sessionKey = 'navinvoice_batch_preflight_v3_'.((int) $conf->entity).'_'.((int) $user->id);
+$snapshot = isset($_SESSION[$sessionKey]) && is_array($_SESSION[$sessionKey]) ? $_SESSION[$sessionKey] : null;
+$snapshotMatchesRange = static function ($snapshot, string $from, string $to) use ($conf, $user): bool {
+    return is_array($snapshot)
+        && (int) ($snapshot['entity'] ?? 0) === (int) $conf->entity
+        && (int) ($snapshot['user_id'] ?? 0) === (int) $user->id
+        && (string) ($snapshot['date_from'] ?? '') === $from
+        && (string) ($snapshot['date_to'] ?? '') === $to
+        && !empty($snapshot['snapshot_id'])
+        && is_array($snapshot['rows'] ?? null);
+};
+
+$buildSnapshot = static function () use ($service, $dateFrom, $dateTo, $compactRow, $conf, $user): array {
+    @set_time_limit(0);
+    $totalRecords = $service->countInboundRecords($dateFrom, $dateTo);
+    $chunkSize = 100;
+    $byId = array();
+
+    for ($offset = 0; $offset < $totalRecords; $offset += $chunkSize) {
+        $records = $service->loadInboundRecords($dateFrom, $dateTo, $chunkSize, $offset, 200);
+        foreach ($records as $record) {
+            $id = (int) ($record->rowid ?? 0);
+            if ($id <= 0) {
+                continue;
+            }
+            if (isset($byId[$id])) {
+                if (empty($record->_nav_batch_dependency)) {
+                    $byId[$id]['dependency'] = false;
+                }
+                continue;
+            }
+            $byId[$id] = $compactRow($service->preflightRecord($record));
+        }
+    }
+
+    $rows = array_values($byId);
+    usort($rows, static function (array $a, array $b): int {
+        $dateCompare = strcmp((string) ($b['invoice_date'] ?? ''), (string) ($a['invoice_date'] ?? ''));
+        if ($dateCompare !== 0) {
+            return $dateCompare;
+        }
+        return ((int) ($b['id'] ?? 0)) <=> ((int) ($a['id'] ?? 0));
+    });
+
+    return array(
+        'snapshot_id' => bin2hex(random_bytes(12)),
+        'entity' => (int) $conf->entity,
+        'user_id' => (int) $user->id,
+        'date_from' => $dateFrom,
+        'date_to' => $dateTo,
+        'created_at' => time(),
+        'range_total' => $totalRecords,
+        'rows' => $rows,
+    );
+};
+
+$updateSnapshotAfterImport = static function (array &$snapshot, array $batchResult): void {
+    $successIds = array();
+    foreach (($batchResult['success'] ?? array()) as $item) {
+        $id = (int) ($item['id'] ?? 0);
+        if ($id > 0) {
+            $successIds[$id] = true;
+        }
+    }
+    if (!$successIds) {
+        return;
+    }
+    foreach ($snapshot['rows'] as &$row) {
+        if (isset($successIds[(int) ($row['id'] ?? 0)])) {
+            $row['state'] = 'imported';
+            $row['display_state'] = 'IMPORTED';
+            $row['chain_pending'] = false;
+            $row['blockers'] = array();
+            $row['warnings'] = array();
+            $row['notices'] = array();
+        }
+    }
+    unset($row);
+    $snapshot['updated_after_import_at'] = time();
+};
+
+if ($action === 'preflight') {
+    try {
+        $snapshot = $buildSnapshot();
+        $_SESSION[$sessionKey] = $snapshot;
+        $page = 1;
+    } catch (Throwable $e) {
+        $loadError = $e->getMessage();
+        $snapshot = null;
+    }
+}
+
+if ($action === 'batch_import' || $action === 'batch_import_all') {
+    if (!$canImport) {
+        accessforbidden();
+    }
+    if (!$snapshotMatchesRange($snapshot, $dateFrom, $dateTo)) {
+        setEventMessages($langs->trans('BatchSnapshotMissing'), null, 'warnings');
+    } else {
+        $postedSnapshotId = trim((string) GETPOST('snapshot_id', 'alphanohtml'));
+        if ($postedSnapshotId === '' || !hash_equals((string) $snapshot['snapshot_id'], $postedSnapshotId)) {
+            setEventMessages($langs->trans('BatchSnapshotMissing'), null, 'warnings');
+        } else {
+            if ($action === 'batch_import_all') {
+                $selected = array();
+                foreach ($snapshot['rows'] as $row) {
+                    if (($row['display_state'] ?? '') === 'READY') {
+                        $selected[] = (int) ($row['id'] ?? 0);
+                    }
+                }
+            } else {
+                $selected = GETPOST('selected', 'array:int');
+                $selected = is_array($selected) ? $selected : array();
+            }
+
+            $selected = array_values(array_unique(array_filter(array_map('intval', $selected), static function (int $id): bool {
+                return $id > 0;
+            })));
+
+            if (!$selected) {
+                setEventMessages($langs->trans('BatchNoSelection'), null, 'warnings');
+            } else {
+                try {
+                    @set_time_limit(0);
+                    $batchResult = array('success' => array(), 'skipped' => array(), 'errors' => array());
+                    foreach (array_chunk($selected, 300) as $chunk) {
+                        $part = $service->importSelected($chunk, $user);
+                        foreach (array('success', 'skipped', 'errors') as $key) {
+                            $batchResult[$key] = array_merge($batchResult[$key], $part[$key] ?? array());
+                        }
+                    }
+                    $updateSnapshotAfterImport($snapshot, $batchResult);
+                    $_SESSION[$sessionKey] = $snapshot;
+                    setEventMessages(
+                        $langs->trans('BatchImportResultSummary', count($batchResult['success']), count($batchResult['skipped']), count($batchResult['errors'])),
+                        null,
+                        empty($batchResult['errors']) ? 'mesgs' : 'warnings'
+                    );
+                    if (!empty($batchResult['success'])) {
+                        setEventMessages($langs->trans('BatchSnapshotRefreshAfterImport'), null, 'mesgs');
+                    }
+                } catch (Throwable $e) {
+                    setEventMessages($langs->trans('BatchImportFailed').': '.$e->getMessage(), null, 'errors');
+                }
+            }
+        }
+    }
+}
+
+$snapshotValid = $snapshotMatchesRange($snapshot, $dateFrom, $dateTo);
+$snapshotRows = $snapshotValid ? array_values($snapshot['rows']) : array();
+$rangeTotal = $snapshotValid ? (int) ($snapshot['range_total'] ?? 0) : 0;
+
+$counts = array(
+    'ready' => 0,
+    'review' => 0,
+    'partner_required' => 0,
+    'blocked' => 0,
+    'imported' => 0,
+    'dependency' => 0,
+    'chain_pending' => 0,
+);
+foreach ($snapshotRows as $row) {
+    $displayState = strtoupper((string) ($row['display_state'] ?? 'BLOCKED'));
+    if ($displayState === 'READY') {
+        $counts['ready']++;
+    } elseif ($displayState === 'IMPORTED') {
+        $counts['imported']++;
+    } elseif ($displayState === 'REVIEW') {
+        $counts['review']++;
+    } elseif ($displayState === 'PARTNER_REQUIRED') {
+        $counts['partner_required']++;
+    } elseif ($displayState === 'CHAIN_PENDING') {
+        $counts['chain_pending']++;
     } else {
         $counts['blocked']++;
     }
-    if (!empty($row['record']->_nav_batch_dependency)) {
+    if (!empty($row['dependency'])) {
         $counts['dependency']++;
-    }
-    if ($isChainPending($preview, $state)) {
-        $counts['chain_pending']++;
     }
 }
 
-$displayRows = $rows;
+$filteredRows = $snapshotRows;
 if ($stateFilter !== 'ALL') {
-    $displayRows = array_values(array_filter($rows, static function (array $row) use ($stateFilter, $rowStateKey): bool {
-        return $rowStateKey($row) === $stateFilter;
+    $filteredRows = array_values(array_filter($snapshotRows, static function (array $row) use ($stateFilter): bool {
+        return strtoupper((string) ($row['display_state'] ?? 'BLOCKED')) === $stateFilter;
     }));
 }
+$filteredTotal = count($filteredRows);
+$pageCount = max(1, (int) ceil($filteredTotal / $pageSize));
+$page = min($page, $pageCount);
+$displayRows = $filteredTotal > 0 ? array_slice($filteredRows, ($page - 1) * $pageSize, $pageSize) : array();
 
 $issueLabel = static function (string $code) use ($langs): string {
     foreach (array('ImportBlocker_', 'ImportWarning_') as $prefix) {
@@ -135,18 +296,22 @@ $issueLabel = static function (string $code) use ($langs): string {
     return $code;
 };
 
-$stateHtml = static function (string $state) use ($langs): string {
-    if ($state === 'ready') {
+$stateHtml = static function (string $displayState) use ($langs): string {
+    $displayState = strtoupper($displayState);
+    if ($displayState === 'READY') {
         return img_picto('', 'tick').' <span class="ok">'.$langs->trans('ImportStateReady').'</span>';
     }
-    if ($state === 'review') {
+    if ($displayState === 'REVIEW') {
         return img_picto('', 'warning').' <span class="warning">'.$langs->trans('ImportStateReview').'</span>';
     }
-    if ($state === 'partner_required') {
+    if ($displayState === 'PARTNER_REQUIRED') {
         return img_picto('', 'company').' <span class="warning">'.$langs->trans('BatchStatePartnerRequired').'</span>';
     }
-    if ($state === 'imported') {
+    if ($displayState === 'IMPORTED') {
         return img_picto('', 'check').' <span class="opacitymedium">'.$langs->trans('BatchStateImported').'</span>';
+    }
+    if ($displayState === 'CHAIN_PENDING') {
+        return img_picto('', 'warning').' <span class="warning">'.$langs->trans('BatchChainPending').'</span>';
     }
     return img_picto('', 'error').' <span class="error">'.$langs->trans('ImportStateBlocked').'</span>';
 };
@@ -157,14 +322,13 @@ $reconciliationLabel = static function (string $code) use ($langs): string {
 };
 
 $pagerUrl = static function (int $targetPage) use ($dateFrom, $dateTo, $pageSize, $stateFilter): string {
-    $query = http_build_query(array(
+    return $_SERVER['PHP_SELF'].'?'.http_build_query(array(
         'date_from' => $dateFrom,
         'date_to' => $dateTo,
         'page_size' => $pageSize,
         'state_filter' => $stateFilter,
         'page' => $targetPage,
     ));
-    return $_SERVER['PHP_SELF'].'?'.$query;
 };
 $renderPager = static function () use ($page, $pageCount, $pagerUrl, $langs): string {
     if ($pageCount <= 1) {
@@ -174,7 +338,6 @@ $renderPager = static function () use ($page, $pageCount, $pagerUrl, $langs): st
     if ($page > 1) {
         $html .= '<a class="button" href="'.dol_escape_htmltag($pagerUrl($page - 1)).'">‹ '.$langs->trans('BatchPreviousPage').'</a>';
     }
-
     $first = max(1, $page - 2);
     $last = min($pageCount, $page + 2);
     if ($first > 1) {
@@ -196,7 +359,6 @@ $renderPager = static function () use ($page, $pageCount, $pagerUrl, $langs): st
         }
         $html .= '<a href="'.dol_escape_htmltag($pagerUrl($pageCount)).'">'.$pageCount.'</a>';
     }
-
     $html .= '<span class="opacitymedium">'.$langs->trans('BatchPageStatus', $page, $pageCount).'</span>';
     if ($page < $pageCount) {
         $html .= '<a class="button" href="'.dol_escape_htmltag($pagerUrl($page + 1)).'">'.$langs->trans('BatchNextPage').' ›</a>';
@@ -216,7 +378,7 @@ $isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu'
 $fromLabel = $langs->trans('SyncFromLabel');
 $toLabel = $langs->trans('SyncToLabel');
 print '<form id="navinvoice-batch-preflight-form" method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin:12px 0">';
-print '<input type="hidden" name="page" value="1">';
+print '<input type="hidden" name="action" value="preflight"><input type="hidden" name="page" value="1">';
 print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
 if (!$isHungarianUi) {
     print '<span>'.dol_escape_htmltag($fromLabel).'</span>';
@@ -232,25 +394,6 @@ print '<input type="date" name="date_to" required value="'.dol_escape_htmltag($d
 if ($isHungarianUi) {
     print '<span>'.dol_escape_htmltag($toLabel).'</span>';
 }
-print '<span>'.$langs->trans('BatchPerPage').'</span><select name="page_size">';
-foreach ($pageSizeOptions as $option) {
-    print '<option value="'.$option.'"'.($option === $pageSize ? ' selected' : '').'>'.$option.'</option>';
-}
-print '</select>';
-print '<span title="'.dol_escape_htmltag($langs->trans('BatchStateFilterHelp')).'">'.$langs->trans('BatchStateFilter').'</span><select name="state_filter">';
-$stateFilterLabels = array(
-    'ALL' => 'BatchStateFilterAll',
-    'READY' => 'BatchReady',
-    'IMPORTED' => 'BatchAlreadyImported',
-    'BLOCKED' => 'BatchBlocked',
-    'REVIEW' => 'BatchReview',
-    'PARTNER_REQUIRED' => 'BatchPartnerRequired',
-    'CHAIN_PENDING' => 'BatchChainPending',
-);
-foreach ($stateFilterLabels as $value => $labelKey) {
-    print '<option value="'.$value.'"'.($stateFilter === $value ? ' selected' : '').'>'.dol_escape_htmltag($langs->trans($labelKey)).'</option>';
-}
-print '</select>';
 print '<input id="navinvoice-batch-preflight-submit" class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'">';
 print '</div></form>';
 print '<script>';
@@ -278,29 +421,70 @@ $summaryCell = static function (string $label, string $value, string $class = ''
         .'</div></td>';
 };
 
-print '<table class="noborder centpercent" style="max-width:1100px;table-layout:fixed">';
-print '<tr>';
-print $summaryCell($langs->trans('BatchRangeTotal'), (string) $totalRecords);
-print $summaryCell($langs->trans('BatchPageNumber'), $langs->trans('BatchPageStatus', $page, $pageCount));
-print $summaryCell($langs->trans('BatchPageChecked'), (string) count($rows));
-print '</tr>';
-print '<tr class="liste_titre"><td colspan="3">'.$langs->trans('BatchPageStatusSummary').'</td></tr>';
-print '<tr>';
-print $summaryCell($langs->trans('BatchReady'), (string) $counts['ready'], 'ok');
-print $summaryCell($langs->trans('BatchAlreadyImported'), (string) $counts['imported']);
-print $summaryCell($langs->trans('BatchDependencies'), (string) $counts['dependency']);
-print '</tr><tr>';
-print $summaryCell($langs->trans('BatchChainPending'), (string) $counts['chain_pending'], 'warning');
-print $summaryCell($langs->trans('BatchBlocked'), (string) $counts['blocked'], 'error');
-print $summaryCell($langs->trans('BatchPartnerRequired'), (string) $counts['partner_required'], 'warning');
-print '</tr><tr>';
-print $summaryCell($langs->trans('BatchReview'), (string) $counts['review'], 'warning');
-print $summaryCell($langs->trans('BatchFilteredVisible'), (string) count($displayRows));
-print '<td></td>';
-print '</tr>';
-print '</table>';
-print '<div class="opacitymedium small" style="margin-top:6px">'.$langs->trans('BatchPageCountsNotice').'</div><br>';
-print $renderPager();
+if ($snapshotValid) {
+    $snapshotTime = !empty($snapshot['created_at']) ? dol_print_date((int) $snapshot['created_at'], 'dayhourtext') : '';
+    print '<div class="info marginbottomonly">'.$langs->trans('BatchSnapshotReady', $rangeTotal, count($snapshotRows), $snapshotTime).'</div>';
+    print '<table class="noborder centpercent" style="max-width:1100px;table-layout:fixed">';
+    print '<tr>';
+    print $summaryCell($langs->trans('BatchRangeTotal'), (string) $rangeTotal);
+    print $summaryCell($langs->trans('BatchPreflightTotal'), (string) count($snapshotRows));
+    print $summaryCell($langs->trans('BatchDependencies'), (string) $counts['dependency']);
+    print '</tr><tr>';
+    print $summaryCell($langs->trans('BatchReady'), (string) $counts['ready'], 'ok');
+    print $summaryCell($langs->trans('BatchAlreadyImported'), (string) $counts['imported']);
+    print $summaryCell($langs->trans('BatchBlocked'), (string) $counts['blocked'], 'error');
+    print '</tr><tr>';
+    print $summaryCell($langs->trans('BatchReview'), (string) $counts['review'], 'warning');
+    print $summaryCell($langs->trans('BatchPartnerRequired'), (string) $counts['partner_required'], 'warning');
+    print $summaryCell($langs->trans('BatchChainPending'), (string) $counts['chain_pending'], 'warning');
+    print '</tr>';
+    print '</table><br>';
+
+    print '<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:10px 0">';
+    print '<form method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'">';
+    print '<input type="hidden" name="date_from" value="'.dol_escape_htmltag($dateFrom).'"><input type="hidden" name="date_to" value="'.dol_escape_htmltag($dateTo).'">';
+    print '<input type="hidden" name="page" value="1">';
+    print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+    print '<strong>'.$langs->trans('BatchResultFilters').'</strong>';
+    print '<label>'.$langs->trans('BatchStateFilter').' <select name="state_filter">';
+    $stateFilterLabels = array(
+        'ALL' => 'BatchStateFilterAll',
+        'READY' => 'BatchReady',
+        'IMPORTED' => 'BatchAlreadyImported',
+        'BLOCKED' => 'BatchBlocked',
+        'REVIEW' => 'BatchReview',
+        'PARTNER_REQUIRED' => 'BatchPartnerRequired',
+        'CHAIN_PENDING' => 'BatchChainPending',
+    );
+    foreach ($stateFilterLabels as $value => $labelKey) {
+        print '<option value="'.$value.'"'.($stateFilter === $value ? ' selected' : '').'>'.dol_escape_htmltag($langs->trans($labelKey)).'</option>';
+    }
+    print '</select></label>';
+    print '<label>'.$langs->trans('BatchPerPage').' <select name="page_size">';
+    foreach ($pageSizeOptions as $option) {
+        print '<option value="'.$option.'"'.($option === $pageSize ? ' selected' : '').'>'.$option.'</option>';
+    }
+    print '</select></label>';
+    print '<button class="button" type="submit">'.$langs->trans('BatchApplyFilters').'</button>';
+    print '</div></form>';
+    print '<div><strong>'.$langs->trans('BatchFilteredTotal').': '.$filteredTotal.'</strong></div>';
+    print '</div>';
+
+    if ($counts['ready'] > 0 && $canImport) {
+        print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin:8px 0 14px 0">';
+        print '<input type="hidden" name="token" value="'.newToken().'">';
+        print '<input type="hidden" name="action" value="batch_import_all">';
+        print '<input type="hidden" name="snapshot_id" value="'.dol_escape_htmltag((string) $snapshot['snapshot_id']).'">';
+        print '<input type="hidden" name="date_from" value="'.dol_escape_htmltag($dateFrom).'"><input type="hidden" name="date_to" value="'.dol_escape_htmltag($dateTo).'">';
+        print '<input type="hidden" name="page_size" value="'.$pageSize.'"><input type="hidden" name="page" value="'.$page.'"><input type="hidden" name="state_filter" value="'.dol_escape_htmltag($stateFilter).'">';
+        print '<input type="submit" class="button button-save" value="'.dol_escape_htmltag($langs->trans('BatchImportAllReady', $counts['ready'])).'" onclick="return confirm(\''.dol_escape_js($langs->trans('BatchImportAllReadyConfirm', $counts['ready'])).'\');">';
+        print '</form>';
+    }
+
+    print $renderPager();
+} else {
+    print '<div class="opacitymedium" style="margin:10px 0 18px 0">'.$langs->trans('BatchNoSnapshot').'</div>';
+}
 print '</div>';
 
 if (is_array($batchResult)) {
@@ -320,65 +504,61 @@ if (is_array($batchResult)) {
     print '</table></div><br>';
 }
 
-if ($displayRows) {
+if ($snapshotValid && $displayRows) {
     print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'">';
-    print '<input type="hidden" name="token" value="'.newToken().'"><input type="hidden" name="action" value="batch_import">';
+    print '<input type="hidden" name="token" value="'.newToken().'">';
+    print '<input type="hidden" name="action" value="batch_import"><input type="hidden" name="snapshot_id" value="'.dol_escape_htmltag((string) $snapshot['snapshot_id']).'">';
     print '<input type="hidden" name="date_from" value="'.dol_escape_htmltag($dateFrom).'"><input type="hidden" name="date_to" value="'.dol_escape_htmltag($dateTo).'">';
-    print '<input type="hidden" name="page_size" value="'.$pageSize.'"><input type="hidden" name="page" value="'.$page.'">';
-    print '<input type="hidden" name="state_filter" value="'.dol_escape_htmltag($stateFilter).'">';
+    print '<input type="hidden" name="page_size" value="'.$pageSize.'"><input type="hidden" name="page" value="'.$page.'"><input type="hidden" name="state_filter" value="'.dol_escape_htmltag($stateFilter).'">';
     print '<div class="div-table-responsive"><table class="noborder centpercent"><tr class="liste_titre">';
     print '<td class="center">'.$langs->trans('BatchSelect').'</td><td>'.$langs->trans('ProposalStatus').'</td><td>'.$langs->trans('NavInvoiceNumber').'</td><td>'.$langs->trans('Supplier').'</td>';
     print '<td>'.$langs->trans('InvoiceIssueDate').'</td><td>'.$langs->trans('InvoiceDeliveryDate').'</td><td>'.$langs->trans('PaymentDate').'</td><td>'.$langs->trans('InvoiceCategory').'</td><td class="right">'.$langs->trans('AmountTTC').'</td><td>'.$langs->trans('BatchIssues').'</td></tr>';
 
     $selectableCount = 0;
     foreach ($displayRows as $row) {
-        $record = $row['record'];
-        $preview = is_array($row['preview'] ?? null) ? $row['preview'] : array();
-        $state = (string) ($row['state'] ?? 'blocked');
-        $ready = $state === 'ready';
-        $chainPending = $isChainPending($preview, $state);
-        $selectable = $ready || $chainPending;
+        $displayState = strtoupper((string) ($row['display_state'] ?? 'BLOCKED'));
+        $selectable = $displayState === 'READY';
         if ($selectable) {
             $selectableCount++;
         }
-        $dependency = !empty($record->_nav_batch_dependency);
-        $operation = strtoupper(trim((string) ($preview['operation'] ?? $record->invoice_operation ?? 'CREATE')));
+        $operation = strtoupper(trim((string) ($row['operation'] ?? $row['record_operation'] ?? 'CREATE')));
         $isNonCreate = $operation !== '' && $operation !== 'CREATE';
-        $supplier = is_array($preview['partner'] ?? null) ? (string) $preview['partner']['name'] : (string) ($record->supplier_name ?? '');
-        $currency = (string) ($preview['header']['currency'] ?? $record->currency ?? $baseCurrency);
-        $gross = $preview['totals']['gross'] ?? null;
-        $relationUrl = dol_buildpath('/navinvoice/relation.php', 1).'?id='.(int) $record->rowid;
-        if ($state === 'partner_required') {
-            $rowUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.(int) $record->rowid;
-        } elseif ($isNonCreate && !$ready) {
+        $supplier = (string) ($row['partner_name'] ?? $row['supplier_name'] ?? '');
+        $gross = $row['gross'] ?? null;
+        $currency = (string) ($row['currency'] ?? $baseCurrency);
+        $id = (int) ($row['id'] ?? 0);
+        $relationUrl = dol_buildpath('/navinvoice/relation.php', 1).'?id='.$id;
+        if ($displayState === 'PARTNER_REQUIRED') {
+            $rowUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.$id;
+        } elseif ($isNonCreate && $displayState !== 'READY') {
             $rowUrl = $relationUrl;
-        } elseif ($ready) {
-            $rowUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.(int) $record->rowid;
+        } elseif ($displayState === 'READY') {
+            $rowUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.$id;
         } else {
-            $rowUrl = dol_buildpath('/navinvoice/detail.php', 1).'?id='.(int) $record->rowid;
+            $rowUrl = dol_buildpath('/navinvoice/detail.php', 1).'?id='.$id;
         }
 
         $issues = array();
-        if ($dependency) {
+        if (!empty($row['dependency'])) {
             $issues[] = img_picto('', 'history').' <span class="opacitymedium">'.$langs->trans('BatchDependencyIncluded').'</span>';
         }
-        if ($chainPending) {
+        if ($displayState === 'CHAIN_PENDING') {
             $issues[] = img_picto('', 'warning').' <span class="warning">'.$langs->trans('BatchChainPending').'</span>';
         }
         if ($isNonCreate) {
             $issues[] = img_picto('', 'link').' <a href="'.dol_escape_htmltag($relationUrl).'">'.dol_escape_htmltag($langs->trans('ReviewRelation')).'</a>';
         }
-        if ($state === 'partner_required') {
-            $partnerUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.(int) $record->rowid;
+        if ($displayState === 'PARTNER_REQUIRED') {
+            $partnerUrl = dol_buildpath('/navinvoice/partner.php', 1).'?id='.$id;
             $issues[] = img_picto('', 'company').' <a href="'.dol_escape_htmltag($partnerUrl).'">'.dol_escape_htmltag($langs->trans('BatchResolvePartner')).'</a>';
         }
-        foreach (($preview['blockers'] ?? array()) as $code) {
+        foreach (($row['blockers'] ?? array()) as $code) {
             $issues[] = img_picto('', 'error').' '.dol_escape_htmltag($issueLabel((string) $code));
         }
-        foreach (($preview['warnings'] ?? array()) as $code) {
+        foreach (($row['warnings'] ?? array()) as $code) {
             $issues[] = img_picto('', 'warning').' '.dol_escape_htmltag($issueLabel((string) $code));
         }
-        foreach (($preview['notices'] ?? array()) as $code) {
+        foreach (($row['notices'] ?? array()) as $code) {
             $issues[] = img_picto('', 'info').' <span class="opacitymedium">'.dol_escape_htmltag($issueLabel((string) $code)).'</span>';
         }
         if (!empty($row['error'])) {
@@ -387,17 +567,17 @@ if ($displayRows) {
 
         print '<tr class="oddeven"><td class="center">';
         if ($selectable && $canImport) {
-            print '<input type="checkbox" name="selected[]" value="'.(int) $record->rowid.'" checked>';
+            print '<input type="checkbox" name="selected[]" value="'.$id.'" checked>';
         } else {
             print '<span class="opacitymedium">—</span>';
         }
         print '</td>';
-        print '<td>'.($chainPending ? img_picto('', 'warning').' <span class="warning">'.$langs->trans('BatchChainPending').'</span>' : $stateHtml($state)).'</td>';
-        print '<td><a href="'.dol_escape_htmltag($rowUrl).'">'.dol_escape_htmltag((string) $record->invoice_number).'</a></td>';
+        print '<td>'.$stateHtml($displayState).'</td>';
+        print '<td><a href="'.dol_escape_htmltag($rowUrl).'">'.dol_escape_htmltag((string) ($row['invoice_number'] ?? '')).'</a></td>';
         print '<td>'.($supplier !== '' ? dol_escape_htmltag($supplier) : '<span class="opacitymedium">—</span>').'</td>';
-        print '<td>'.dol_escape_htmltag((string) ($preview['header']['invoice_date'] ?? $record->invoice_issue_date ?? '')).'</td>';
-        print '<td>'.dol_escape_htmltag((string) ($preview['header']['delivery_date'] ?? '')).'</td><td>'.dol_escape_htmltag((string) ($preview['header']['due_date'] ?? '')).'</td>';
-        print '<td>'.dol_escape_htmltag((string) ($preview['category'] ?? $record->invoice_category ?? '')).'</td>';
+        print '<td>'.dol_escape_htmltag((string) ($row['invoice_date'] ?? '')).'</td>';
+        print '<td>'.dol_escape_htmltag((string) ($row['delivery_date'] ?? '')).'</td><td>'.dol_escape_htmltag((string) ($row['due_date'] ?? '')).'</td>';
+        print '<td>'.dol_escape_htmltag((string) ($row['category'] ?? '')).'</td>';
         print '<td class="right">'.($gross !== null && $gross !== '' ? price($gross).' '.dol_escape_htmltag($currency) : '<span class="opacitymedium">—</span>').'</td>';
         print '<td>'.($issues ? implode('<br>', $issues) : '<span class="opacitymedium">—</span>').'</td></tr>';
     }
@@ -405,18 +585,17 @@ if ($displayRows) {
 
     if ($selectableCount > 0) {
         if ($canImport) {
-            print '<div class="center tabsAction"><input type="submit" class="button button-save" value="'.dol_escape_htmltag($langs->trans('BatchImportSelected')).'" onclick="return confirm(\''.dol_escape_js($langs->trans('BatchImportConfirm')).'\');"></div>';
+            print '<div class="center tabsAction"><input type="submit" class="button button-save" value="'.dol_escape_htmltag($langs->trans('BatchImportSelectedPage')).'" onclick="return confirm(\''.dol_escape_js($langs->trans('BatchImportConfirm')).'\');"></div>';
         } else {
             print '<div class="warning">'.img_picto('', 'warning').' '.$langs->trans('ImportPermissionMissing').'</div>';
         }
     }
     print '</form>';
     print $renderPager();
-} elseif ($rows && $loadError === '') {
-    print '<div class="opacitymedium">'.$langs->trans('BatchNoStateMatches').'</div>';
-    print $renderPager();
-} elseif ($loadError === '') {
-    print '<div class="opacitymedium">'.$langs->trans('BatchNoInvoices').'</div>';
+} elseif ($snapshotValid && $filteredTotal === 0) {
+    print '<div class="opacitymedium">'.$langs->trans('BatchNoStateMatchesGlobal').'</div>';
+} elseif (!$snapshotValid && $loadError === '') {
+    print '<div class="opacitymedium">'.$langs->trans('BatchNoSnapshot').'</div>';
 }
 
 llxFooter();
