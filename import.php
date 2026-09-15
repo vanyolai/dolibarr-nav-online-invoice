@@ -256,6 +256,7 @@ if (is_array($preview)) {
     }
     print '<td class="right">'.$langs->trans($isSimplified ? 'NavGrossUnitPrice' : 'NavUnitPrice').'</td>';
     print '<td class="right">'.$langs->trans('DolibarrNetUnitPrice').'</td>';
+    print '<td class="right">'.$langs->trans('Discount').'</td>';
     print '<td class="right">'.$langs->trans('VAT').'</td>';
     print '<td class="right">'.$langs->trans('AmountHT').($isSimplified ? ' *' : '').'</td>';
     print '<td class="right">'.$langs->trans('AmountTTC').'</td>';
@@ -303,6 +304,19 @@ if (is_array($preview)) {
             print ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>';
         }
         print '</td>';
+        $discountPercent = (float) ($line['discount_percent'] ?? 0);
+        if ($discountPercent > 0.0000001) {
+            $discountText = price($discountPercent).'%';
+            if (($line['discount_value'] ?? null) !== null && $line['discount_value'] !== '') {
+                $discountText .= '<br><span class="opacitymedium small">'.$money($line['discount_value'], $preview['header']['currency']).'</span>';
+            }
+            if (!empty($line['discount_description'])) {
+                $discountText .= '<br><span class="opacitymedium small">'.dol_escape_htmltag((string) $line['discount_description']).'</span>';
+            }
+            print '<td class="right">'.$discountText.'</td>';
+        } else {
+            print '<td class="right">'.$display(null).'</td>';
+        }
         $vatDisplay = $line['vat_rate'] !== null ? price($line['vat_rate']).'%' : $display(null);
         print '<td class="right">'.$vatDisplay.'</td>';
         print '<td class="right">'.$money($line['net'], $preview['header']['currency']).'</td>';
