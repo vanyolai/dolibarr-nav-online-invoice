@@ -26,6 +26,12 @@ $defaultFrom = $today->modify('-30 days')->format('Y-m-d');
 $dateFrom = trim((string) GETPOST('date_from', 'alphanohtml')) ?: $defaultFrom;
 $dateTo = trim((string) GETPOST('date_to', 'alphanohtml')) ?: $today->format('Y-m-d');
 $action = GETPOST('action', 'aZ09');
+$pageSizeOptions = array(50, 100, 200);
+$pageSize = (int) GETPOST('page_size', 'int');
+if (!in_array($pageSize, $pageSizeOptions, true)) {
+    $pageSize = 100;
+}
+$page = max(1, (int) GETPOST('page', 'int'));
 $baseCurrency = strtoupper((string) $conf->currency);
 $service = new NavInvoiceBatchService($db, (int) $conf->entity, $baseCurrency);
 $batchResult = null;
@@ -54,8 +60,15 @@ if ($action === 'batch_import') {
 
 $rows = array();
 $loadError = '';
+$totalRecords = 0;
+$pageCount = 1;
 try {
-    $records = $service->loadInboundRecords($dateFrom, $dateTo, 300);
+    $totalRecords = $service->countInboundRecords($dateFrom, $dateTo);
+    $pageCount = max(1, (int) ceil($totalRecords / $pageSize));
+    $page = min($page, $pageCount);
+    $offset = ($page - 1) * $pageSize;
+    $dependencyLimit = min(100, max(0, 300 - $pageSize));
+    $records = $service->loadInboundRecords($dateFrom, $dateTo, $pageSize, $offset, $dependencyLimit);
     $rows = $service->preflightMany($records);
 } catch (Throwable $e) {
     $loadError = $e->getMessage();
@@ -123,6 +136,31 @@ $reconciliationLabel = static function (string $code) use ($langs): string {
     return isset($keys[$code]) ? $langs->trans($keys[$code]) : '';
 };
 
+$pagerUrl = static function (int $targetPage) use ($dateFrom, $dateTo, $pageSize): string {
+    $query = http_build_query(array(
+        'date_from' => $dateFrom,
+        'date_to' => $dateTo,
+        'page_size' => $pageSize,
+        'page' => $targetPage,
+    ));
+    return $_SERVER['PHP_SELF'].'?'.$query;
+};
+$renderPager = static function () use ($page, $pageCount, $pagerUrl, $langs): string {
+    if ($pageCount <= 1) {
+        return '';
+    }
+    $html = '<div style="display:flex;align-items:center;justify-content:center;gap:10px;margin:12px 0">';
+    if ($page > 1) {
+        $html .= '<a class="button" href="'.dol_escape_htmltag($pagerUrl($page - 1)).'">‹ '.$langs->trans('BatchPreviousPage').'</a>';
+    }
+    $html .= '<strong>'.$langs->trans('BatchPageStatus', $page, $pageCount).'</strong>';
+    if ($page < $pageCount) {
+        $html .= '<a class="button" href="'.dol_escape_htmltag($pagerUrl($page + 1)).'">'.$langs->trans('BatchNextPage').' ›</a>';
+    }
+    $html .= '</div>';
+    return $html;
+};
+
 llxHeader('', $langs->trans('BatchImport'));
 print load_fiche_titre($langs->trans('BatchImport'), '<a href="'.dol_buildpath('/navinvoice/index.php', 1).'">'.$langs->trans('BackToNavInvoiceList').'</a>', 'file-invoice');
 print '<div style="max-width:1200px">';
@@ -134,6 +172,7 @@ $isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu'
 $fromLabel = $langs->trans('SyncFromLabel');
 $toLabel = $langs->trans('SyncToLabel');
 print '<form id="navinvoice-batch-preflight-form" method="GET" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'" style="margin:12px 0">';
+print '<input type="hidden" name="page" value="1">';
 print '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
 if (!$isHungarianUi) {
     print '<span>'.dol_escape_htmltag($fromLabel).'</span>';
@@ -149,6 +188,11 @@ print '<input type="date" name="date_to" required value="'.dol_escape_htmltag($d
 if ($isHungarianUi) {
     print '<span>'.dol_escape_htmltag($toLabel).'</span>';
 }
+print '<span>'.$langs->trans('BatchPerPage').'</span><select name="page_size">';
+foreach ($pageSizeOptions as $option) {
+    print '<option value="'.$option.'"'.($option === $pageSize ? ' selected' : '').'>'.$option.'</option>';
+}
+print '</select>';
 print '<input id="navinvoice-batch-preflight-submit" class="button" type="submit" value="'.$langs->trans('BatchRunPreflight').'">';
 print '</div></form>';
 print '<script>';
@@ -178,19 +222,21 @@ $summaryCell = static function (string $label, string $value, string $class = ''
 
 print '<table class="noborder centpercent" style="max-width:1100px;table-layout:fixed">';
 print '<tr>';
-print $summaryCell($langs->trans('BatchTotal'), (string) count($rows));
+print $summaryCell($langs->trans('BatchRangeTotal'), (string) $totalRecords);
+print $summaryCell($langs->trans('BatchPageChecked'), (string) count($rows));
 print $summaryCell($langs->trans('BatchReady'), (string) $counts['ready'], 'ok');
-print $summaryCell($langs->trans('BatchAlreadyImported'), (string) $counts['imported']);
 print '</tr><tr>';
+print $summaryCell($langs->trans('BatchAlreadyImported'), (string) $counts['imported']);
 print $summaryCell($langs->trans('BatchDependencies'), (string) $counts['dependency']);
 print $summaryCell($langs->trans('BatchChainPending'), (string) $counts['chain_pending'], 'warning');
-print $summaryCell($langs->trans('BatchBlocked'), (string) $counts['blocked'], 'error');
 print '</tr><tr>';
+print $summaryCell($langs->trans('BatchBlocked'), (string) $counts['blocked'], 'error');
 print $summaryCell($langs->trans('BatchPartnerRequired'), (string) $counts['partner_required'], 'warning');
 print $summaryCell($langs->trans('BatchReview'), (string) $counts['review'], 'warning');
-print '<td></td>';
 print '</tr>';
-print '</table><br>';
+print '</table>';
+print '<div class="opacitymedium small" style="margin-top:6px">'.$langs->trans('BatchPageCountsNotice').'</div><br>';
+print $renderPager();
 print '</div>';
 
 if (is_array($batchResult)) {
@@ -214,6 +260,7 @@ if ($rows) {
     print '<form method="POST" action="'.dol_escape_htmltag($_SERVER['PHP_SELF']).'">';
     print '<input type="hidden" name="token" value="'.newToken().'"><input type="hidden" name="action" value="batch_import">';
     print '<input type="hidden" name="date_from" value="'.dol_escape_htmltag($dateFrom).'"><input type="hidden" name="date_to" value="'.dol_escape_htmltag($dateTo).'">';
+    print '<input type="hidden" name="page_size" value="'.$pageSize.'"><input type="hidden" name="page" value="'.$page.'">';
     print '<div class="div-table-responsive"><table class="noborder centpercent"><tr class="liste_titre">';
     print '<td class="center">'.$langs->trans('BatchSelect').'</td><td>'.$langs->trans('ProposalStatus').'</td><td>'.$langs->trans('NavInvoiceNumber').'</td><td>'.$langs->trans('Supplier').'</td>';
     print '<td>'.$langs->trans('InvoiceIssueDate').'</td><td>'.$langs->trans('InvoiceDeliveryDate').'</td><td>'.$langs->trans('PaymentDate').'</td><td>'.$langs->trans('InvoiceCategory').'</td><td class="right">'.$langs->trans('AmountTTC').'</td><td>'.$langs->trans('BatchIssues').'</td></tr>';
@@ -299,6 +346,7 @@ if ($rows) {
         }
     }
     print '</form>';
+    print $renderPager();
 } elseif ($loadError === '') {
     print '<div class="opacitymedium">'.$langs->trans('BatchNoInvoices').'</div>';
 }
