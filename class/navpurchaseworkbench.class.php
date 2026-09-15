@@ -75,8 +75,8 @@ class NavPurchaseWorkbench
                 $priceSelection = $this->selectSupplierPriceForLine($partnerId, $productId, $supplierRef, $line);
                 if ($priceSelection !== null && $product !== null) {
                     // The product matcher intentionally identifies the product, not
-                    // the correct MOQ price tier. The workbench can choose the exact
-                    // supplier-price row based on NAV quantity/price semantics.
+                    // the correct supplier-price tier. The workbench chooses the
+                    // most appropriate tier from unit identity, quantity and price.
                     $match['product']['supplier_price_id'] = (int) $priceSelection['price']['rowid'];
                     $line['product_match'] = $match;
                     $product = $match['product'];
@@ -104,11 +104,13 @@ class NavPurchaseWorkbench
                 'stockable' => (int) ($line['product_type'] ?? 0) === 0 ? 1 : 0,
                 'tosell' => 0,
                 'supplier_ref' => $supplierRef,
-                // For a new master record this is the NAV price for one NAV unit.
-                // The user may turn it into an MOQ price by editing quantity below.
+                // Dolibarr supplier prices store the list price for the minimum
+                // quantity and a separate remise_percent. Preserve the same NAV
+                // representation instead of flattening the discount into price.
                 'supplier_price_total' => $line['unit_price_ht'] ?? null,
                 'supplier_quantity' => 1,
                 'supplier_packaging' => 1,
+                'supplier_discount_percent' => (float) ($line['discount_percent'] ?? 0),
                 'unit_price_ht' => $line['unit_price_ht'] ?? null,
                 'vat_rate' => $line['vat_rate'] ?? 0,
             );
@@ -157,6 +159,7 @@ class NavPurchaseWorkbench
         $tosell = !empty($input['tosell']) ? 1 : 0;
         $supplierRef = trim((string) ($input['supplier_ref'] ?? ($line['supplier_ref'] ?? '')));
         $vatRate = (float) ($input['vat_rate'] ?? ($line['vat_rate'] ?? 0));
+        $discountPercent = $this->discountPercent((float) ($input['supplier_discount_percent'] ?? ($line['discount_percent'] ?? 0)));
 
         $quantity = (float) ($input['supplier_quantity'] ?? 1);
         if ($quantity <= 0) {
@@ -220,7 +223,8 @@ class NavPurchaseWorkbench
                 $user,
                 $quantity,
                 $packaging,
-                $totalPrice
+                $totalPrice,
+                $discountPercent
             );
         } catch (Throwable $e) {
             try {
@@ -274,7 +278,11 @@ class NavPurchaseWorkbench
                 (float) ($line['unit_price_ht'] ?? 0),
                 (float) ($line['vat_rate'] ?? 0),
                 null,
-                $user
+                $user,
+                null,
+                null,
+                null,
+                $this->discountPercent((float) ($line['discount_percent'] ?? 0))
             );
         } else {
             $supplierPriceId = (int) $existing['rowid'];
@@ -327,10 +335,14 @@ class NavPurchaseWorkbench
             $supplier,
             $supplierPriceId,
             (string) ($details['ref_fourn'] ?? ($line['supplier_ref'] ?? '')),
-            (float) ($line['unit_price_ht'] ?? 0),
+            (float) ($normalization['normalized_unit_price'] ?? ($line['unit_price_ht'] ?? 0)),
             (float) ($details['tva_tx'] ?? ($line['vat_rate'] ?? 0)),
             $details,
-            $user
+            $user,
+            null,
+            null,
+            null,
+            $this->discountPercent((float) ($line['discount_percent'] ?? 0))
         );
     }
 
@@ -388,6 +400,7 @@ class NavPurchaseWorkbench
             $line['_order_supplier_price_id'] = $matched ? (int) ($product['supplier_price_id'] ?? 0) : 0;
             $line['_order_qty'] = $matched ? (float) $normalization['normalized_quantity'] : (float) ($line['quantity'] ?? 0);
             $line['_order_unit_price'] = $matched ? (float) $normalization['normalized_unit_price'] : (float) ($line['unit_price_ht'] ?? 0);
+            $line['_order_discount_percent'] = $this->discountPercent((float) ($line['discount_percent'] ?? 0));
             $line['_order_unit_id'] = $matched && !empty($normalization['product_unit_id'])
                 ? (int) $normalization['product_unit_id']
                 : (!empty($line['unit_id']) ? (int) $line['unit_id'] : null);
@@ -433,7 +446,7 @@ class NavPurchaseWorkbench
                     (int) ($line['_order_product_id'] ?? 0),
                     (int) ($line['_order_supplier_price_id'] ?? 0),
                     (string) ($line['supplier_ref'] ?? ''),
-                    0.0,
+                    (float) ($line['_order_discount_percent'] ?? 0),
                     'HT',
                     0.0,
                     (int) ($line['product_type'] ?? 0),
@@ -615,8 +628,12 @@ class NavPurchaseWorkbench
     }
 
     /**
-     * Choose the supplier price tier whose unit or MOQ/packaging total best
-     * explains the NAV invoice unit price.
+     * Choose the supplier price tier that best explains the invoice line.
+     *
+     * Dolibarr product_fournisseur_price.quantity is a minimum quantity for a
+     * price tier, not a unit-conversion factor. A matching NAV/Dolibarr unit is
+     * therefore authoritative: quantity remains quantity, regardless of MOQ or
+     * packaging. Packaging is considered only when unit identity is not known.
      *
      * @return array{price:array<string,mixed>,normalization:array<string,mixed>}|null
      */
@@ -627,10 +644,11 @@ class NavPurchaseWorkbench
             return null;
         }
 
+        $product = $this->productDetails($productId);
         $best = null;
         $bestScore = -INF;
         foreach ($prices as $price) {
-            $normalization = $this->normalizePurchaseLine($line, $price, $this->productDetails($productId));
+            $normalization = $this->normalizePurchaseLine($line, $price, $product);
             $score = (float) ($normalization['match_score'] ?? 0);
             if ($score > $bestScore) {
                 $bestScore = $score;
@@ -643,9 +661,11 @@ class NavPurchaseWorkbench
     /**
      * Normalize NAV quantity/unit-price semantics to Dolibarr product units.
      *
-     * Exact relationships only are automatic. We never divide by MOQ simply
-     * because MOQ exists: the NAV price must match either supplier unitprice,
-     * the total price for the supplier-price quantity, or unitprice*packaging.
+     * The invoice line has two price concepts: NAV unitPrice is the list price,
+     * while lineNetAmount/quantity is the authoritative effective unit price
+     * after lineDiscountData. Dolibarr supplier prices have the same distinction
+     * (unitprice + remise_percent/remise). Compare effective prices, but preserve
+     * list price and discount separately for supplier-price/order creation.
      *
      * @param array<string,mixed>|null $price
      * @param array<string,mixed>|null $product
@@ -654,51 +674,84 @@ class NavPurchaseWorkbench
     private function normalizePurchaseLine(array $line, ?array $price, ?array $product): array
     {
         $navQty = (float) ($line['quantity'] ?? 0);
-        $navUnitPrice = (float) ($line['unit_price_ht'] ?? 0);
+        $navListUnit = (float) ($line['unit_price_ht'] ?? 0);
+        $navDiscount = $this->discountPercent((float) ($line['discount_percent'] ?? 0));
+        $navEffectiveUnit = $navListUnit * (1.0 - ($navDiscount / 100.0));
+        if ($navQty != 0.0 && isset($line['net']) && $line['net'] !== null && $line['net'] !== '' && is_numeric($line['net'])) {
+            $navEffectiveUnit = (float) $line['net'] / $navQty;
+        }
+
         $supplierQty = $price !== null ? (float) ($price['quantity'] ?? 0) : 0.0;
         $packaging = $price !== null ? (float) ($price['packaging'] ?? 0) : 0.0;
         $supplierTotal = $price !== null ? (float) ($price['price'] ?? 0) : 0.0;
-        $supplierUnit = $price !== null ? $this->supplierPriceUnitPrice($price) : null;
+        $supplierListUnit = $price !== null ? $this->supplierPriceUnitPrice($price) : null;
+        $supplierDiscount = $price !== null ? $this->discountPercent((float) ($price['remise_percent'] ?? 0)) : 0.0;
+        $supplierEffectiveUnit = $price !== null ? $this->supplierPriceEffectiveUnitPrice($price) : null;
+
+        $lineUnitId = (int) ($line['unit_id'] ?? 0);
+        $productUnitId = $product !== null ? (int) ($product['fk_unit'] ?? 0) : 0;
+        $sameUnit = $lineUnitId > 0 && $productUnitId > 0 && $lineUnitId === $productUnitId;
         $factor = 1.0;
         $mode = 'unresolved';
         $score = 0.0;
 
-        if ($supplierUnit !== null && $this->moneyEqual($navUnitPrice, $supplierUnit)) {
+        if ($sameUnit) {
             $mode = 'unit';
             $factor = 1.0;
+            // Unit identity is stronger evidence than MOQ/packaging. Prefer a
+            // price tier valid for this quantity and, among those, the closest
+            // effective price.
+            $score = 200.0;
+            if ($supplierEffectiveUnit !== null) {
+                $denom = max(abs($navEffectiveUnit), abs($supplierEffectiveUnit), 1.0);
+                $score -= min(100.0, 100.0 * abs($navEffectiveUnit - $supplierEffectiveUnit) / $denom);
+            }
+            if ($supplierQty <= 0.0 || abs($navQty) + 0.000001 >= $supplierQty) {
+                $score += 20.0;
+            }
+        } elseif ($supplierEffectiveUnit !== null && $this->moneyEqual($navEffectiveUnit, $supplierEffectiveUnit)) {
+            $mode = 'unit_inferred';
+            $factor = 1.0;
             $score = 130.0;
-        } elseif ($supplierQty > 0 && $supplierTotal != 0.0 && $this->moneyEqual($navUnitPrice, $supplierTotal)) {
-            $mode = 'price_quantity';
-            $factor = $supplierQty;
-            $score = 150.0;
-        } elseif ($supplierUnit !== null && $packaging > 0 && $this->moneyEqual($navUnitPrice, $supplierUnit * $packaging)) {
+        } elseif ($supplierEffectiveUnit !== null && $packaging > 0
+            && $this->moneyEqual($navEffectiveUnit, $supplierEffectiveUnit * $packaging)) {
+            // Only packaging can represent a physical conversion. MOQ quantity
+            // itself never does: it is merely the threshold of a price tier.
             $mode = 'packaging';
             $factor = $packaging;
             $score = 140.0;
-        } elseif ($supplierUnit !== null) {
+        } elseif ($supplierEffectiveUnit !== null) {
             // Used only to choose the nearest supplier-price tier for display.
-            $denom = max(abs($navUnitPrice), abs($supplierUnit), 1.0);
-            $score = max(0.0, 50.0 - 50.0 * abs($navUnitPrice - $supplierUnit) / $denom);
+            $denom = max(abs($navEffectiveUnit), abs($supplierEffectiveUnit), 1.0);
+            $score = max(0.0, 50.0 - 50.0 * abs($navEffectiveUnit - $supplierEffectiveUnit) / $denom);
         }
 
         $normalizedQty = $navQty * $factor;
-        $normalizedUnit = $factor > 0 ? $navUnitPrice / $factor : $navUnitPrice;
-        $priceDiffers = $supplierUnit !== null && !$this->moneyEqual($normalizedUnit, $supplierUnit);
-        $canUpdatePrice = $priceDiffers && $mode === 'unresolved' && ($supplierQty <= 1.0 || $supplierQty == 0.0);
+        $normalizedListUnit = $factor > 0 ? $navListUnit / $factor : $navListUnit;
+        $normalizedEffectiveUnit = $factor > 0 ? $navEffectiveUnit / $factor : $navEffectiveUnit;
+        $priceDiffers = $supplierEffectiveUnit !== null && !$this->moneyEqual($normalizedEffectiveUnit, $supplierEffectiveUnit);
+        $canUpdatePrice = $priceDiffers && $mode !== 'unresolved';
 
         return array(
             'mode' => $mode,
             'match_score' => $score,
             'factor' => $factor,
             'nav_quantity' => $navQty,
-            'nav_unit_price' => $navUnitPrice,
+            'nav_unit_price' => $navListUnit,
+            'nav_effective_unit_price' => $navEffectiveUnit,
+            'nav_discount_percent' => $navDiscount,
             'normalized_quantity' => $normalizedQty,
-            'normalized_unit_price' => $normalizedUnit,
+            'normalized_unit_price' => $normalizedListUnit,
+            'normalized_effective_unit_price' => $normalizedEffectiveUnit,
             'supplier_quantity' => $supplierQty,
             'supplier_packaging' => $packaging,
             'supplier_price_total' => $supplierTotal,
-            'supplier_unit_price' => $supplierUnit,
-            'product_unit_id' => $product !== null ? (int) ($product['fk_unit'] ?? 0) : 0,
+            'supplier_unit_price' => $supplierListUnit,
+            'supplier_effective_unit_price' => $supplierEffectiveUnit,
+            'supplier_discount_percent' => $supplierDiscount,
+            'product_unit_id' => $productUnitId,
+            'line_unit_id' => $lineUnitId,
+            'unit_identity' => $sameUnit,
             'price_differs' => $priceDiffers,
             'can_update_price' => $canUpdatePrice,
         );
@@ -720,7 +773,8 @@ class NavPurchaseWorkbench
         User $user,
         ?float $quantityOverride = null,
         ?float $packagingOverride = null,
-        ?float $totalPriceOverride = null
+        ?float $totalPriceOverride = null,
+        ?float $discountPercentOverride = null
     ): int {
         $quantity = $quantityOverride ?? ($current !== null ? (float) ($current['quantity'] ?? 1) : 1.0);
         if ($quantity <= 0) {
@@ -731,6 +785,12 @@ class NavPurchaseWorkbench
         if ($packaging <= 0) {
             $packaging = $quantity;
         }
+        $discountPercent = $discountPercentOverride !== null
+            ? $this->discountPercent($discountPercentOverride)
+            : $this->discountPercent((float) ($current['remise_percent'] ?? 0));
+        // A NAV line discount represented as a percentage supersedes any old
+        // fixed supplier-price discount amount to avoid applying two discounts.
+        $discountAmount = $discountPercentOverride !== null ? 0.0 : (float) ($current['remise'] ?? 0);
 
         $product->product_fourn_price_id = $supplierPriceId;
         $product->product_fourn_packaging = $packaging;
@@ -745,8 +805,8 @@ class NavPurchaseWorkbench
             ref_fourn: $supplierRef,
             tva_tx: $vatRate,
             charges: (float) ($current['charges'] ?? 0),
-            remise_percent: (float) ($current['remise_percent'] ?? 0),
-            remise: (float) ($current['remise'] ?? 0),
+            remise_percent: $discountPercent,
+            remise: $discountAmount,
             newnpr: !empty($current['info_bits']) ? 1 : 0,
             delivery_time_days: $current['delivery_time_days'] ?? 0,
             supplier_reputation: (string) ($current['supplier_reputation'] ?? ''),
@@ -866,6 +926,28 @@ class NavPurchaseWorkbench
         return null;
     }
 
+    /** @param array<string,mixed> $details */
+    private function supplierPriceEffectiveUnitPrice(array $details): ?float
+    {
+        $unit = $this->supplierPriceUnitPrice($details);
+        if ($unit === null) {
+            return null;
+        }
+        $percent = $this->discountPercent((float) ($details['remise_percent'] ?? 0));
+        $effective = $unit * (1.0 - ($percent / 100.0));
+        $qty = (float) ($details['quantity'] ?? 0);
+        $fixedDiscount = (float) ($details['remise'] ?? 0);
+        if ($qty > 0 && $fixedDiscount != 0.0) {
+            $effective -= $fixedDiscount / $qty;
+        }
+        return $effective;
+    }
+
+    private function discountPercent(float $value): float
+    {
+        return max(0.0, min(100.0, $value));
+    }
+
     private function moneyEqual(float $a, float $b): bool
     {
         $tolerance = max(0.01, max(abs($a), abs($b)) * 0.00001);
@@ -945,7 +1027,7 @@ class NavPurchaseWorkbench
             $this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_mirror (entity, fk_navinvoice_invoice)');
         }
         if (!$this->indexExists($table, 'idx_navinvoice_purchase_order')) {
-            $this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_order (entity, fk_commande_fourn)');
+            $this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_order (entity, fk_navinvoice_invoice)');
         }
     }
 
