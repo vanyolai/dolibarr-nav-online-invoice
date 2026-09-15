@@ -523,7 +523,10 @@ if ($snapshotValid && $displayRows) {
         }
         $operation = strtoupper(trim((string) ($row['operation'] ?? $row['record_operation'] ?? 'CREATE')));
         $isNonCreate = $operation !== '' && $operation !== 'CREATE';
-        $supplier = (string) ($row['partner_name'] ?? $row['supplier_name'] ?? '');
+        $supplier = trim((string) ($row['partner_name'] ?? ''));
+        if ($supplier === '') {
+            $supplier = trim((string) ($row['supplier_name'] ?? ''));
+        }
         $gross = $row['gross'] ?? null;
         $currency = (string) ($row['currency'] ?? $baseCurrency);
         $id = (int) ($row['id'] ?? 0);
