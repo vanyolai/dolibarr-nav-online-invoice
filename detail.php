@@ -11,10 +11,11 @@ if (!$res) {
 }
 
 dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
+dol_include_once('/navinvoice/class/navpurchaseeligibility.class.php');
 dol_include_once('/navinvoice/class/navpartnermatcher.class.php');
 dol_include_once('/navinvoice/class/navpartnerenrichmentpreview.class.php');
 dol_include_once('/navinvoice/class/navpartnerenricher.class.php');
-$langs->loadLangs(array('navinvoice@navinvoice', 'navrelation@navinvoice', 'navinvoiceui@navinvoice'));
+$langs->loadLangs(array('navinvoice@navinvoice', 'navrelation@navinvoice', 'navinvoiceui@navinvoice', 'navpurchase@navinvoice'));
 
 if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
     accessforbidden();
@@ -63,6 +64,9 @@ if ($linkedId > 0) {
 }
 $importUrl = dol_buildpath('/navinvoice/import.php', 1).'?id='.$id;
 $relationUrl = dol_buildpath('/navinvoice/relation.php', 1).'?id='.$id;
+$purchaseUrl = dol_buildpath('/navinvoice/purchase.php', 1).'?id='.$id;
+$showPurchaseWorkbench = (bool) getDolGlobalInt('NAVINVOICE_PURCHASE_WORKBENCH_ENABLED')
+    && NavPurchaseEligibility::isEligible($direction, $operation, is_array($parsed) ? $parsed : null);
 
 $externalPartyKey = $isInbound ? 'supplier' : 'customer';
 $partnerMatch = null;
@@ -371,6 +375,9 @@ if ($linkedId > 0) {
     print '<a class="butAction" href="'.dol_escape_htmltag($linkedUrl).'">'.$langs->trans('OpenDolibarrInvoice').'</a>';
 } else {
     print '<a class="butAction" href="'.dol_escape_htmltag($importUrl).'">'.$langs->trans('ImportPreview').'</a>';
+}
+if ($showPurchaseWorkbench) {
+    print '<a class="butAction" data-nav-purchase-workbench-button="1" href="'.dol_escape_htmltag($purchaseUrl).'">'.$langs->trans('PurchaseWorkbench').'</a>';
 }
 if ($isNonCreate) {
     print '<a class="butAction" href="'.dol_escape_htmltag($relationUrl).'">'.$langs->trans('ReviewRelation').'</a>';
