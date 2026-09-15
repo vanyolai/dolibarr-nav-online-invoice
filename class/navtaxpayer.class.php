@@ -221,17 +221,29 @@ class NavTaxpayerService
     }
 
     /**
-     * Normalize only values that are genuinely all-caps. Mixed-case values from
-     * NAV are presumed intentional and are kept verbatim.
+     * Normalize all-caps company names and the common NAV variant where only
+     * the company-name prefix is uppercase while the legal form is already
+     * mixed case (for example "DS ONLINE NETWORK Kft.").
      */
     private function normalizeCompanyName(string $value, string $shortName = ''): string
     {
         $value = trim($value);
-        if ($value === '' || !$this->isAllCaps($value)) {
+        if ($value === '') {
             return $value;
         }
 
-        $normalized = $this->titleCase($value);
+        $legalSuffixPattern = '/^(.+?)(\s+(?:Kft\.?|Zrt\.?|Nyrt\.?|Bt\.?|Kkt\.?|Korlátolt\s+Felelősségű\s+Társaság|Zártkörűen\s+Működő\s+Részvénytársaság|Nyilvánosan\s+Működő\s+Részvénytársaság|Betéti\s+Társaság|Közkereseti\s+Társaság))$/iu';
+        $normalized = '';
+
+        if ($this->isAllCaps($value)) {
+            $normalized = $this->titleCase($value);
+        } elseif (preg_match($legalSuffixPattern, $value, $parts) && $this->isAllCaps(trim((string) $parts[1]))) {
+            // NAV often preserves the legal-form casing while shouting the
+            // actual company name. Normalize only that uppercase prefix.
+            $normalized = $this->titleCase(trim((string) $parts[1])).(string) $parts[2];
+        } else {
+            return $value;
+        }
 
         // Domain-like fragments in company names look better as Gamers.eu than
         // Gamers.Eu after generic Unicode title-casing.
@@ -239,11 +251,12 @@ class NavTaxpayerService
             return '.'.(function_exists('mb_strtolower') ? mb_strtolower($m[1], 'UTF-8') : strtolower($m[1]));
         }, $normalized) ?? $normalized;
 
-        // Only a mixed-case NAV short name contains useful casing information.
-        // A fully uppercase short name such as "RUFUSZ COMPUTER INFORMATIKA ZR"
-        // does not tell us which words are real acronyms; treating every token
-        // as an acronym would undo the normalization of the whole company name.
-        if ($shortName !== '' && !$this->isAllCaps($shortName)) {
+        // Only a genuinely mixed-case company-name core contains useful acronym
+        // information. "DS ONLINE NETWORK Kft." is mixed only because of the
+        // legal suffix; treating ONLINE/NETWORK as acronyms would undo the
+        // normalization we just performed.
+        $shortNameCore = trim((string) preg_replace($legalSuffixPattern, '$1', $shortName));
+        if ($shortName !== '' && !$this->isAllCaps($shortName) && !$this->isAllCaps($shortNameCore)) {
             preg_match_all('/(?<![\p{L}\p{N}])[\p{Lu}\p{N}]{2,}(?![\p{L}\p{N}])/u', $shortName, $matches);
             foreach (($matches[0] ?? array()) as $acronym) {
                 $normalized = preg_replace('/(?<![\p{L}\p{N}])'.preg_quote($acronym, '/').'(?![\p{L}\p{N}])/iu', $acronym, $normalized) ?? $normalized;
@@ -253,7 +266,7 @@ class NavTaxpayerService
         // A small conservative set of established business/brand acronyms is
         // safe to restore even when NAV supplied the complete name in capitals.
         // Do not infer arbitrary short words as acronyms here.
-        foreach (array('MÁV', 'OTP', 'MOL', 'DSC', 'IBM', 'SAP') as $acronym) {
+        foreach (array('MÁV', 'OTP', 'MOL', 'DS', 'DSC', 'IBM', 'SAP') as $acronym) {
             if (preg_match('/(?<![\p{L}\p{N}])'.preg_quote($acronym, '/').'(?![\p{L}\p{N}])/iu', $value)) {
                 $normalized = preg_replace('/(?<![\p{L}\p{N}])'.preg_quote($acronym, '/').'(?![\p{L}\p{N}])/iu', $acronym, $normalized) ?? $normalized;
             }
