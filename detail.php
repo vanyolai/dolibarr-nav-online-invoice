@@ -240,6 +240,61 @@ $enrichmentValue = static function (string $field, $value) use ($langs, $display
     return $display($value);
 };
 
+// Extract only discounts that deterministically explain the authoritative NAV
+// line net amount. This keeps the details page mathematically transparent while
+// avoiding guessed discount percentages.
+$lineDiscounts = array();
+if ($parsed && !$isSimplified && !empty($record->invoice_data)) {
+    $previousLibxmlState = libxml_use_internal_errors(true);
+    $discountDocument = simplexml_load_string((string) $record->invoice_data, 'SimpleXMLElement', LIBXML_NONET | LIBXML_NOCDATA);
+    libxml_clear_errors();
+    libxml_use_internal_errors($previousLibxmlState);
+    if ($discountDocument instanceof SimpleXMLElement) {
+        $discountLines = $discountDocument->xpath('//*[local-name()="invoiceLines"]/*[local-name()="line"]');
+        foreach ($discountLines ?: array() as $lineIndex => $navLine) {
+            $xmlText = static function (SimpleXMLElement $node, string $xpath): string {
+                $nodes = $node->xpath($xpath);
+                return $nodes ? trim((string) $nodes[0]) : '';
+            };
+            $quantityText = $xmlText($navLine, './*[local-name()="quantity"]');
+            $unitPriceText = $xmlText($navLine, './*[local-name()="unitPrice"]');
+            $netText = $xmlText($navLine, './*[local-name()="lineAmountsNormal"]/*[local-name()="lineNetAmountData"]/*[local-name()="lineNetAmount"]');
+            if ($quantityText === '' || $unitPriceText === '' || $netText === ''
+                || !is_numeric($quantityText) || !is_numeric($unitPriceText) || !is_numeric($netText)) {
+                continue;
+            }
+            $extended = (float) $quantityText * (float) $unitPriceText;
+            $net = (float) $netText;
+            if (abs($extended) <= 0.000000001 || abs($extended - $net) <= 0.01) {
+                continue;
+            }
+
+            $percent = null;
+            $rateText = $xmlText($navLine, './*[local-name()="lineDiscountData"]/*[local-name()="discountRate"]');
+            if ($rateText !== '' && is_numeric($rateText)) {
+                $rate = abs((float) $rateText);
+                if ($rate <= 1.0 && abs(($extended * (1.0 - $rate)) - $net) <= 0.01) {
+                    $percent = $rate * 100.0;
+                }
+            }
+            $valueText = $xmlText($navLine, './*[local-name()="lineDiscountData"]/*[local-name()="discountValue"]');
+            if ($percent === null && $valueText !== '' && is_numeric($valueText)) {
+                $candidate = 100.0 * abs((float) $valueText) / abs($extended);
+                if ($candidate <= 100.0 && abs(($extended * (1.0 - ($candidate / 100.0))) - $net) <= 0.01) {
+                    $percent = $candidate;
+                }
+            }
+            if ($percent !== null) {
+                $lineDiscounts[(int) $lineIndex] = array(
+                    'percent' => $percent,
+                    'value' => $valueText !== '' && is_numeric($valueText) ? (float) $valueText : null,
+                    'description' => $xmlText($navLine, './*[local-name()="lineDiscountData"]/*[local-name()="discountDescription"]'),
+                );
+            }
+        }
+    }
+}
+
 llxHeader('', $langs->trans('NavInvoiceDetails'));
 print '<div class="fichecenter">';
 print '<div class="underbanner clearboth"></div>';
@@ -412,11 +467,11 @@ if ($parsed) {
     if ($showLineNature) {
         print '<td>'.$langs->trans('LineNature').'</td>';
     }
-    print '<td class="right">'.$langs->trans('Qty').'</td><td>'.$langs->trans('Unit').'</td><td class="right">'.$langs->trans($isSimplified ? 'UnitPriceGross' : 'UnitPriceHT').'</td><td>'.$langs->trans('VAT').'</td><td class="right">'.$langs->trans('AmountHT').($isSimplified ? ' *' : '').'</td><td class="right">'.$langs->trans('VAT').($isSimplified ? ' *' : '').'</td><td class="right">'.$langs->trans('AmountTTC').'</td></tr>';
+    print '<td class="right">'.$langs->trans('Qty').'</td><td>'.$langs->trans('Unit').'</td><td class="right">'.$langs->trans($isSimplified ? 'UnitPriceGross' : 'UnitPriceHT').'</td><td class="right">'.$langs->trans('Discount').'</td><td>'.$langs->trans('VAT').'</td><td class="right">'.$langs->trans('AmountHT').($isSimplified ? ' *' : '').'</td><td class="right">'.$langs->trans('VAT').($isSimplified ? ' *' : '').'</td><td class="right">'.$langs->trans('AmountTTC').'</td></tr>';
 
     $hasDerivedLineAmounts = false;
     $hasNonExpressionNormalization = false;
-    foreach ($parsed['lines'] as $line) {
+    foreach ($parsed['lines'] as $lineIndex => $line) {
         $description = $display($line['description']);
         $extras = array();
         foreach ($line['product_codes'] as $code) {
@@ -456,10 +511,23 @@ if ($parsed) {
         print '<td class="right">'.$display($quantityDisplay).($nonExpressionNormalized ? ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>' : '').'</td>';
         print '<td>'.$unitDisplay.'</td>';
         print '<td class="right">'.$money($unitPriceDisplay, $currency).($nonExpressionNormalized ? ' <span class="opacitymedium" title="'.dol_escape_htmltag($langs->trans('NonExpressionLineDerivedHelp')).'">*</span>' : '').'</td>';
+        $discount = $lineDiscounts[(int) $lineIndex] ?? null;
+        if (is_array($discount)) {
+            $discountText = price((float) $discount['percent']).'%';
+            if (($discount['value'] ?? null) !== null) {
+                $discountText .= '<br><span class="opacitymedium small">'.$money($discount['value'], $currency).'</span>';
+            }
+            if (!empty($discount['description'])) {
+                $discountText .= '<br><span class="opacitymedium small">'.dol_escape_htmltag((string) $discount['description']).'</span>';
+            }
+            print '<td class="right">'.$discountText.'</td>';
+        } else {
+            print '<td class="right">'.$display(null).'</td>';
+        }
         print '<td>'.$display($vatLabel).'</td><td class="right">'.$money($amounts['net'], $currency).'</td><td class="right">'.$money($amounts['vat'], $currency).($lineVatDerived ? ' <span class="opacitymedium">*</span>' : '').'</td><td class="right">'.$money($amounts['gross'], $currency).($lineGrossDerived ? ' <span class="opacitymedium">*</span>' : '').'</td></tr>';
     }
     if (empty($parsed['lines'])) {
-        print '<tr><td colspan="'.($showLineNature ? '10' : '9').'" class="opacitymedium">'.$langs->trans('NoInvoiceLinesInNavXml').'</td></tr>';
+        print '<tr><td colspan="'.($showLineNature ? '11' : '10').'" class="opacitymedium">'.$langs->trans('NoInvoiceLinesInNavXml').'</td></tr>';
     }
     print '</table></div>';
     if ($hasNonExpressionNormalization) {
