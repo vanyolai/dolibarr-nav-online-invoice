@@ -396,6 +396,10 @@ class NavPurchaseWorkbench
                 ? $line['purchase_normalization']
                 : $this->normalizePurchaseLine($line, null, null);
 
+            if ($matched && empty($normalization['quantity_mapping_safe'])) {
+                throw new Exception('Matched product has incompatible or unresolved NAV/Dolibarr unit semantics; supplier order quantity cannot be reconstructed safely.');
+            }
+
             $line['_order_product_id'] = $matched ? (int) ($product['id'] ?? 0) : 0;
             $line['_order_supplier_price_id'] = $matched ? (int) ($product['supplier_price_id'] ?? 0) : 0;
             $line['_order_qty'] = $matched ? (float) $normalization['normalized_quantity'] : (float) ($line['quantity'] ?? 0);
@@ -631,9 +635,9 @@ class NavPurchaseWorkbench
      * Choose the supplier price tier that best explains the invoice line.
      *
      * Dolibarr product_fournisseur_price.quantity is a minimum quantity for a
-     * price tier, not a unit-conversion factor. A matching NAV/Dolibarr unit is
-     * therefore authoritative: quantity remains quantity, regardless of MOQ or
-     * packaging. Packaging is considered only when unit identity is not known.
+     * price tier, while product_fournisseur_price.packaging is only the ordering
+     * multiple/rounding step. Neither field is ever a physical unit-conversion
+     * factor. Unit conversion must come from explicit unit metadata only.
      *
      * @return array{price:array<string,mixed>,normalization:array<string,mixed>}|null
      */
@@ -664,8 +668,14 @@ class NavPurchaseWorkbench
      * The invoice line has two price concepts: NAV unitPrice is the list price,
      * while lineNetAmount/quantity is the authoritative effective unit price
      * after lineDiscountData. Dolibarr supplier prices have the same distinction
-     * (unitprice + remise_percent/remise). Compare effective prices, but preserve
-     * list price and discount separately for supplier-price/order creation.
+     * (unitprice + remise_percent/remise). Compare both the effective price and
+     * the list-price/discount representation so a historical flattened price can
+     * be repaired back to the NAV-native list price plus discount.
+     *
+     * MOQ and packaging are commercial ordering constraints, not unit conversion.
+     * Quantities remain 1:1 unless explicit NAV and Dolibarr unit metadata both
+     * exist and contradict one another; in that case automatic price/order writes
+     * are blocked rather than guessed from prices or packaging.
      *
      * @param array<string,mixed>|null $price
      * @param array<string,mixed>|null $product
@@ -686,51 +696,82 @@ class NavPurchaseWorkbench
         $supplierTotal = $price !== null ? (float) ($price['price'] ?? 0) : 0.0;
         $supplierListUnit = $price !== null ? $this->supplierPriceUnitPrice($price) : null;
         $supplierDiscount = $price !== null ? $this->discountPercent((float) ($price['remise_percent'] ?? 0)) : 0.0;
+        $supplierFixedDiscount = $price !== null ? (float) ($price['remise'] ?? 0) : 0.0;
         $supplierEffectiveUnit = $price !== null ? $this->supplierPriceEffectiveUnitPrice($price) : null;
 
+        $unitsEnabled = (bool) getDolGlobalInt('PRODUCT_USE_UNITS');
         $lineUnitId = (int) ($line['unit_id'] ?? 0);
         $productUnitId = $product !== null ? (int) ($product['fk_unit'] ?? 0) : 0;
         $sameUnit = $lineUnitId > 0 && $productUnitId > 0 && $lineUnitId === $productUnitId;
+        $explicitUnitMismatch = $unitsEnabled && $lineUnitId > 0 && $productUnitId > 0 && !$sameUnit;
+        $quantityMappingSafe = true;
         $factor = 1.0;
-        $mode = 'unresolved';
+        $mode = 'implicit_unit';
         $score = 0.0;
 
-        if ($sameUnit) {
+        if (!$unitsEnabled) {
+            // With Dolibarr unit management disabled there is no second unit
+            // system to convert into. Keep the NAV numerical quantity verbatim.
+            $mode = 'units_disabled';
+            $score = 180.0;
+        } elseif ($sameUnit) {
             $mode = 'unit';
-            $factor = 1.0;
-            // Unit identity is stronger evidence than MOQ/packaging. Prefer a
-            // price tier valid for this quantity and, among those, the closest
-            // effective price.
-            $score = 200.0;
-            if ($supplierEffectiveUnit !== null) {
-                $denom = max(abs($navEffectiveUnit), abs($supplierEffectiveUnit), 1.0);
-                $score -= min(100.0, 100.0 * abs($navEffectiveUnit - $supplierEffectiveUnit) / $denom);
-            }
-            if ($supplierQty <= 0.0 || abs($navQty) + 0.000001 >= $supplierQty) {
-                $score += 20.0;
-            }
-        } elseif ($supplierEffectiveUnit !== null && $this->moneyEqual($navEffectiveUnit, $supplierEffectiveUnit)) {
-            $mode = 'unit_inferred';
-            $factor = 1.0;
-            $score = 130.0;
-        } elseif ($supplierEffectiveUnit !== null && $packaging > 0
-            && $this->moneyEqual($navEffectiveUnit, $supplierEffectiveUnit * $packaging)) {
-            // Only packaging can represent a physical conversion. MOQ quantity
-            // itself never does: it is merely the threshold of a price tier.
-            $mode = 'packaging';
-            $factor = $packaging;
-            $score = 140.0;
-        } elseif ($supplierEffectiveUnit !== null) {
-            // Used only to choose the nearest supplier-price tier for display.
-            $denom = max(abs($navEffectiveUnit), abs($supplierEffectiveUnit), 1.0);
-            $score = max(0.0, 50.0 - 50.0 * abs($navEffectiveUnit - $supplierEffectiveUnit) / $denom);
+            $score = 220.0;
+        } elseif ($productUnitId <= 0) {
+            // A product without fk_unit uses Dolibarr's implicit base quantity.
+            // There is no configured target unit that could contradict the NAV
+            // quantity, so preserve the invoice quantity 1:1. MOQ/packaging must
+            // never be promoted to a conversion factor here.
+            $mode = 'product_unit_unset';
+            $score = 180.0;
+        } elseif ($lineUnitId <= 0) {
+            // Dolibarr has an explicit product unit but the NAV unit could not be
+            // resolved. Do not infer equivalence from a coincidentally equal price.
+            $mode = 'nav_unit_unresolved';
+            $quantityMappingSafe = false;
+            $score = 20.0;
+        } elseif ($explicitUnitMismatch) {
+            $mode = 'unit_mismatch';
+            $quantityMappingSafe = false;
+            $score = 0.0;
         }
 
-        $normalizedQty = $navQty * $factor;
-        $normalizedListUnit = $factor > 0 ? $navListUnit / $factor : $navListUnit;
-        $normalizedEffectiveUnit = $factor > 0 ? $navEffectiveUnit / $factor : $navEffectiveUnit;
-        $priceDiffers = $supplierEffectiveUnit !== null && !$this->moneyEqual($normalizedEffectiveUnit, $supplierEffectiveUnit);
-        $canUpdatePrice = $priceDiffers && $mode !== 'unresolved';
+        // Price proximity helps select among multiple supplier-price tiers, but
+        // never establishes unit identity. MOQ selects the applicable tier and
+        // packaging is used only as a weak ordering-multiple preference.
+        if ($supplierEffectiveUnit !== null) {
+            $denom = max(abs($navEffectiveUnit), abs($supplierEffectiveUnit), 1.0);
+            $distance = min(100.0, 100.0 * abs($navEffectiveUnit - $supplierEffectiveUnit) / $denom);
+            $score += $quantityMappingSafe ? (40.0 - min(40.0, $distance * 0.4)) : (20.0 - min(20.0, $distance * 0.2));
+        }
+        if ($supplierQty <= 0.0 || abs($navQty) + 0.000001 >= $supplierQty) {
+            $score += 30.0;
+        } else {
+            $score -= 30.0;
+        }
+        if ($packaging > 0.0 && abs($navQty) > 0.0) {
+            $multiple = abs($navQty) / $packaging;
+            if (abs($multiple - round($multiple)) <= 0.000001) {
+                $score += 5.0;
+            }
+        }
+
+        // The invariant is deliberately simple: there is no inferred factor.
+        // Physical unit conversion requires explicit conversion metadata, which
+        // the supplier MOQ/packaging model does not provide.
+        $normalizedQty = $navQty;
+        $normalizedListUnit = $navListUnit;
+        $normalizedEffectiveUnit = $navEffectiveUnit;
+
+        $effectiveDiffers = $supplierEffectiveUnit !== null
+            && !$this->moneyEqual($normalizedEffectiveUnit, $supplierEffectiveUnit);
+        $listDiffers = $supplierListUnit !== null
+            && !$this->moneyEqual($normalizedListUnit, $supplierListUnit);
+        $discountDiffers = $price !== null && abs($navDiscount - $supplierDiscount) > 0.000001;
+        $fixedDiscountDiffers = $price !== null && abs($supplierFixedDiscount) > 0.000001;
+        $priceDiffers = $supplierListUnit !== null
+            && ($effectiveDiffers || $listDiffers || $discountDiffers || $fixedDiscountDiffers);
+        $canUpdatePrice = $priceDiffers && $quantityMappingSafe;
 
         return array(
             'mode' => $mode,
@@ -749,9 +790,13 @@ class NavPurchaseWorkbench
             'supplier_unit_price' => $supplierListUnit,
             'supplier_effective_unit_price' => $supplierEffectiveUnit,
             'supplier_discount_percent' => $supplierDiscount,
+            'supplier_fixed_discount' => $supplierFixedDiscount,
             'product_unit_id' => $productUnitId,
             'line_unit_id' => $lineUnitId,
+            'units_enabled' => $unitsEnabled,
             'unit_identity' => $sameUnit,
+            'explicit_unit_mismatch' => $explicitUnitMismatch,
+            'quantity_mapping_safe' => $quantityMappingSafe,
             'price_differs' => $priceDiffers,
             'can_update_price' => $canUpdatePrice,
         );
@@ -781,10 +826,18 @@ class NavPurchaseWorkbench
             $quantity = 1.0;
         }
         $totalPrice = $totalPriceOverride ?? ($unitPrice * $quantity);
-        $packaging = $packagingOverride ?? ($current !== null ? (float) ($current['packaging'] ?? 0) : 0.0);
-        if ($packaging <= 0) {
-            $packaging = $quantity;
+
+        // Packaging is an ordering multiple, independent from MOQ and unit
+        // semantics. Preserve the stored value exactly on price-only updates;
+        // never manufacture packaging=MOQ as a side effect of updating price.
+        if ($packagingOverride !== null) {
+            $packaging = max(0.0, $packagingOverride);
+        } elseif ($current !== null) {
+            $packaging = max(0.0, (float) ($current['packaging'] ?? 0));
+        } else {
+            $packaging = 0.0;
         }
+
         $discountPercent = $discountPercentOverride !== null
             ? $this->discountPercent($discountPercentOverride)
             : $this->discountPercent((float) ($current['remise_percent'] ?? 0));
