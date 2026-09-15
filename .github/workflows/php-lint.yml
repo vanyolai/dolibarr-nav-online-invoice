@@ -1,4 +1,4 @@
-name: PHP lint
+name: PHP lint and regression
 
 on:
   push:
@@ -23,3 +23,5 @@ jobs:
           while IFS= read -r -d '' file; do
             php -l "$file"
           done < <(find . -type f -name '*.php' -not -path './vendor/*' -print0)
+      - name: Parser regression tests
+        run: php tests/parser_regression.php
