@@ -56,6 +56,7 @@ class NavInvoiceRelationResolver
             'original_invoice_number' => $originalInvoiceNumber,
             'modification_index' => $modificationIndex,
             'modify_without_master' => $modifyWithoutMaster,
+            'standalone_without_master' => false,
             'original_record' => null,
             'original_dolibarr_invoice_id' => 0,
             'original_dolibarr_url' => '',
@@ -91,12 +92,13 @@ class NavInvoiceRelationResolver
 
             if ($original === null) {
                 if ($modifyWithoutMaster === true) {
-                    // NAV explicitly permits a modification without the original
-                    // invoice being available to the reporting taxpayer. This is
-                    // legally distinct from a broken relation, but Dolibarr still
-                    // needs a separate policy before we can import it safely.
+                    // NAV explicitly permits an antecedent-less modification.
+                    // There is no source Dolibarr invoice to link, but this is a
+                    // legitimate relation state rather than a broken chain. The
+                    // operation policy still verifies the authoritative NAV chain
+                    // and the financial mapping before import is allowed.
+                    $result['standalone_without_master'] = true;
                     $result['warnings'][] = 'original_mirror_missing_allowed';
-                    $result['blockers'][] = 'modify_without_master_policy_required';
                 } else {
                     $result['blockers'][] = 'original_mirror_missing';
                 }
