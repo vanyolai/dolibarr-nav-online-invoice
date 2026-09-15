@@ -6,6 +6,13 @@
     }
 
     function moduleBaseUrl() {
+        var path = window.location.pathname || '';
+        var marker = '/navinvoice/detail.php';
+        var markerIndex = path.toLowerCase().lastIndexOf(marker);
+        if (markerIndex >= 0) {
+            return path.substring(0, markerIndex) + '/navinvoice';
+        }
+
         var scripts = document.getElementsByTagName('script');
         for (var i = scripts.length - 1; i >= 0; i--) {
             var src = scripts[i].src || '';
@@ -17,6 +24,21 @@
         return root + '/custom/navinvoice';
     }
 
+    function mainActionBar() {
+        var bars = document.querySelectorAll('.tabsAction');
+        for (var i = 0; i < bars.length; i++) {
+            if (bars[i].querySelector(
+                'a.butAction[href*="/navinvoice/import.php"], ' +
+                'a.butAction[href*="/navinvoice/relation.php"], ' +
+                'a.butAction[href*="/fourn/facture/card.php"], ' +
+                'a.butAction[href*="/compta/facture/card.php"]'
+            )) {
+                return bars[i];
+            }
+        }
+        return bars.length ? bars[0] : null;
+    }
+
     function addWorkbenchButton(data) {
         if (!data || !data.show || !data.url) {
             return;
@@ -25,7 +47,7 @@
             return;
         }
 
-        var actions = document.querySelector('.tabsAction');
+        var actions = mainActionBar();
         if (!actions) {
             return;
         }
@@ -50,6 +72,7 @@
 
         fetch(moduleBaseUrl() + '/purchasebutton.php?id=' + encodeURIComponent(id), {
             credentials: 'same-origin',
+            cache: 'no-store',
             headers: {'Accept': 'application/json'}
         }).then(function (response) {
             if (!response.ok) {

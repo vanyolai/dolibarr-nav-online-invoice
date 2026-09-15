@@ -12,6 +12,7 @@ if (!$res) {
 }
 
 dol_include_once('/navinvoice/class/navinvoiceparser.class.php');
+dol_include_once('/navinvoice/class/navpurchaseeligibility.class.php');
 $langs->load('navpurchase@navinvoice');
 header('Content-Type: application/json; charset=UTF-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
@@ -40,43 +41,22 @@ if (!$resql) {
 $obj = $db->fetch_object($resql);
 $db->free($resql);
 
-$show = $obj
-    && strtoupper(trim((string) $obj->invoice_direction)) === 'INBOUND'
-    && strtoupper(trim((string) $obj->invoice_operation)) === 'CREATE';
-
-// A pure NAV advance invoice is an accounting/payment document, not a source
-// for reconstructing a purchase order. Use the same conservative definition as
-// the import preview: at least one monetary row and every monetary row must be
-// explicitly marked as advance. Zero-value descriptive rows are ignored.
-if ($show && !empty($obj->invoice_data)) {
+$parsed = null;
+if ($obj && !empty($obj->invoice_data)) {
     try {
         $parsed = (new NavInvoiceParser())->parse((string) $obj->invoice_data);
-        $hasMonetaryLine = false;
-        $advanceOnly = true;
-        foreach (($parsed['lines'] ?? array()) as $line) {
-            if (!is_array($line)) {
-                continue;
-            }
-            $monetary = abs((float) ($line['amounts']['net'] ?? 0)) > 0.0000001
-                || abs((float) ($line['amounts']['vat'] ?? 0)) > 0.0000001
-                || abs((float) ($line['amounts']['gross'] ?? 0)) > 0.0000001;
-            if (!$monetary) {
-                continue;
-            }
-            $hasMonetaryLine = true;
-            if (($line['advance'] ?? null) !== true) {
-                $advanceOnly = false;
-                break;
-            }
-        }
-        if ($hasMonetaryLine && $advanceOnly) {
-            $show = false;
-        }
     } catch (Throwable $e) {
         // Do not turn a display helper into a hard failure. The detail/import
         // preview will report malformed XML through its normal validation path.
     }
 }
+
+$show = $obj
+    && NavPurchaseEligibility::isEligible(
+        (string) $obj->invoice_direction,
+        (string) $obj->invoice_operation,
+        is_array($parsed) ? $parsed : null
+    );
 
 print json_encode(array(
     'show' => (bool) $show,

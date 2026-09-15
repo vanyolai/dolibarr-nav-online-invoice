@@ -157,10 +157,18 @@ class NavInvoiceParser
             return $this->emptyParty();
         }
 
-        $taxNode = $this->node($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]');
-        if ($taxNode === null) {
+        // Do not rely on SimpleXMLElement boolean conversion here. In NAV 3.0
+        // the customerTaxNumber element contains ns2-namespaced children, and a
+        // structural SimpleXMLElement can evaluate to false even though the node
+        // exists. Read the scalar values directly through namespace-agnostic XPath.
+        $taxNumber = $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]/*[local-name()="taxpayerId"]');
+        $vatCode = $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]/*[local-name()="vatCode"]');
+        $countyCode = $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="customerTaxNumber"]/*[local-name()="countyCode"]');
+        if ($taxNumber === '') {
             // NAV 1.x used customerTaxNumber directly under customerInfo.
-            $taxNode = $this->node($node, './*[local-name()="customerTaxNumber"]');
+            $taxNumber = $this->text($node, './*[local-name()="customerTaxNumber"]/*[local-name()="taxpayerId"]');
+            $vatCode = $this->text($node, './*[local-name()="customerTaxNumber"]/*[local-name()="vatCode"]');
+            $countyCode = $this->text($node, './*[local-name()="customerTaxNumber"]/*[local-name()="countyCode"]');
         }
 
         $communityVatNumber = $this->text($node, './*[local-name()="customerVatData"]/*[local-name()="communityVatNumber"]');
@@ -175,9 +183,9 @@ class NavInvoiceParser
         return array(
             'name' => $this->text($node, './*[local-name()="customerName"]'),
             'vat_status' => $this->text($node, './*[local-name()="customerVatStatus"]'),
-            'tax_number' => $taxNode ? $this->text($taxNode, './*[local-name()="taxpayerId"]') : '',
-            'vat_code' => $taxNode ? $this->text($taxNode, './*[local-name()="vatCode"]') : '',
-            'county_code' => $taxNode ? $this->text($taxNode, './*[local-name()="countyCode"]') : '',
+            'tax_number' => $taxNumber,
+            'vat_code' => $vatCode,
+            'county_code' => $countyCode,
             'group_member_tax_number' => $this->text($node, './*[local-name()="groupMemberTaxNumber"]/*[local-name()="taxpayerId"]'),
             'community_vat_number' => $communityVatNumber,
             'third_state_tax_id' => $thirdStateTaxId,
