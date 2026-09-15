@@ -39,6 +39,7 @@ class NavInvoiceOperationPolicy
             'direction' => $direction,
             'mapping' => $operation === 'CREATE' ? 'standard' : '',
             'source_invoice_id' => 0,
+            'standalone_without_master' => false,
             'relation' => null,
             'authoritative_chain' => null,
             'authoritative_chain_error' => '',
@@ -59,6 +60,8 @@ class NavInvoiceOperationPolicy
 
         $relation = $this->relationResolver->resolve($record, $parsed);
         $result['relation'] = $relation;
+        $standaloneWithoutMaster = !empty($relation['standalone_without_master']);
+        $result['standalone_without_master'] = $standaloneWithoutMaster;
         foreach (($relation['blockers'] ?? array()) as $blocker) {
             $result['blockers'][] = 'relation_'.$blocker;
         }
@@ -156,7 +159,12 @@ class NavInvoiceOperationPolicy
                 $result['blockers'][] = 'standard_adjustment_negative_lines_disabled';
             }
         }
-        if ($result['source_invoice_id'] <= 0) {
+
+        // A regular MODIFY/STORNO must be linked to its source Dolibarr invoice.
+        // NAV's explicit modifyWithoutMaster case is different: after the
+        // authoritative chain has been verified above, it is intentionally
+        // represented as a standalone Dolibarr correction with no source link.
+        if ($result['source_invoice_id'] <= 0 && !$standaloneWithoutMaster) {
             $result['blockers'][] = 'source_invoice_missing';
         }
 
