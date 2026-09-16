@@ -36,7 +36,7 @@ jobs:
           p = Path('class/navpurchaseworkbench.class.php')
           text = p.read_text()
           print('ensureSchema call count before:', text.count('$this->ensureSchema()'))
-          text = text.replace('        $this->ensureSchema();\n\n', '')
+          text = re.sub(r'^\s*\$this->ensureSchema\(\);\s*\n', '', text, flags=re.M)
           text = text.replace('        if (!$this->supplierPriceTierApplies($details, $line)) {', "        if (!NavPurchasePricePolicy::tierApplies($details, (float) ($line['quantity'] ?? 0))) {")
           text = re.sub(r'\n    /\*\* @param array<string,mixed> \$price @param array<string,mixed> \$line \*/\n    private function supplierPriceTierApplies\(array \$price, array \$line\): bool\n    \{.*?\n    \}\n', '\n', text, count=1, flags=re.S)
           text = re.sub(r'\n    private function ensureSchema\(\): void\n    \{.*?\n    private function objectError\(\$object\): string\n', '\n    private function objectError($object): string\n', text, count=1, flags=re.S)
