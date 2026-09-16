@@ -327,19 +327,6 @@ foreach (($workbench['lines'] ?? array()) as $line) {
         print '<span class="opacitymedium">'.$langs->trans('PurchaseInformationalLineSkipped').'</span>';
     } elseif ($matched) {
         print img_picto('', 'tick').' <a href="'.DOL_URL_ROOT.'/product/card.php?id='.(int) $product['id'].'">'.dol_escape_htmltag((string) $product['ref']).' - '.dol_escape_htmltag((string) $product['label']).'</a>';
-        if ((string) ($norm['mode'] ?? '') === 'packaging' && (float) ($norm['factor'] ?? 1) != 1.0) {
-            print '<br><span class="opacitymedium">'.img_picto('', 'info').' ';
-            $normalizationText = $langs->transnoentities(
-                'PurchaseQuantityNormalized',
-                price((float) ($norm['nav_quantity'] ?? 0)),
-                price((float) ($norm['factor'] ?? 1)),
-                price((float) ($norm['normalized_quantity'] ?? 0)),
-                price((float) ($norm['normalized_unit_price'] ?? 0)),
-                $currency
-            );
-            print dol_escape_htmltag($normalizationText);
-            print '</span>';
-        }
     } else {
         $statusKey = 'PurchaseProductMatch_'.(string) ($match['status'] ?? 'none');
         $statusText = $langs->trans($statusKey);
@@ -368,10 +355,14 @@ foreach (($workbench['lines'] ?? array()) as $line) {
         if ((float) ($norm['supplier_quantity'] ?? 0) > 1) {
             print '<br><span class="opacitymedium">'.price((float) $norm['supplier_quantity']).' × '.price($supplierListPrice).' = '.$money($norm['supplier_price_total'], $currency).'</span>';
         }
+        if (($norm['tier_applicable'] ?? null) === false) {
+            print '<br><span class="warning">'.img_picto('', 'warning').' '.$langs->trans('PurchasePriceTierNotApplicable').'</span>';
+        }
+        if (isset($norm['order_multiple_satisfied']) && empty($norm['order_multiple_satisfied'])) {
+            print '<br><span class="warning">'.img_picto('', 'warning').' '.$langs->trans('PurchaseOrderMultipleMismatch').'</span>';
+        }
         if (!empty($norm['price_differs'])) {
             print '<br><span class="warning">'.img_picto('', 'warning').' '.$langs->trans('PurchasePriceNeedsReview').'</span>';
-        } elseif ((string) ($norm['mode'] ?? '') === 'packaging') {
-            print '<br><span class="ok">'.img_picto('', 'tick').' '.$langs->trans('PurchasePackagePriceMatched').'</span>';
         }
     } else {
         print '<span class="opacitymedium">—</span>';
@@ -383,7 +374,7 @@ foreach (($workbench['lines'] ?? array()) as $line) {
         print '<input type="hidden" name="token" value="'.newToken().'">';
         print '<input type="hidden" name="id" value="'.$id.'"><input type="hidden" name="action" value="update_supplier_price"><input type="hidden" name="line_index" value="'.$index.'">';
         print '<button class="button smallpaddingimp" type="submit" onclick="return confirm(\''.dol_escape_js($langs->trans('PurchaseUpdatePriceConfirm')).'\');">'.$langs->trans('PurchaseUpdateSupplierPrice').'</button></form>';
-    } elseif (!$skip && $matched && !empty($line['supplier_price_differs']) && empty($norm['can_update_price'])) {
+    } elseif (!$skip && $matched && !empty($line['supplier_price_differs']) && empty($norm['can_update_price']) && ($norm['tier_applicable'] ?? null) !== false) {
         print '<span class="warning">'.$langs->trans('PurchasePriceConversionNeedsReview').'</span>';
     } elseif (!$skip && !$matched && $canEditProductType((int) ($line['product_type'] ?? 0))) {
         print '<details><summary style="cursor:pointer">'.$langs->trans('PurchaseResolveLine').'</summary>';
