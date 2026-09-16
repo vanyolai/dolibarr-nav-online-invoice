@@ -1,0 +1,178 @@
+name: Final audit refactor
+
+on:
+  push:
+    branches: [refactor/final-audit]
+    paths: ['.github/workflows/final-audit-refactor.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/final-audit
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - name: Apply final audit cleanup
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new, expected=1):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f'{path}: expected {expected} occurrence(s), found {count}: {old[:80]!r}')
+              p.write_text(text.replace(old, new))
+
+          # Runtime requests must never create or migrate schema. Module init owns it.
+          p = Path('class/navpurchaseworkbench.class.php')
+          text = p.read_text()
+          count = text.count('        $this->ensureSchema();\n\n')
+          if count != 2:
+              raise SystemExit(f'workbench: expected 2 ensureSchema calls, found {count}')
+          text = text.replace('        $this->ensureSchema();\n\n', '')
+
+          replace_call = "        if (!$this->supplierPriceTierApplies($details, $line)) {"
+          if text.count(replace_call) != 1:
+              raise SystemExit('workbench: supplierPriceTierApplies call not found exactly once')
+          text = text.replace(
+              replace_call,
+              "        if (!NavPurchasePricePolicy::tierApplies($details, (float) ($line['quantity'] ?? 0))) {"
+          )
+
+          tier_method = """    /** @param array<string,mixed> $price @param array<string,mixed> $line */
+    private function supplierPriceTierApplies(array $price, array $line): bool
+    {
+        $minimum = max(0.0, (float) ($price['quantity'] ?? 0));
+        $quantity = abs((float) ($line['quantity'] ?? 0));
+        return $minimum <= $quantity + 0.000001;
+    }
+
+"""
+          if text.count(tier_method) != 1:
+              raise SystemExit('workbench: duplicate tier helper block not found')
+          text = text.replace(tier_method, '')
+
+          start = text.find('    private function ensureSchema(): void\n')
+          end = text.find('    private function objectError($object): string\n', start)
+          if start < 0 or end < 0:
+              raise SystemExit('workbench: runtime schema block boundaries not found')
+          runtime_block = text[start:end]
+          if 'private function indexExists' not in runtime_block:
+              raise SystemExit('workbench: expected indexExists inside runtime schema block')
+          text = text[:start] + text[end:]
+          p.write_text(text)
+
+          # Centralize MOQ applicability in the pure purchase policy.
+          p = Path('class/navpurchasepricepolicy.class.php')
+          text = p.read_text()
+          marker = "    public static function effectivePricesEqual(float $left, float $right): bool\n"
+          if text.count(marker) != 1:
+              raise SystemExit('purchase policy: insertion marker missing')
+          tier_method = """    /** @param array<string,mixed> $price */
+    public static function tierApplies(array $price, float $quantity): bool
+    {
+        $minimum = max(0.0, (float) ($price['quantity'] ?? 0));
+        return $minimum <= abs($quantity) + 0.000001;
+    }
+
+"""
+          text = text.replace(marker, tier_method + marker)
+          old_loop = """            $minimum = max(0.0, (float) ($price['quantity'] ?? 0));
+            if ($minimum <= $quantity + 0.000001) {
+                $applicable[] = $price;
+            }
+"""
+          new_loop = """            if (self::tierApplies($price, $quantity)) {
+                $applicable[] = $price;
+            }
+"""
+          if text.count(old_loop) != 1:
+              raise SystemExit('purchase policy: MOQ loop not found')
+          text = text.replace(old_loop, new_loop)
+          p.write_text(text)
+
+          # Importer and purchase reconstruction must share one payment mapping.
+          p = Path('class/navinvoiceimporter.class.php')
+          text = p.read_text()
+          include = "dol_include_once('/navinvoice/class/navunitresolver.class.php');\n"
+          if text.count(include) != 1:
+              raise SystemExit('importer: unit resolver include marker missing')
+          text = text.replace(include, include + "dol_include_once('/navinvoice/class/navpaymentresolver.class.php');\n")
+
+          prop = """    /** @var NavUnitResolver */
+    private $unitResolver;
+"""
+          new_prop = prop + """
+    /** @var NavPaymentResolver */
+    private $paymentResolver;
+"""
+          if text.count(prop) != 1:
+              raise SystemExit('importer: unitResolver property block missing')
+          text = text.replace(prop, new_prop)
+
+          ctor = "        $this->unitResolver = new NavUnitResolver($db);\n"
+          if text.count(ctor) != 1:
+              raise SystemExit('importer: constructor marker missing')
+          text = text.replace(ctor, ctor + "        $this->paymentResolver = new NavPaymentResolver($db, $entity);\n")
+
+          calls = "$this->paymentModeId((string) ($preview['header']['payment_method'] ?? ''))"
+          if text.count(calls) != 2:
+              raise SystemExit(f'importer: expected 2 legacy paymentModeId calls, found {text.count(calls)}')
+          text = text.replace(calls, "$this->paymentResolver->paymentModeId((string) ($preview['header']['payment_method'] ?? ''))")
+
+          start = text.find('    private function paymentModeId(string $navMethod): int\n')
+          end = text.find('    private function auditNote(array $preview, $record): string\n', start)
+          if start < 0 or end < 0:
+              raise SystemExit('importer: duplicate paymentModeId block boundaries not found')
+          text = text[:start] + text[end:]
+          p.write_text(text)
+
+          # Cover the centralized tier predicate explicitly.
+          p = Path('tests/purchase_policy_regression.php')
+          text = p.read_text()
+          marker = "expect_purchase_true(\n    NavPurchasePricePolicy::effectivePricesEqual(245.0 * 0.8, 196.0),\n"
+          if text.count(marker) != 1:
+              raise SystemExit('purchase regression: price marker missing')
+          addition = """expect_purchase_true(
+    NavPurchasePricePolicy::tierApplies(array('quantity' => 50), 50),
+    'MOQ 50 must apply at quantity 50'
+);
+expect_purchase_true(
+    !NavPurchasePricePolicy::tierApplies(array('quantity' => 50), 49),
+    'MOQ 50 must not apply below its threshold'
+);
+
+"""
+          text = text.replace(marker, addition + marker)
+          p.write_text(text)
+          PY
+
+          php -l class/navpurchaseworkbench.class.php
+          php -l class/navpurchasepricepolicy.class.php
+          php -l class/navinvoiceimporter.class.php
+          php tests/parser_regression.php
+          php tests/purchase_policy_regression.php
+
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git config user.name 'Vanyo'
+          git config user.email 'vanyolai@gmail.com'
+          git add class/navpurchaseworkbench.class.php class/navpurchasepricepolicy.class.php class/navinvoiceimporter.class.php tests/purchase_policy_regression.php
+          git commit -m 'Finish final audit cleanup'
+          git push origin HEAD:refactor/final-audit
