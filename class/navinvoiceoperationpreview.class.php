@@ -2,16 +2,15 @@
 
 dol_include_once('/navinvoice/class/navinvoiceimportpreview.class.php');
 dol_include_once('/navinvoice/class/navinvoiceoperationpolicy.class.php');
-dol_include_once('/navinvoice/class/navinvoiceaggregatesupport.class.php');
 dol_include_once('/navinvoice/class/navproductmatcher.class.php');
 
 /**
- * Extend the accounting/data preview with NAV operation semantics and
+ * Extend the canonical accounting preview with NAV operation semantics and
  * conservative NAV-line to Dolibarr-product resolution.
  *
- * NavInvoiceParser is the only XML parser. Pricing/discount semantics are
- * already normalized by NavInvoiceImportPreview; this wrapper adds only
- * operation, aggregate and product-relation policy.
+ * NavInvoiceParser is the only XML parser and NavInvoiceImportPreview owns all
+ * accounting/category semantics. This wrapper adds only operation/relation and
+ * product-resolution policy.
  */
 class NavInvoiceOperationPreview
 {
@@ -27,9 +26,6 @@ class NavInvoiceOperationPreview
     /** @var NavInvoiceOperationPolicy */
     private $operationPolicy;
 
-    /** @var NavInvoiceAggregateSupport */
-    private $aggregateSupport;
-
     /** @var NavProductMatcher */
     private $productMatcher;
 
@@ -44,7 +40,6 @@ class NavInvoiceOperationPreview
         $this->entity = $entity;
         $this->basePreview = new NavInvoiceImportPreview($db, $entity, $baseCurrency);
         $this->operationPolicy = new NavInvoiceOperationPolicy($db, $entity);
-        $this->aggregateSupport = new NavInvoiceAggregateSupport();
         $this->productMatcher = new NavProductMatcher($db, $entity);
     }
 
@@ -57,7 +52,6 @@ class NavInvoiceOperationPreview
     public function build(array $parsed, $record, ?array $partnerMatch): array
     {
         $preview = $this->basePreview->build($parsed, $record, $partnerMatch);
-        $preview = $this->aggregateSupport->enrich($preview, $parsed);
         $preview = $this->applyProductMatches($preview);
 
         $operation = strtoupper(trim((string) ($preview['operation'] ?? 'CREATE')));
