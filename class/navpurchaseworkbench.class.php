@@ -1,6 +1,7 @@
 <?php
 
 dol_include_once('/navinvoice/class/navinvoiceoperationpreview.class.php');
+dol_include_once('/navinvoice/class/navpaymentresolver.class.php');
 
 /**
  * Purchase workbench for inbound NAV invoices.
@@ -74,9 +75,8 @@ class NavPurchaseWorkbench
                 $productDetails = $this->productDetails($productId);
                 $priceSelection = $this->selectSupplierPriceForLine($partnerId, $productId, $supplierRef, $line);
                 if ($priceSelection !== null && $product !== null) {
-                    // The product matcher intentionally identifies the product, not
-                    // the correct supplier-price tier. The workbench chooses the
-                    // most appropriate tier from unit identity, quantity and price.
+                    // Product matching identifies the product. Supplier-price tier
+                    // selection is a separate deterministic MOQ decision.
                     $match['product']['supplier_price_id'] = (int) $priceSelection['price']['rowid'];
                     $line['product_match'] = $match;
                     $product = $match['product'];
@@ -88,6 +88,9 @@ class NavPurchaseWorkbench
                 $priceSelection !== null ? $priceSelection['price'] : null,
                 $productDetails
             );
+            if ($priceSelection !== null) {
+                $normalization['tier_applicable'] = !empty($priceSelection['tier_applicable']);
+            }
 
             $line['workbench_index'] = (int) $index;
             $line['supplier_price'] = $priceSelection !== null ? $priceSelection['price'] : null;
@@ -104,9 +107,9 @@ class NavPurchaseWorkbench
                 'stockable' => (int) ($line['product_type'] ?? 0) === 0 ? 1 : 0,
                 'tosell' => 0,
                 'supplier_ref' => $supplierRef,
-                // Dolibarr supplier prices store the list price for the minimum
-                // quantity and a separate remise_percent. Preserve the same NAV
-                // representation instead of flattening the discount into price.
+                // New products preserve the NAV list-price/discount structure.
+                // MOQ and packaging are independent user-controlled purchasing
+                // constraints; neither is inferred from the invoice quantity.
                 'supplier_price_total' => $line['unit_price_ht'] ?? null,
                 'supplier_quantity' => 1,
                 'supplier_packaging' => 1,
@@ -165,9 +168,11 @@ class NavPurchaseWorkbench
         if ($quantity <= 0) {
             $quantity = 1;
         }
-        $packaging = (float) ($input['supplier_packaging'] ?? $quantity);
-        if ($packaging <= 0) {
-            $packaging = $quantity;
+        // Packaging is not derivable from MOQ or invoice quantity. Default to an
+        // unrestricted unit multiple rather than silently manufacturing MOQ=packaging.
+        $packaging = (float) ($input['supplier_packaging'] ?? 1);
+        if ($packaging < 0) {
+            $packaging = 0;
         }
 
         $legacyUnitPrice = (float) ($input['unit_price_ht'] ?? ($line['unit_price_ht'] ?? 0));
@@ -414,15 +419,37 @@ class NavPurchaseWorkbench
             throw new Exception('No orderable NAV invoice lines remain.');
         }
 
+        $header = is_array($workbench['preview']['header'] ?? null) ? $workbench['preview']['header'] : array();
+        $paymentResolver = new NavPaymentResolver($this->db, $this->entity);
+        $paymentModeId = $paymentResolver->paymentModeId((string) ($header['payment_method'] ?? ''));
+        $paymentTermId = $paymentResolver->paymentTermId(
+            (string) ($header['due_date'] ?? ''),
+            array(
+                (string) ($header['accounting_delivery_date'] ?? ''),
+                (string) ($header['delivery_date'] ?? ''),
+                (string) ($header['invoice_date'] ?? ''),
+            )
+        );
+
         $order = new CommandeFournisseur($this->db);
         $order->socid = $supplierId;
         $order->fourn_id = $supplierId;
         $order->date = $timestamp;
         $order->ref = '(PROV)';
         $order->source = 0;
+        if ($paymentModeId > 0) {
+            $order->mode_reglement_id = $paymentModeId;
+        }
+        if ($paymentTermId > 0) {
+            $order->cond_reglement_id = $paymentTermId;
+        }
         $order->note_private = "NAV Online Invoice purchase reconstruction\n"
             .'invoice='.(string) ($workbench['preview']['invoice_number'] ?? $record->invoice_number ?? '')."\n"
-            .'mirror_rowid='.(int) $record->rowid;
+            .'mirror_rowid='.(int) $record->rowid."\n"
+            .'nav_payment_method='.(string) ($header['payment_method'] ?? '')."\n"
+            .'nav_due_date='.(string) ($header['due_date'] ?? '')."\n"
+            .'payment_mode_mapped='.($paymentModeId > 0 ? '1' : '0')."\n"
+            .'payment_term_mapped='.($paymentTermId > 0 ? '1' : '0');
 
         $linkedInvoiceId = (int) ($workbench['linked_invoice_id'] ?? 0);
         if ($linkedInvoiceId > 0) {
@@ -632,14 +659,16 @@ class NavPurchaseWorkbench
     }
 
     /**
-     * Choose the supplier price tier that best explains the invoice line.
+     * Select the supplier-price tier using Dolibarr's MOQ semantics only.
      *
-     * Dolibarr product_fournisseur_price.quantity is a minimum quantity for a
-     * price tier, while product_fournisseur_price.packaging is only the ordering
-     * multiple/rounding step. Neither field is ever a physical unit-conversion
-     * factor. Unit conversion must come from explicit unit metadata only.
+     * product_fournisseur_price.quantity is the minimum quantity for a tier.
+     * The applicable tier is therefore the highest MOQ not exceeding the NAV
+     * quantity. Price proximity and packaging must never choose the tier: the
+     * price may be exactly the stale value we are trying to update, while
+     * packaging is an ordering-multiple constraint rather than price-tier or
+     * unit-conversion metadata.
      *
-     * @return array{price:array<string,mixed>,normalization:array<string,mixed>}|null
+     * @return array{price:array<string,mixed>,normalization:array<string,mixed>,tier_applicable:bool}|null
      */
     private function selectSupplierPriceForLine(int $supplierId, int $productId, string $supplierRef, array $line): ?array
     {
@@ -648,34 +677,59 @@ class NavPurchaseWorkbench
             return null;
         }
 
-        $product = $this->productDetails($productId);
-        $best = null;
-        $bestScore = -INF;
+        $navQty = abs((float) ($line['quantity'] ?? 0));
+        $applicable = array();
         foreach ($prices as $price) {
-            $normalization = $this->normalizePurchaseLine($line, $price, $product);
-            $score = (float) ($normalization['match_score'] ?? 0);
-            if ($score > $bestScore) {
-                $bestScore = $score;
-                $best = array('price' => $price, 'normalization' => $normalization);
+            $minimum = max(0.0, (float) ($price['quantity'] ?? 0));
+            if ($minimum <= $navQty + 0.000001) {
+                $applicable[] = $price;
             }
         }
-        return $best;
+
+        if ($applicable) {
+            usort($applicable, static function (array $a, array $b): int {
+                $quantityCompare = ((float) ($b['quantity'] ?? 0)) <=> ((float) ($a['quantity'] ?? 0));
+                if ($quantityCompare !== 0) {
+                    return $quantityCompare;
+                }
+                return ((int) ($b['rowid'] ?? 0)) <=> ((int) ($a['rowid'] ?? 0));
+            });
+            $selected = $applicable[0];
+            $tierApplicable = true;
+        } else {
+            // No configured tier is formally applicable. Select the smallest MOQ
+            // only for display/context, but mark it non-applicable so callers do
+            // not treat it as a safe price-update target.
+            usort($prices, static function (array $a, array $b): int {
+                $quantityCompare = ((float) ($a['quantity'] ?? 0)) <=> ((float) ($b['quantity'] ?? 0));
+                if ($quantityCompare !== 0) {
+                    return $quantityCompare;
+                }
+                return ((int) ($b['rowid'] ?? 0)) <=> ((int) ($a['rowid'] ?? 0));
+            });
+            $selected = $prices[0];
+            $tierApplicable = false;
+        }
+
+        return array(
+            'price' => $selected,
+            'normalization' => $this->normalizePurchaseLine($line, $selected, $this->productDetails($productId)),
+            'tier_applicable' => $tierApplicable,
+        );
     }
 
     /**
      * Normalize NAV quantity/unit-price semantics to Dolibarr product units.
      *
-     * The invoice line has two price concepts: NAV unitPrice is the list price,
-     * while lineNetAmount/quantity is the authoritative effective unit price
-     * after lineDiscountData. Dolibarr supplier prices have the same distinction
-     * (unitprice + remise_percent/remise). Compare both the effective price and
-     * the list-price/discount representation so a historical flattened price can
-     * be repaired back to the NAV-native list price plus discount.
+     * MOQ and packaging are commercial ordering constraints, never unit
+     * conversion. Quantities therefore remain 1:1 unless explicit NAV and
+     * Dolibarr unit metadata contradict one another; an explicit mismatch blocks
+     * automatic writes rather than being guessed from price or packaging.
      *
-     * MOQ and packaging are commercial ordering constraints, not unit conversion.
-     * Quantities remain 1:1 unless explicit NAV and Dolibarr unit metadata both
-     * exist and contradict one another; in that case automatic price/order writes
-     * are blocked rather than guessed from prices or packaging.
+     * Supplier-price equality is defined by effective net unit price. A supplier
+     * may store 196 HUF directly while NAV reports 245 HUF - 20%; those are
+     * economically identical and do not justify rewriting otherwise correct
+     * master data merely to change its representation.
      *
      * @param array<string,mixed>|null $price
      * @param array<string,mixed>|null $product
@@ -707,58 +761,22 @@ class NavPurchaseWorkbench
         $quantityMappingSafe = true;
         $factor = 1.0;
         $mode = 'implicit_unit';
-        $score = 0.0;
 
         if (!$unitsEnabled) {
-            // With Dolibarr unit management disabled there is no second unit
-            // system to convert into. Keep the NAV numerical quantity verbatim.
             $mode = 'units_disabled';
-            $score = 180.0;
         } elseif ($sameUnit) {
             $mode = 'unit';
-            $score = 220.0;
         } elseif ($productUnitId <= 0) {
-            // A product without fk_unit uses Dolibarr's implicit base quantity.
-            // There is no configured target unit that could contradict the NAV
-            // quantity, so preserve the invoice quantity 1:1. MOQ/packaging must
-            // never be promoted to a conversion factor here.
             $mode = 'product_unit_unset';
-            $score = 180.0;
         } elseif ($lineUnitId <= 0) {
-            // Dolibarr has an explicit product unit but the NAV unit could not be
-            // resolved. Do not infer equivalence from a coincidentally equal price.
             $mode = 'nav_unit_unresolved';
             $quantityMappingSafe = false;
-            $score = 20.0;
         } elseif ($explicitUnitMismatch) {
             $mode = 'unit_mismatch';
             $quantityMappingSafe = false;
-            $score = 0.0;
         }
 
-        // Price proximity helps select among multiple supplier-price tiers, but
-        // never establishes unit identity. MOQ selects the applicable tier and
-        // packaging is used only as a weak ordering-multiple preference.
-        if ($supplierEffectiveUnit !== null) {
-            $denom = max(abs($navEffectiveUnit), abs($supplierEffectiveUnit), 1.0);
-            $distance = min(100.0, 100.0 * abs($navEffectiveUnit - $supplierEffectiveUnit) / $denom);
-            $score += $quantityMappingSafe ? (40.0 - min(40.0, $distance * 0.4)) : (20.0 - min(20.0, $distance * 0.2));
-        }
-        if ($supplierQty <= 0.0 || abs($navQty) + 0.000001 >= $supplierQty) {
-            $score += 30.0;
-        } else {
-            $score -= 30.0;
-        }
-        if ($packaging > 0.0 && abs($navQty) > 0.0) {
-            $multiple = abs($navQty) / $packaging;
-            if (abs($multiple - round($multiple)) <= 0.000001) {
-                $score += 5.0;
-            }
-        }
-
-        // The invariant is deliberately simple: there is no inferred factor.
-        // Physical unit conversion requires explicit conversion metadata, which
-        // the supplier MOQ/packaging model does not provide.
+        // Never infer a physical factor from MOQ, packaging or price.
         $normalizedQty = $navQty;
         $normalizedListUnit = $navListUnit;
         $normalizedEffectiveUnit = $navEffectiveUnit;
@@ -769,13 +787,24 @@ class NavPurchaseWorkbench
             && !$this->moneyEqual($normalizedListUnit, $supplierListUnit);
         $discountDiffers = $price !== null && abs($navDiscount - $supplierDiscount) > 0.000001;
         $fixedDiscountDiffers = $price !== null && abs($supplierFixedDiscount) > 0.000001;
-        $priceDiffers = $supplierListUnit !== null
-            && ($effectiveDiffers || $listDiffers || $discountDiffers || $fixedDiscountDiffers);
+        $representationDiffers = $supplierListUnit !== null
+            && ($listDiffers || $discountDiffers || $fixedDiscountDiffers);
+
+        // Only an effective economic price difference is actionable. Different
+        // list-price/discount representations with the same effective price are
+        // intentionally left untouched.
+        $priceDiffers = $supplierEffectiveUnit !== null && $effectiveDiffers;
         $canUpdatePrice = $priceDiffers && $quantityMappingSafe;
+
+        $orderMultipleSatisfied = true;
+        if ($packaging > 0.0 && abs($navQty) > 0.0) {
+            $multiple = abs($navQty) / $packaging;
+            $orderMultipleSatisfied = abs($multiple - round($multiple)) <= 0.000001;
+        }
 
         return array(
             'mode' => $mode,
-            'match_score' => $score,
+            'match_score' => 0.0,
             'factor' => $factor,
             'nav_quantity' => $navQty,
             'nav_unit_price' => $navListUnit,
@@ -797,6 +826,8 @@ class NavPurchaseWorkbench
             'unit_identity' => $sameUnit,
             'explicit_unit_mismatch' => $explicitUnitMismatch,
             'quantity_mapping_safe' => $quantityMappingSafe,
+            'price_representation_differs' => $representationDiffers,
+            'order_multiple_satisfied' => $orderMultipleSatisfied,
             'price_differs' => $priceDiffers,
             'can_update_price' => $canUpdatePrice,
         );
@@ -1077,10 +1108,14 @@ class NavPurchaseWorkbench
             }
         }
         if (!$this->indexExists($table, 'idx_navinvoice_purchase_mirror')) {
-            $this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_mirror (entity, fk_navinvoice_invoice)');
+            if (!$this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_mirror (entity, fk_navinvoice_invoice)')) {
+                throw new Exception('Could not add purchase-workbench mirror index: '.$this->db->lasterror());
+            }
         }
         if (!$this->indexExists($table, 'idx_navinvoice_purchase_order')) {
-            $this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_order (entity, fk_navinvoice_invoice)');
+            if (!$this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_order (entity, fk_commande_fourn)')) {
+                throw new Exception('Could not add purchase-workbench order index: '.$this->db->lasterror());
+            }
         }
     }
 
