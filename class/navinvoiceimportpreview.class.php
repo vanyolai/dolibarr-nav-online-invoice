@@ -8,7 +8,9 @@ dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
  *
  * This class consumes the canonical NavInvoiceParser model. It never reparses
  * raw XML and it preserves source list-price + discount semantics whenever they
- * deterministically reproduce the authoritative NAV line amount.
+ * deterministically reproduce the authoritative NAV line amount. Category-
+ * specific source validation also lives here so downstream operation code does
+ * not need to repair or enrich the accounting preview.
  */
 class NavInvoiceImportPreview
 {
@@ -52,6 +54,7 @@ class NavInvoiceImportPreview
         $currency = strtoupper(trim((string) ($detail['currency'] ?? $record->currency ?? '')));
         $category = strtoupper(trim((string) ($detail['category'] ?? $record->invoice_category ?? '')));
         $simplified = $category === 'SIMPLIFIED';
+        $aggregate = $category === 'AGGREGATE';
         $externalPartyKey = $inbound ? 'supplier' : 'customer';
         $navCountryCode = strtoupper(trim((string) ($parsed[$externalPartyKey]['address']['country_code'] ?? '')));
         $blockers = array();
@@ -119,6 +122,33 @@ class NavInvoiceImportPreview
             $blockers[] = 'no_lines';
         }
 
+        $deliveryDate = trim((string) ($detail['delivery_date'] ?? ''));
+        $accountingDeliveryDate = trim((string) ($detail['accounting_delivery_date'] ?? ''));
+        if ($aggregate) {
+            if ($accountingDeliveryDate !== '' && !$this->validDate($accountingDeliveryDate)) {
+                $blockers[] = 'aggregate_accounting_delivery_date_invalid';
+            }
+
+            $maxDeliveryDate = '';
+            foreach ($lines as $line) {
+                $lineDeliveryDate = trim((string) ($line['aggregate_delivery_date'] ?? ''));
+                $lineExchangeRate = $line['aggregate_exchange_rate'] ?? null;
+                if (!$this->validDate($lineDeliveryDate)) {
+                    $blockers[] = 'aggregate_line_delivery_date_missing';
+                } elseif ($maxDeliveryDate === '' || $lineDeliveryDate > $maxDeliveryDate) {
+                    $maxDeliveryDate = $lineDeliveryDate;
+                }
+                if ($lineExchangeRate !== null && $lineExchangeRate !== ''
+                    && (!is_numeric($lineExchangeRate) || (float) $lineExchangeRate < 0)) {
+                    $blockers[] = 'aggregate_line_exchange_rate_invalid';
+                }
+            }
+            if ($maxDeliveryDate !== ''
+                && (!$this->validDate($deliveryDate) || $deliveryDate !== $maxDeliveryDate)) {
+                $blockers[] = 'aggregate_delivery_date_mismatch';
+            }
+        }
+
         $totals = is_array($parsed['totals'] ?? null) ? $parsed['totals'] : array();
         if ($simplified) {
             if (($totals['gross'] ?? null) === null) {
@@ -143,8 +173,6 @@ class NavInvoiceImportPreview
         $warnings = array_values(array_unique($warnings));
         $state = $blockers ? 'blocked' : ($warnings ? 'review' : 'ready');
 
-        $deliveryDate = (string) ($detail['delivery_date'] ?? '');
-        $accountingDeliveryDate = (string) ($detail['accounting_delivery_date'] ?? '');
         return array(
             'state' => $state,
             'target_class' => $inbound ? 'FactureFournisseur' : 'Facture',
@@ -228,6 +256,9 @@ class NavInvoiceImportPreview
         $discountValue = isset($discount['value']) && is_numeric($discount['value']) ? (float) $discount['value'] : null;
         $discountRate = isset($discount['rate']) && is_numeric($discount['rate']) ? (float) $discount['rate'] : null;
         $discountDescription = trim((string) ($discount['description'] ?? ''));
+        $aggregate = is_array($line['aggregate'] ?? null) ? $line['aggregate'] : array();
+        $aggregateDeliveryDate = trim((string) ($aggregate['delivery_date'] ?? ''));
+        $aggregateExchangeRate = $aggregate['exchange_rate'] ?? null;
 
         $nonExpressionLine = array_key_exists('expression', $line) && $line['expression'] === false;
         $explicitZeroQuantity = $qty !== null && $qty !== '' && (float) $qty == 0.0;
@@ -283,7 +314,7 @@ class NavInvoiceImportPreview
                             $discountNative = true;
                         } else {
                             // Source lineNetAmount is authoritative. Flatten only
-                            // when the explicit discount metadata cannot explain it.
+                            // when explicit discount metadata cannot explain it.
                             $unitPrice = (float) $sourceNet / (float) $qty;
                             $adjusted = true;
                         }
@@ -344,6 +375,8 @@ class NavInvoiceImportPreview
             'discount_rate' => $discountRate,
             'discount_description' => $discountDescription,
             'discount_native' => $discountNative,
+            'aggregate_delivery_date' => $aggregateDeliveryDate,
+            'aggregate_exchange_rate' => $aggregateExchangeRate,
             'supplier_ref' => $supplierRef,
             'supplier_ref_source' => $supplierRefSource,
             'product_codes' => is_array($line['product_codes'] ?? null) ? $line['product_codes'] : array(),
@@ -524,8 +557,13 @@ class NavInvoiceImportPreview
 
     private function externalKey($record, string $direction, string $invoiceNumber): string
     {
+        $mirrorId = (int) ($record->rowid ?? 0);
+        if ($mirrorId > 0) {
+            return 'NAV|'.$direction.'|M'.$mirrorId;
+        }
+        $supplierTax = trim((string) ($record->supplier_tax_number ?? ''));
         $batchIndex = (int) ($record->batch_index ?? 0);
-        return substr('NAV|'.$direction.'|'.$invoiceNumber.'|'.$batchIndex, 0, 255);
+        return substr('NAV|'.$direction.'|'.$supplierTax.'|'.$invoiceNumber.'|'.$batchIndex, 0, 255);
     }
 
     private function validDate(string $value): bool
