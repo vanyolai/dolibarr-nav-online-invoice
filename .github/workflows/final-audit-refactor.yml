@@ -22,121 +22,115 @@ jobs:
         with:
           php-version: '8.3'
           coverage: none
-      - name: Apply final audit cleanup
-        id: cleanup
-        continue-on-error: true
+      - name: Move schema migration to module lifecycle
         shell: bash
         run: |
-          exec > >(tee audit-refactor.log) 2>&1
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          p = Path('class/navpurchaseworkbench.class.php')
+          # Synchronization must not execute DDL. Keep the migration routine, but
+          # expose it explicitly for module activation/upgrade only.
+          p = Path('class/navinvoicesync.class.php')
           text = p.read_text()
-          print('ensureSchema call count before:', text.count('$this->ensureSchema()'))
-          text = re.sub(r'^\s*\$this->ensureSchema\(\);\s*\n', '', text, flags=re.M)
-          text = text.replace('        if (!$this->supplierPriceTierApplies($details, $line)) {', "        if (!NavPurchasePricePolicy::tierApplies($details, (float) ($line['quantity'] ?? 0))) {")
-          text = re.sub(r'\n    /\*\* @param array<string,mixed> \$price @param array<string,mixed> \$line \*/\n    private function supplierPriceTierApplies\(array \$price, array \$line\): bool\n    \{.*?\n    \}\n', '\n', text, count=1, flags=re.S)
-          text = re.sub(r'\n    private function ensureSchema\(\): void\n    \{.*?\n    private function objectError\(\$object\): string\n', '\n    private function objectError($object): string\n', text, count=1, flags=re.S)
-          print('ensureSchema remaining:', text.count('ensureSchema'))
-          print('indexExists remaining:', text.count('indexExists'))
-          print('supplierPriceTierApplies remaining:', text.count('supplierPriceTierApplies'))
-          if '$this->ensureSchema()' in text or 'private function ensureSchema' in text or 'private function indexExists' in text or 'supplierPriceTierApplies' in text:
-              raise SystemExit('workbench runtime schema/duplicate MOQ cleanup incomplete')
+          text, n = re.subn(r'^\s*\$this->ensureSchema\(\);\s*\n', '', text, count=1, flags=re.M)
+          if n != 1:
+              raise SystemExit('sync runtime ensureSchema call not found exactly once')
+          old = """    /**
+     * Backward-compatible schema migration for installations upgraded in place.
+     * New installs use the SQL definitions under sql/.
+     */
+    public function ensureSchema(): void
+"""
+          new = """    /**
+     * Backward-compatible schema migration for installations upgraded in place.
+     * New installs use the SQL definitions under sql/. This method is invoked
+     * only from module activation/upgrade; normal synchronization never mutates
+     * database schema.
+     */
+    public function migrateLegacySchema(): void
+"""
+          if text.count(old) != 1:
+              raise SystemExit('sync schema method marker not found')
+          text = text.replace(old, new, 1)
+          if 'ensureSchema' in text:
+              raise SystemExit('sync still contains ensureSchema')
           p.write_text(text)
 
-          p = Path('class/navpurchasepricepolicy.class.php')
+          # Module activation owns migration. Existing tables are migrated first,
+          # then Dolibarr's SQL loader installs/updates the canonical definitions.
+          p = Path('core/modules/modNavInvoice.class.php')
           text = p.read_text()
-          old = "            $minimum = max(0.0, (float) ($price['quantity'] ?? 0));\n            if ($minimum <= $quantity + 0.000001) {\n                $applicable[] = $price;\n            }\n"
-          new = "            if (self::tierApplies($price, $quantity)) {\n                $applicable[] = $price;\n            }\n"
-          print('policy old loop found:', old in text)
-          if old in text:
-              text = text.replace(old, new, 1)
-          if 'public static function tierApplies' not in text:
-              marker = '    public static function effectivePricesEqual(float $left, float $right): bool\n'
-              method = "    /** @param array<string,mixed> $price */\n    public static function tierApplies(array $price, float $quantity): bool\n    {\n        $minimum = max(0.0, (float) ($price['quantity'] ?? 0));\n        return $minimum <= abs($quantity) + 0.000001;\n    }\n\n"
-              if marker not in text:
-                  raise SystemExit('purchase policy insertion marker missing')
-              text = text.replace(marker, method + marker, 1)
-          if 'self::tierApplies($price, $quantity)' not in text:
-              raise SystemExit('purchase policy did not adopt centralized tier predicate')
+          start = text.find('    public function init($options = \'\')\n')
+          remove = text.find('    public function remove($options = \'\')\n', start)
+          if start < 0 or remove < 0:
+              raise SystemExit('module init/remove boundaries not found')
+          init_block = """    public function init($options = '')
+    {
+        $invoiceTable = MAIN_DB_PREFIX.'navinvoice_invoice';
+        if ($this->tableExists($invoiceTable)) {
+            require_once dirname(__DIR__, 2).'/class/navinvoicesync.class.php';
+            try {
+                $migrator = new NavInvoiceSync($this->db);
+                $migrator->migrateLegacySchema();
+            } catch (Throwable $e) {
+                $this->error = 'NAV legacy schema migration failed: '.$e->getMessage();
+                return -1;
+            }
+        }
+
+        $result = $this->_load_tables('/navinvoice/sql/');
+        if ($result < 0) {
+            return -1;
+        }
+
+        $this->remove($options);
+        $sql = array();
+        return $this->_init($sql, $options);
+    }
+
+"""
+          text = text[:start] + init_block + text[remove:]
+
+          # Remove the duplicate partial migration and its index helper. Retain
+          # only tableExists(), needed to distinguish upgrades from fresh installs.
+          prep = text.find('    /**\n     * Prepare schema upgrades whose new indexes reuse an existing legacy name.')
+          table = text.find('    private function tableExists(string $table): bool\n', prep)
+          if prep < 0 or table < 0:
+              raise SystemExit('module duplicate migration block not found')
+          text = text[:prep] + text[table:]
+          idx = text.find('    /** @return string[] */\n    private function indexColumns', table)
+          if idx >= 0:
+              # Remove indexColumns through the class-closing brace while preserving
+              # the tableExists method and one final class brace.
+              method_end = text.rfind('\n}')
+              if method_end <= idx:
+                  raise SystemExit('module index helper end not found')
+              text = text[:idx] + text[method_end:]
+          if 'prepareLegacySchemaUpgrade' in text or 'indexColumns(' in text:
+              raise SystemExit('module duplicate schema helpers remain')
           p.write_text(text)
 
-          p = Path('class/navinvoiceimporter.class.php')
-          text = p.read_text()
-          inc = "dol_include_once('/navinvoice/class/navunitresolver.class.php');\n"
-          if "navpaymentresolver.class.php" not in text:
-              text = text.replace(inc, inc + "dol_include_once('/navinvoice/class/navpaymentresolver.class.php');\n", 1)
-          prop = '    /** @var NavUnitResolver */\n    private $unitResolver;\n'
-          if 'private $paymentResolver;' not in text:
-              text = text.replace(prop, prop + '\n    /** @var NavPaymentResolver */\n    private $paymentResolver;\n', 1)
-          ctor = '        $this->unitResolver = new NavUnitResolver($db);\n'
-          if 'new NavPaymentResolver($db, $entity)' not in text:
-              text = text.replace(ctor, ctor + '        $this->paymentResolver = new NavPaymentResolver($db, $entity);\n', 1)
-          legacy_call = "$this->paymentModeId((string) ($preview['header']['payment_method'] ?? ''))"
-          print('legacy payment calls before:', text.count(legacy_call))
-          text = text.replace(legacy_call, "$this->paymentResolver->paymentModeId((string) ($preview['header']['payment_method'] ?? ''))")
-          text = re.sub(r'\n    private function paymentModeId\(string \$navMethod\): int\n    \{.*?\n    \}\n\n    private function auditNote', '\n    private function auditNote', text, count=1, flags=re.S)
-          print('legacy payment method remaining:', text.count('private function paymentModeId'))
-          print('shared payment calls:', text.count('$this->paymentResolver->paymentModeId('))
-          if 'private function paymentModeId' in text or '$this->paymentModeId(' in text:
-              raise SystemExit('importer duplicate payment mapping cleanup incomplete')
-          if text.count('$this->paymentResolver->paymentModeId(') != 2:
-              raise SystemExit('importer does not have exactly two shared payment resolver calls')
-          p.write_text(text)
-
-          p = Path('tests/purchase_policy_regression.php')
-          text = p.read_text()
-          if 'MOQ 50 must apply at quantity 50' not in text:
-              marker = 'fwrite(STDOUT, "Purchase policy regression tests passed\\n");\n'
-              addition = "expect_purchase_true(\n    NavPurchasePricePolicy::tierApplies(array('quantity' => 50), 50),\n    'MOQ 50 must apply at quantity 50'\n);\nexpect_purchase_true(\n    !NavPurchasePricePolicy::tierApplies(array('quantity' => 50), 49),\n    'MOQ 50 must not apply below its threshold'\n);\n\n"
-              if marker not in text:
-                  raise SystemExit('purchase regression end marker missing')
-              text = text.replace(marker, addition + marker, 1)
-          p.write_text(text)
+          # Remove stale debug output from a previous one-shot diagnostic run.
+          Path('audit-refactor-debug.txt').unlink(missing_ok=True)
           PY
 
+          php -l class/navinvoicesync.class.php
+          php -l core/modules/modNavInvoice.class.php
           php -l class/navpurchaseworkbench.class.php
-          php -l class/navpurchasepricepolicy.class.php
-          php -l class/navinvoiceimporter.class.php
           php tests/parser_regression.php
           php tests/purchase_policy_regression.php
 
-      - name: Upload diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: final-audit-refactor-log
-          path: audit-refactor.log
-
-      - name: Commit cleanup
-        if: steps.cleanup.outcome == 'success'
+      - name: Commit final schema cleanup
         shell: bash
         run: |
-          if git diff --quiet; then
+          git config user.name 'Vanyo'
+          git config user.email 'vanyolai@gmail.com'
+          git add -A class/navinvoicesync.class.php core/modules/modNavInvoice.class.php audit-refactor-debug.txt
+          if git diff --cached --quiet; then
             echo 'No changes to commit'
             exit 0
           fi
-          git config user.name 'Vanyo'
-          git config user.email 'vanyolai@gmail.com'
-          git add class/navpurchaseworkbench.class.php class/navpurchasepricepolicy.class.php class/navinvoiceimporter.class.php tests/purchase_policy_regression.php
-          git commit -m 'Finish final audit cleanup'
+          git commit -m 'Finalize schema migration lifecycle'
           git push origin HEAD:refactor/final-audit
-
-      - name: Commit diagnostics if cleanup failed
-        if: steps.cleanup.outcome != 'success'
-        shell: bash
-        run: |
-          git checkout -- class/navpurchaseworkbench.class.php class/navpurchasepricepolicy.class.php class/navinvoiceimporter.class.php tests/purchase_policy_regression.php
-          cp audit-refactor.log audit-refactor-debug.txt
-          git config user.name 'Vanyo'
-          git config user.email 'vanyolai@gmail.com'
-          git add audit-refactor-debug.txt
-          git commit -m 'Record final audit refactor diagnostics'
-          git push origin HEAD:refactor/final-audit
-
-      - name: Fail if cleanup failed
-        if: steps.cleanup.outcome != 'success'
-        run: exit 1
