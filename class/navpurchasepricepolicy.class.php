@@ -28,8 +28,7 @@ class NavPurchasePricePolicy
             if (!is_array($price)) {
                 continue;
             }
-            $minimum = max(0.0, (float) ($price['quantity'] ?? 0));
-            if ($minimum <= $quantity + 0.000001) {
+            if (self::tierApplies($price, $quantity)) {
                 $applicable[] = $price;
             }
         }
@@ -57,6 +56,13 @@ class NavPurchasePricePolicy
             return ((int) ($b['rowid'] ?? 0)) <=> ((int) ($a['rowid'] ?? 0));
         });
         return array('price' => $fallback[0], 'applicable' => false);
+    }
+
+    /** @param array<string,mixed> $price */
+    public static function tierApplies(array $price, float $quantity): bool
+    {
+        $minimum = max(0.0, (float) ($price['quantity'] ?? 0));
+        return $minimum <= abs($quantity) + 0.000001;
     }
 
     public static function effectivePricesEqual(float $left, float $right): bool

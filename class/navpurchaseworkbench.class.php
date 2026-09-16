@@ -33,8 +33,6 @@ class NavPurchaseWorkbench
     /** @return array<string,mixed> */
     public function build(array $parsed, $record, ?array $partnerMatch): array
     {
-        $this->ensureSchema();
-
         $builder = new NavInvoiceOperationPreview($this->db, $this->entity, $this->baseCurrency);
         $preview = $builder->build($parsed, $record, $partnerMatch);
 
@@ -329,7 +327,7 @@ class NavPurchaseWorkbench
         if ($details === null || (int) $details['fk_soc'] !== $supplierId || (int) $details['fk_product'] !== $productId) {
             throw new Exception('Supplier price relationship changed since the workbench preview.');
         }
-        if (!$this->supplierPriceTierApplies($details, $line)) {
+        if (!NavPurchasePricePolicy::tierApplies($details, (float) ($line['quantity'] ?? 0))) {
             throw new Exception('Supplier price tier MOQ is above the NAV invoice quantity; that tier cannot be overwritten from this invoice.');
         }
 
@@ -573,7 +571,6 @@ class NavPurchaseWorkbench
     /** @return array<int,array<string,mixed>> */
     public function findLinkedOrders(int $mirrorId): array
     {
-        $this->ensureSchema();
         $sql = 'SELECT l.fk_commande_fourn, c.ref, c.fk_statut, c.date_commande, c.date_creation, c.total_ht, c.billed';
         $sql .= ' FROM '.MAIN_DB_PREFIX.'navinvoice_purchase_link AS l';
         $sql .= ' LEFT JOIN '.MAIN_DB_PREFIX.'commande_fournisseur AS c ON c.rowid = l.fk_commande_fourn';
@@ -802,13 +799,6 @@ class NavPurchaseWorkbench
         );
     }
 
-    /** @param array<string,mixed> $price @param array<string,mixed> $line */
-    private function supplierPriceTierApplies(array $price, array $line): bool
-    {
-        $minimum = max(0.0, (float) ($price['quantity'] ?? 0));
-        $quantity = abs((float) ($line['quantity'] ?? 0));
-        return $minimum <= $quantity + 0.000001;
-    }
 
     /**
      * Create/update a Dolibarr supplier-price row using the native business API.
@@ -1045,60 +1035,6 @@ class NavPurchaseWorkbench
         $sql .= ' WHERE entity = '.$this->entity.' AND fk_navinvoice_invoice = '.$mirrorId;
         $sql .= ' AND fk_commande_fourn = '.$orderId;
         $this->db->query($sql);
-    }
-
-    private function ensureSchema(): void
-    {
-        $table = MAIN_DB_PREFIX.'navinvoice_purchase_link';
-        $sql = 'CREATE TABLE IF NOT EXISTS '.$table.' (';
-        $sql .= 'rowid INTEGER AUTO_INCREMENT PRIMARY KEY,';
-        $sql .= 'entity INTEGER NOT NULL,';
-        $sql .= 'fk_navinvoice_invoice INTEGER NOT NULL,';
-        $sql .= 'fk_commande_fourn INTEGER NOT NULL,';
-        $sql .= 'datec DATETIME NOT NULL,';
-        $sql .= 'tms TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,';
-        $sql .= 'UNIQUE KEY uk_navinvoice_purchase_pair (entity, fk_navinvoice_invoice, fk_commande_fourn),';
-        $sql .= 'KEY idx_navinvoice_purchase_mirror (entity, fk_navinvoice_invoice),';
-        $sql .= 'KEY idx_navinvoice_purchase_order (entity, fk_commande_fourn)';
-        $sql .= ') ENGINE=InnoDB';
-        if (!$this->db->query($sql)) {
-            throw new Exception('Could not initialize NAV purchase-workbench schema: '.$this->db->lasterror());
-        }
-
-        // Migrate the initial 1:1 schema to many-to-many in place.
-        foreach (array('uk_navinvoice_purchase_mirror', 'uk_navinvoice_purchase_order') as $legacyIndex) {
-            if ($this->indexExists($table, $legacyIndex)) {
-                if (!$this->db->query('ALTER TABLE '.$table.' DROP INDEX '.$legacyIndex)) {
-                    throw new Exception('Could not migrate purchase-workbench relation index '.$legacyIndex.': '.$this->db->lasterror());
-                }
-            }
-        }
-        if (!$this->indexExists($table, 'uk_navinvoice_purchase_pair')) {
-            if (!$this->db->query('ALTER TABLE '.$table.' ADD UNIQUE KEY uk_navinvoice_purchase_pair (entity, fk_navinvoice_invoice, fk_commande_fourn)')) {
-                throw new Exception('Could not add purchase-workbench pair index: '.$this->db->lasterror());
-            }
-        }
-        if (!$this->indexExists($table, 'idx_navinvoice_purchase_mirror')) {
-            if (!$this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_mirror (entity, fk_navinvoice_invoice)')) {
-                throw new Exception('Could not add purchase-workbench mirror index: '.$this->db->lasterror());
-            }
-        }
-        if (!$this->indexExists($table, 'idx_navinvoice_purchase_order')) {
-            if (!$this->db->query('ALTER TABLE '.$table.' ADD KEY idx_navinvoice_purchase_order (entity, fk_commande_fourn)')) {
-                throw new Exception('Could not add purchase-workbench order index: '.$this->db->lasterror());
-            }
-        }
-    }
-
-    private function indexExists(string $table, string $index): bool
-    {
-        $resql = $this->db->query("SHOW INDEX FROM ".$table." WHERE Key_name = '".$this->db->escape($index)."'");
-        if (!$resql) {
-            throw new Exception('Could not inspect purchase-workbench schema: '.$this->db->lasterror());
-        }
-        $exists = (bool) $this->db->fetch_object($resql);
-        $this->db->free($resql);
-        return $exists;
     }
 
     private function objectError($object): string

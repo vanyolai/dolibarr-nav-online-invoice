@@ -64,4 +64,13 @@ expect_purchase_true(
     'missing packaging must not block quantity semantics'
 );
 
+expect_purchase_true(
+    NavPurchasePricePolicy::tierApplies(array('quantity' => 50), 50),
+    'MOQ 50 must apply at quantity 50'
+);
+expect_purchase_true(
+    !NavPurchasePricePolicy::tierApplies(array('quantity' => 50), 49),
+    'MOQ 50 must not apply below its threshold'
+);
+
 fwrite(STDOUT, "Purchase policy regression tests passed\n");

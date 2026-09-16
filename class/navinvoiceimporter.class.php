@@ -1,6 +1,7 @@
 <?php
 
 dol_include_once('/navinvoice/class/navunitresolver.class.php');
+dol_include_once('/navinvoice/class/navpaymentresolver.class.php');
 
 /**
  * Import a validated NAV import preview into Dolibarr.
@@ -29,12 +30,16 @@ class NavInvoiceImporter
     /** @var NavUnitResolver */
     private $unitResolver;
 
+    /** @var NavPaymentResolver */
+    private $paymentResolver;
+
     public function __construct($db, int $entity, string $baseCurrency)
     {
         $this->db = $db;
         $this->entity = $entity;
         $this->baseCurrency = strtoupper(trim($baseCurrency));
         $this->unitResolver = new NavUnitResolver($db);
+        $this->paymentResolver = new NavPaymentResolver($db, $entity);
     }
 
     /**
@@ -164,7 +169,7 @@ class NavInvoiceImporter
         $invoice->ref_customer = (string) $preview['invoice_number'];
         $invoice->ref_ext = (string) $preview['external_key'];
         $invoice->module_source = 'navinvoice';
-        $invoice->mode_reglement_id = $this->paymentModeId((string) ($preview['header']['payment_method'] ?? ''));
+        $invoice->mode_reglement_id = $this->paymentResolver->paymentModeId((string) ($preview['header']['payment_method'] ?? ''));
         $invoice->multicurrency_code = $this->baseCurrency;
         $invoice->multicurrency_tx = 1;
         $invoice->note_private = $this->auditNote($preview, $record);
@@ -250,7 +255,7 @@ class NavInvoiceImporter
         $invoice->date_echeance = $dueDate > 0 ? $dueDate : null;
         $invoice->ref_supplier = (string) $preview['invoice_number'];
         $invoice->ref_ext = (string) $preview['external_key'];
-        $invoice->mode_reglement_id = $this->paymentModeId((string) ($preview['header']['payment_method'] ?? ''));
+        $invoice->mode_reglement_id = $this->paymentResolver->paymentModeId((string) ($preview['header']['payment_method'] ?? ''));
         $invoice->multicurrency_code = $this->baseCurrency;
         $invoice->multicurrency_tx = 1;
         $invoice->note_private = $this->auditNote($preview, $record);
@@ -648,25 +653,6 @@ class NavInvoiceImporter
             dol_syslog('NavInvoiceImporter automatic validation threw for supplier invoice '.((int) ($invoice->id ?? 0)).': '.$e->getMessage(), LOG_WARNING);
         }
         return $status;
-    }
-
-    private function paymentModeId(string $navMethod): int
-    {
-        $map = array('CASH' => 'LIQ', 'TRANSFER' => 'VIR', 'CARD' => 'CB');
-        $code = $map[strtoupper(trim($navMethod))] ?? '';
-        if ($code === '') {
-            return 0;
-        }
-        $sql = 'SELECT id FROM '.MAIN_DB_PREFIX.'c_paiement';
-        $sql .= " WHERE code = '".$this->db->escape($code)."'";
-        $sql .= ' LIMIT 1';
-        $resql = $this->db->query($sql);
-        if (!$resql) {
-            return 0;
-        }
-        $obj = $this->db->fetch_object($resql);
-        $this->db->free($resql);
-        return $obj ? (int) $obj->id : 0;
     }
 
     private function auditNote(array $preview, $record): string
