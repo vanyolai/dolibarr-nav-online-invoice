@@ -59,8 +59,6 @@ class NavInvoiceSync
         string $direction = 'BOTH',
         ?callable $progressCallback = null
     ): array {
-        $this->ensureSchema();
-
         $start = DateTimeImmutable::createFromFormat('!Y-m-d', $dateFrom);
         $end = DateTimeImmutable::createFromFormat('!Y-m-d', $dateTo);
         if (!$start || !$end || $end < $start) {
@@ -157,9 +155,11 @@ class NavInvoiceSync
 
     /**
      * Backward-compatible schema migration for installations upgraded in place.
-     * New installs use the SQL definitions under sql/.
+     * New installs use the SQL definitions under sql/. This method is invoked
+     * only from module activation/upgrade; normal synchronization never mutates
+     * database schema.
      */
-    public function ensureSchema(): void
+    public function migrateLegacySchema(): void
     {
         $table = MAIN_DB_PREFIX.'navinvoice_invoice';
 

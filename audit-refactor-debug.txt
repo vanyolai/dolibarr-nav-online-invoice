@@ -1,5 +1,0 @@
-ensureSchema call count before: 2
-ensureSchema remaining: 1
-indexExists remaining: 0
-supplierPriceTierApplies remaining: 0
-workbench runtime schema/duplicate MOQ cleanup incomplete
