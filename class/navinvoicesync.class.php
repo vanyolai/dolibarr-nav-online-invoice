@@ -188,14 +188,21 @@ class NavInvoiceSync
             if (!$this->db->query("ALTER TABLE ".$table." ADD supplier_tax_number varchar(20) NOT NULL DEFAULT '' AFTER invoice_issue_date")) {
                 throw new Exception($this->db->lasterror());
             }
-        } else {
-            if (!$this->db->query("UPDATE ".$table." SET supplier_tax_number = '' WHERE supplier_tax_number IS NULL")) {
+        }
+
+        // Existing installations may already contain thousands of rows created
+        // before supplier tax became part of the mirror identity. Recover it
+        // before replacing the unique key, first from the stored digest and then
+        // from the canonical InvoiceData parser. This avoids re-sync creating a
+        // second mirror row for the same historical invoice.
+        $this->backfillSupplierTaxNumbers($table);
+
+        if (!$this->db->query("UPDATE ".$table." SET supplier_tax_number = '' WHERE supplier_tax_number IS NULL")) {
+            throw new Exception($this->db->lasterror());
+        }
+        if ($supplierTaxColumn && strtoupper((string) ($supplierTaxColumn->Null ?? 'YES')) !== 'NO') {
+            if (!$this->db->query("ALTER TABLE ".$table." MODIFY supplier_tax_number varchar(20) NOT NULL DEFAULT ''")) {
                 throw new Exception($this->db->lasterror());
-            }
-            if (strtoupper((string) ($supplierTaxColumn->Null ?? 'YES')) !== 'NO') {
-                if (!$this->db->query("ALTER TABLE ".$table." MODIFY supplier_tax_number varchar(20) NOT NULL DEFAULT ''")) {
-                    throw new Exception($this->db->lasterror());
-                }
             }
         }
 
@@ -230,6 +237,55 @@ class NavInvoiceSync
 
         if (!$this->indexColumns($table, 'idx_navinvoice_supplier_tax')) {
             if (!$this->db->query("ALTER TABLE ".$table." ADD INDEX idx_navinvoice_supplier_tax (entity, supplier_tax_number)")) {
+                throw new Exception($this->db->lasterror());
+            }
+        }
+    }
+
+    private function backfillSupplierTaxNumbers(string $table): void
+    {
+        $sql = 'SELECT rowid, raw_digest, invoice_data FROM '.$table;
+        $sql .= " WHERE supplier_tax_number IS NULL OR TRIM(supplier_tax_number) = ''";
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception($this->db->lasterror());
+        }
+
+        $updates = array();
+        while ($obj = $this->db->fetch_object($resql)) {
+            $taxNumber = '';
+            $rawDigest = trim((string) ($obj->raw_digest ?? ''));
+            if ($rawDigest !== '') {
+                $decoded = json_decode($rawDigest, true);
+                if (is_array($decoded)) {
+                    $taxNumber = trim((string) ($decoded['supplierTaxNumber'] ?? $decoded['supplier_tax_number'] ?? ''));
+                }
+            }
+
+            if ($taxNumber === '') {
+                $xml = trim((string) ($obj->invoice_data ?? ''));
+                if ($xml !== '') {
+                    try {
+                        $parsed = $this->parser->parse($xml);
+                        $taxNumber = trim((string) ($parsed['supplier']['tax_number'] ?? ''));
+                    } catch (Throwable $e) {
+                        dol_syslog(__METHOD__.': cannot backfill mirror row '.((int) $obj->rowid).': '.$e->getMessage(), LOG_WARNING);
+                    }
+                }
+            }
+
+            if ($taxNumber !== '') {
+                $updates[(int) $obj->rowid] = $taxNumber;
+            }
+        }
+        $this->db->free($resql);
+
+        foreach ($updates as $rowid => $taxNumber) {
+            $sql = 'UPDATE '.$table;
+            $sql .= " SET supplier_tax_number = '".$this->db->escape($taxNumber)."'";
+            $sql .= ' WHERE rowid = '.$rowid;
+            $sql .= " AND (supplier_tax_number IS NULL OR TRIM(supplier_tax_number) = '')";
+            if (!$this->db->query($sql)) {
                 throw new Exception($this->db->lasterror());
             }
         }
@@ -471,6 +527,33 @@ class NavInvoiceSync
 
         $existing = $this->db->fetch_object($resql);
         $this->db->free($resql);
+
+        // A pre-migration row whose supplier tax could not be recovered is still
+        // safer to claim than to duplicate, but only when that legacy identity is
+        // unique. Once claimed, future lookups use the full supplier-scoped key.
+        if (!$existing && $supplierTaxNumber !== '') {
+            $legacySql = 'SELECT rowid, digest_hash, data_fetched, invoice_net_amount, invoice_vat_amount';
+            $legacySql .= ' FROM '.MAIN_DB_PREFIX.'navinvoice_invoice';
+            $legacySql .= ' WHERE entity = '.$entity;
+            $legacySql .= " AND invoice_direction = '".$this->db->escape($data['invoice_direction'])."'";
+            $legacySql .= " AND (supplier_tax_number IS NULL OR TRIM(supplier_tax_number) = '')";
+            $legacySql .= " AND invoice_number = '".$this->db->escape($data['invoice_number'])."'";
+            $legacySql .= ' AND batch_index = '.((int) $data['batch_index']);
+            $legacySql .= ' ORDER BY rowid LIMIT 2';
+            $legacyRes = $this->db->query($legacySql);
+            if (!$legacyRes) {
+                throw new Exception($this->db->lasterror());
+            }
+            $legacyRows = array();
+            while ($legacyObj = $this->db->fetch_object($legacyRes)) {
+                $legacyRows[] = $legacyObj;
+            }
+            $this->db->free($legacyRes);
+            if (count($legacyRows) === 1) {
+                $existing = $legacyRows[0];
+            }
+        }
+
         $inserted = !$existing;
         $changed = $inserted || $existing->digest_hash !== $data['digest_hash'];
         $dataFetched = $existing ? (bool) $existing->data_fetched : false;
