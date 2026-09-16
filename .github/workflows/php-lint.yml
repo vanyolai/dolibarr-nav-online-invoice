@@ -25,3 +25,5 @@ jobs:
           done < <(find . -type f -name '*.php' -not -path './vendor/*' -print0)
       - name: Parser regression tests
         run: php tests/parser_regression.php
+      - name: Purchase policy regression tests
+        run: php tests/purchase_policy_regression.php
