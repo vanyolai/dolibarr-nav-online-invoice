@@ -68,7 +68,9 @@ table = text.find('    private function tableExists(string $table): bool\n', pre
 if prep < 0 or table < 0:
     raise SystemExit('module duplicate migration block not found')
 text = text[:prep] + text[table:]
-idx = text.find('    /** @return string[] */\n    private function indexColumns', table)
+# The splice moves tableExists() to the old migration-block start; search from
+# that new position rather than the pre-splice offset.
+idx = text.find('    /** @return string[] */\n    private function indexColumns', prep)
 if idx >= 0:
     method_end = text.rfind('\n}')
     if method_end <= idx:
