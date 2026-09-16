@@ -125,6 +125,17 @@ jobs:
           git commit -m 'Finish final audit cleanup'
           git push origin HEAD:refactor/final-audit
 
+      - name: Commit diagnostics if cleanup failed
+        if: steps.cleanup.outcome != 'success'
+        shell: bash
+        run: |
+          git checkout -- class/navpurchaseworkbench.class.php class/navpurchasepricepolicy.class.php class/navinvoiceimporter.class.php tests/purchase_policy_regression.php
+          git config user.name 'Vanyo'
+          git config user.email 'vanyolai@gmail.com'
+          git add audit-refactor.log
+          git commit -m 'Record final audit refactor diagnostics'
+          git push origin HEAD:refactor/final-audit
+
       - name: Fail if cleanup failed
         if: steps.cleanup.outcome != 'success'
         run: exit 1
