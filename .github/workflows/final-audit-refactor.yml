@@ -6,6 +6,7 @@ on:
       - refactor/final-audit
     paths:
       - .github/workflows/final-audit-refactor.yml
+      - tools/final_audit_migrate.py
 
 permissions:
   contents: write
