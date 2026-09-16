@@ -2,6 +2,7 @@
 
 dol_include_once('/navinvoice/class/navinvoiceoperationpreview.class.php');
 dol_include_once('/navinvoice/class/navpaymentresolver.class.php');
+dol_include_once('/navinvoice/class/navpurchasepricepolicy.class.php');
 
 /**
  * Purchase workbench for inbound NAV invoices.
@@ -75,9 +76,12 @@ class NavPurchaseWorkbench
                 $productDetails = $this->productDetails($productId);
                 $priceSelection = $this->selectSupplierPriceForLine($partnerId, $productId, $supplierRef, $line);
                 if ($priceSelection !== null && $product !== null) {
-                    // Product matching identifies the product. Supplier-price tier
-                    // selection is a separate deterministic MOQ decision.
-                    $match['product']['supplier_price_id'] = (int) $priceSelection['price']['rowid'];
+                    // Keep a supplier-price link only when its MOQ applies to the
+                    // invoiced quantity. A non-applicable tier is useful context
+                    // in the UI but must not leak into reconstructed order lines.
+                    $match['product']['supplier_price_id'] = !empty($priceSelection['tier_applicable'])
+                        ? (int) $priceSelection['price']['rowid']
+                        : 0;
                     $line['product_match'] = $match;
                     $product = $match['product'];
                 }
@@ -90,6 +94,11 @@ class NavPurchaseWorkbench
             );
             if ($priceSelection !== null) {
                 $normalization['tier_applicable'] = !empty($priceSelection['tier_applicable']);
+                if (empty($normalization['tier_applicable'])) {
+                    $normalization['can_update_price'] = false;
+                }
+            } else {
+                $normalization['tier_applicable'] = null;
             }
 
             $line['workbench_index'] = (int) $index;
@@ -320,13 +329,16 @@ class NavPurchaseWorkbench
         if ($details === null || (int) $details['fk_soc'] !== $supplierId || (int) $details['fk_product'] !== $productId) {
             throw new Exception('Supplier price relationship changed since the workbench preview.');
         }
+        if (!$this->supplierPriceTierApplies($details, $line)) {
+            throw new Exception('Supplier price tier MOQ is above the NAV invoice quantity; that tier cannot be overwritten from this invoice.');
+        }
 
         $normalization = $this->normalizePurchaseLine($line, $details, $this->productDetails($productId));
         if (empty($normalization['price_differs'])) {
             return;
         }
         if (empty($normalization['can_update_price'])) {
-            throw new Exception('Supplier price cannot be updated safely until the NAV-to-Dolibarr quantity conversion is resolved.');
+            throw new Exception('Supplier price cannot be updated safely until the NAV-to-Dolibarr unit semantics are resolved.');
         }
 
         $supplier = $this->loadSupplier($supplierId);
@@ -660,61 +672,23 @@ class NavPurchaseWorkbench
 
     /**
      * Select the supplier-price tier using Dolibarr's MOQ semantics only.
-     *
-     * product_fournisseur_price.quantity is the minimum quantity for a tier.
-     * The applicable tier is therefore the highest MOQ not exceeding the NAV
-     * quantity. Price proximity and packaging must never choose the tier: the
-     * price may be exactly the stale value we are trying to update, while
-     * packaging is an ordering-multiple constraint rather than price-tier or
-     * unit-conversion metadata.
+     * Price and packaging never participate in tier selection.
      *
      * @return array{price:array<string,mixed>,normalization:array<string,mixed>,tier_applicable:bool}|null
      */
     private function selectSupplierPriceForLine(int $supplierId, int $productId, string $supplierRef, array $line): ?array
     {
         $prices = $this->supplierPrices($supplierId, $productId, $supplierRef);
-        if (!$prices) {
+        $selection = NavPurchasePricePolicy::selectTier($prices, (float) ($line['quantity'] ?? 0));
+        if ($selection === null) {
             return null;
         }
 
-        $navQty = abs((float) ($line['quantity'] ?? 0));
-        $applicable = array();
-        foreach ($prices as $price) {
-            $minimum = max(0.0, (float) ($price['quantity'] ?? 0));
-            if ($minimum <= $navQty + 0.000001) {
-                $applicable[] = $price;
-            }
-        }
-
-        if ($applicable) {
-            usort($applicable, static function (array $a, array $b): int {
-                $quantityCompare = ((float) ($b['quantity'] ?? 0)) <=> ((float) ($a['quantity'] ?? 0));
-                if ($quantityCompare !== 0) {
-                    return $quantityCompare;
-                }
-                return ((int) ($b['rowid'] ?? 0)) <=> ((int) ($a['rowid'] ?? 0));
-            });
-            $selected = $applicable[0];
-            $tierApplicable = true;
-        } else {
-            // No configured tier is formally applicable. Select the smallest MOQ
-            // only for display/context, but mark it non-applicable so callers do
-            // not treat it as a safe price-update target.
-            usort($prices, static function (array $a, array $b): int {
-                $quantityCompare = ((float) ($a['quantity'] ?? 0)) <=> ((float) ($b['quantity'] ?? 0));
-                if ($quantityCompare !== 0) {
-                    return $quantityCompare;
-                }
-                return ((int) ($b['rowid'] ?? 0)) <=> ((int) ($a['rowid'] ?? 0));
-            });
-            $selected = $prices[0];
-            $tierApplicable = false;
-        }
-
+        $selected = $selection['price'];
         return array(
             'price' => $selected,
             'normalization' => $this->normalizePurchaseLine($line, $selected, $this->productDetails($productId)),
-            'tier_applicable' => $tierApplicable,
+            'tier_applicable' => !empty($selection['applicable']),
         );
     }
 
@@ -782,9 +756,9 @@ class NavPurchaseWorkbench
         $normalizedEffectiveUnit = $navEffectiveUnit;
 
         $effectiveDiffers = $supplierEffectiveUnit !== null
-            && !$this->moneyEqual($normalizedEffectiveUnit, $supplierEffectiveUnit);
+            && !NavPurchasePricePolicy::effectivePricesEqual($normalizedEffectiveUnit, $supplierEffectiveUnit);
         $listDiffers = $supplierListUnit !== null
-            && !$this->moneyEqual($normalizedListUnit, $supplierListUnit);
+            && !NavPurchasePricePolicy::effectivePricesEqual($normalizedListUnit, $supplierListUnit);
         $discountDiffers = $price !== null && abs($navDiscount - $supplierDiscount) > 0.000001;
         $fixedDiscountDiffers = $price !== null && abs($supplierFixedDiscount) > 0.000001;
         $representationDiffers = $supplierListUnit !== null
@@ -795,12 +769,7 @@ class NavPurchaseWorkbench
         // intentionally left untouched.
         $priceDiffers = $supplierEffectiveUnit !== null && $effectiveDiffers;
         $canUpdatePrice = $priceDiffers && $quantityMappingSafe;
-
-        $orderMultipleSatisfied = true;
-        if ($packaging > 0.0 && abs($navQty) > 0.0) {
-            $multiple = abs($navQty) / $packaging;
-            $orderMultipleSatisfied = abs($multiple - round($multiple)) <= 0.000001;
-        }
+        $orderMultipleSatisfied = NavPurchasePricePolicy::orderingMultipleSatisfied($navQty, $packaging);
 
         return array(
             'mode' => $mode,
@@ -831,6 +800,14 @@ class NavPurchaseWorkbench
             'price_differs' => $priceDiffers,
             'can_update_price' => $canUpdatePrice,
         );
+    }
+
+    /** @param array<string,mixed> $price @param array<string,mixed> $line */
+    private function supplierPriceTierApplies(array $price, array $line): bool
+    {
+        $minimum = max(0.0, (float) ($price['quantity'] ?? 0));
+        $quantity = abs((float) ($line['quantity'] ?? 0));
+        return $minimum <= $quantity + 0.000001;
     }
 
     /**
@@ -1030,12 +1007,6 @@ class NavPurchaseWorkbench
     private function discountPercent(float $value): float
     {
         return max(0.0, min(100.0, $value));
-    }
-
-    private function moneyEqual(float $a, float $b): bool
-    {
-        $tolerance = max(0.01, max(abs($a), abs($b)) * 0.00001);
-        return abs($a - $b) <= $tolerance;
     }
 
     private function temporaryProductRef(int $mirrorId, string $lineNumber): string
