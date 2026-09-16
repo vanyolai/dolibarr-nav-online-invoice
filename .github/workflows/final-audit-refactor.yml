@@ -23,18 +23,26 @@ jobs:
           php-version: '8.3'
           coverage: none
       - name: Apply final audit cleanup
+        id: cleanup
+        continue-on-error: true
         shell: bash
         run: |
+          exec > >(tee audit-refactor.log) 2>&1
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import re
 
           p = Path('class/navpurchaseworkbench.class.php')
           text = p.read_text()
+          print('ensureSchema call count before:', text.count('$this->ensureSchema()'))
           text = text.replace('        $this->ensureSchema();\n\n', '')
           text = text.replace('        if (!$this->supplierPriceTierApplies($details, $line)) {', "        if (!NavPurchasePricePolicy::tierApplies($details, (float) ($line['quantity'] ?? 0))) {")
           text = re.sub(r'\n    /\*\* @param array<string,mixed> \$price @param array<string,mixed> \$line \*/\n    private function supplierPriceTierApplies\(array \$price, array \$line\): bool\n    \{.*?\n    \}\n', '\n', text, count=1, flags=re.S)
           text = re.sub(r'\n    private function ensureSchema\(\): void\n    \{.*?\n    private function objectError\(\$object\): string\n', '\n    private function objectError($object): string\n', text, count=1, flags=re.S)
+          print('ensureSchema remaining:', text.count('ensureSchema'))
+          print('indexExists remaining:', text.count('indexExists'))
+          print('supplierPriceTierApplies remaining:', text.count('supplierPriceTierApplies'))
           if '$this->ensureSchema()' in text or 'private function ensureSchema' in text or 'private function indexExists' in text or 'supplierPriceTierApplies' in text:
               raise SystemExit('workbench runtime schema/duplicate MOQ cleanup incomplete')
           p.write_text(text)
@@ -43,6 +51,7 @@ jobs:
           text = p.read_text()
           old = "            $minimum = max(0.0, (float) ($price['quantity'] ?? 0));\n            if ($minimum <= $quantity + 0.000001) {\n                $applicable[] = $price;\n            }\n"
           new = "            if (self::tierApplies($price, $quantity)) {\n                $applicable[] = $price;\n            }\n"
+          print('policy old loop found:', old in text)
           if old in text:
               text = text.replace(old, new, 1)
           if 'public static function tierApplies' not in text:
@@ -66,8 +75,12 @@ jobs:
           ctor = '        $this->unitResolver = new NavUnitResolver($db);\n'
           if 'new NavPaymentResolver($db, $entity)' not in text:
               text = text.replace(ctor, ctor + '        $this->paymentResolver = new NavPaymentResolver($db, $entity);\n', 1)
-          text = text.replace("$this->paymentModeId((string) ($preview['header']['payment_method'] ?? ''))", "$this->paymentResolver->paymentModeId((string) ($preview['header']['payment_method'] ?? ''))")
+          legacy_call = "$this->paymentModeId((string) ($preview['header']['payment_method'] ?? ''))"
+          print('legacy payment calls before:', text.count(legacy_call))
+          text = text.replace(legacy_call, "$this->paymentResolver->paymentModeId((string) ($preview['header']['payment_method'] ?? ''))")
           text = re.sub(r'\n    private function paymentModeId\(string \$navMethod\): int\n    \{.*?\n    \}\n\n    private function auditNote', '\n    private function auditNote', text, count=1, flags=re.S)
+          print('legacy payment method remaining:', text.count('private function paymentModeId'))
+          print('shared payment calls:', text.count('$this->paymentResolver->paymentModeId('))
           if 'private function paymentModeId' in text or '$this->paymentModeId(' in text:
               raise SystemExit('importer duplicate payment mapping cleanup incomplete')
           if text.count('$this->paymentResolver->paymentModeId(') != 2:
@@ -91,7 +104,15 @@ jobs:
           php tests/parser_regression.php
           php tests/purchase_policy_regression.php
 
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-audit-refactor-log
+          path: audit-refactor.log
+
       - name: Commit cleanup
+        if: steps.cleanup.outcome == 'success'
         shell: bash
         run: |
           if git diff --quiet; then
@@ -103,3 +124,7 @@ jobs:
           git add class/navpurchaseworkbench.class.php class/navpurchasepricepolicy.class.php class/navinvoiceimporter.class.php tests/purchase_policy_regression.php
           git commit -m 'Finish final audit cleanup'
           git push origin HEAD:refactor/final-audit
+
+      - name: Fail if cleanup failed
+        if: steps.cleanup.outcome != 'success'
+        run: exit 1
