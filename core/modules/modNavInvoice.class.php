@@ -136,6 +136,13 @@ class modNavInvoice extends DolibarrModules
 
     public function init($options = '')
     {
+        // Upgrade legacy indexes before _load_tables() tries to install the
+        // current keys with the same names. Schema changes belong to module
+        // activation/upgrade, not to normal invoice/workbench page requests.
+        if ($this->prepareLegacySchemaUpgrade() < 0) {
+            return -1;
+        }
+
         $result = $this->_load_tables('/navinvoice/sql/');
         if ($result < 0) {
             return -1;
@@ -150,5 +157,79 @@ class modNavInvoice extends DolibarrModules
     {
         $sql = array();
         return $this->_remove($sql, $options);
+    }
+
+    /**
+     * Prepare schema upgrades whose new indexes reuse an existing legacy name.
+     *
+     * Dolibarr's SQL loader owns normal table/index creation. This method only
+     * removes incompatible historical constraints and normalizes the one column
+     * whose nullability changed so the current SQL files can be applied cleanly.
+     */
+    private function prepareLegacySchemaUpgrade(): int
+    {
+        $invoiceTable = MAIN_DB_PREFIX.'navinvoice_invoice';
+        if ($this->tableExists($invoiceTable)) {
+            $expectedIdentity = array('entity', 'invoice_direction', 'supplier_tax_number', 'invoice_number', 'batch_index');
+            $currentIdentity = $this->indexColumns($invoiceTable, 'uk_navinvoice_invoice');
+            if ($currentIdentity && $currentIdentity !== $expectedIdentity) {
+                if (!$this->db->query('ALTER TABLE '.$invoiceTable.' DROP INDEX uk_navinvoice_invoice')) {
+                    $this->error = 'Could not remove legacy NAV invoice identity index: '.$this->db->lasterror();
+                    return -1;
+                }
+            }
+
+            if (!$this->db->query("UPDATE ".$invoiceTable." SET supplier_tax_number = '' WHERE supplier_tax_number IS NULL")) {
+                $this->error = 'Could not normalize NAV supplier tax numbers: '.$this->db->lasterror();
+                return -1;
+            }
+            if (!$this->db->query('ALTER TABLE '.$invoiceTable." MODIFY supplier_tax_number varchar(20) NOT NULL DEFAULT ''")) {
+                $this->error = 'Could not enforce NAV supplier identity column: '.$this->db->lasterror();
+                return -1;
+            }
+        }
+
+        $purchaseTable = MAIN_DB_PREFIX.'navinvoice_purchase_link';
+        if ($this->tableExists($purchaseTable)) {
+            foreach (array('uk_navinvoice_purchase_mirror', 'uk_navinvoice_purchase_order') as $legacyIndex) {
+                if ($this->indexColumns($purchaseTable, $legacyIndex)) {
+                    if (!$this->db->query('ALTER TABLE '.$purchaseTable.' DROP INDEX '.$legacyIndex)) {
+                        $this->error = 'Could not remove legacy NAV purchase-link index '.$legacyIndex.': '.$this->db->lasterror();
+                        return -1;
+                    }
+                }
+            }
+        }
+
+        return 1;
+    }
+
+    private function tableExists(string $table): bool
+    {
+        $resql = $this->db->query("SHOW TABLES LIKE '".$this->db->escape($table)."'");
+        if (!$resql) {
+            return false;
+        }
+        $exists = (bool) $this->db->fetch_object($resql);
+        $this->db->free($resql);
+        return $exists;
+    }
+
+    /** @return string[] */
+    private function indexColumns(string $table, string $index): array
+    {
+        $sql = 'SHOW INDEX FROM '.$table." WHERE Key_name = '".$this->db->escape($index)."'";
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            return array();
+        }
+
+        $columns = array();
+        while ($obj = $this->db->fetch_object($resql)) {
+            $columns[(int) $obj->Seq_in_index] = (string) $obj->Column_name;
+        }
+        $this->db->free($resql);
+        ksort($columns);
+        return array_values($columns);
     }
 }
