@@ -132,7 +132,7 @@ class NavInvoiceApi
         if ($batchIndex > 0) {
             $body .= '<batchIndex>'.$batchIndex.'</batchIndex>';
         }
-        if ($supplierTaxNumber !== null && trim($supplierTaxNumber) !== '') {
+        if ($direction === 'INBOUND' && $supplierTaxNumber !== null && trim($supplierTaxNumber) !== '') {
             $normalizedSupplierTaxNumber = $this->normalizeTaxNumber($supplierTaxNumber);
             if (strlen($normalizedSupplierTaxNumber) !== 8) {
                 throw new Exception('NAV supplier tax number must contain the first 8 digits of the Hungarian tax number.');

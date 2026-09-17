@@ -20,11 +20,6 @@ if (!$user->hasRight('navinvoice', 'invoice', 'read')) {
 
 $sync = new NavInvoiceSync($db);
 $linkManager = new NavInvoiceLinkManager($db, (int) $conf->entity);
-try {
-    $sync->ensureSchema();
-} catch (Throwable $e) {
-    setEventMessages($langs->trans('SchemaMigrationFailed').': '.$e->getMessage(), null, 'errors');
-}
 
 $action = GETPOST('action', 'aZ09');
 $syncDirection = strtoupper((string) GETPOST('sync_direction', 'alpha'));

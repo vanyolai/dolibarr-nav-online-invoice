@@ -397,7 +397,7 @@ class NavInvoiceSync
                         $data['invoice_number'],
                         (int) $data['batch_index'],
                         $direction,
-                        $supplierTaxNumber !== '' ? $supplierTaxNumber : null
+                        $direction === 'INBOUND' && $supplierTaxNumber !== '' ? $supplierTaxNumber : null
                     );
                     $this->storeInvoiceData((int) $upsert['rowid'], $xml);
                     $stats['downloaded']++;
