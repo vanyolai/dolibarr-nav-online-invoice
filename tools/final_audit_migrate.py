@@ -1,83 +1,111 @@
 from pathlib import Path
 import re
 
-# Synchronization must not execute DDL. Keep the migration routine, but expose it
-# explicitly for module activation/upgrade only.
-p = Path('class/navinvoicesync.class.php')
+# This script is intentionally a one-shot branch migration. It is run by the
+# final-audit workflow and commits only the resulting source/test changes.
+
+# Runtime schema migration belongs to module activation only. The final audit
+# renamed ensureSchema() to migrateLegacySchema(), so remove the stale UI caller
+# rather than reintroducing runtime DDL.
+p = Path('index.php')
 text = p.read_text()
-text, n = re.subn(r'^\s*\$this->ensureSchema\(\);\s*\n', '', text, count=1, flags=re.M)
-if n != 1:
-    raise SystemExit('sync runtime ensureSchema call not found exactly once')
-old = """    /**
-     * Backward-compatible schema migration for installations upgraded in place.
-     * New installs use the SQL definitions under sql/.
-     */
-    public function ensureSchema(): void
+old = """$sync = new NavInvoiceSync($db);
+$linkManager = new NavInvoiceLinkManager($db, (int) $conf->entity);
+try {
+    $sync->ensureSchema();
+} catch (Throwable $e) {
+    setEventMessages($langs->trans('SchemaMigrationFailed').': '.$e->getMessage(), null, 'errors');
+}
+
 """
-new = """    /**
-     * Backward-compatible schema migration for installations upgraded in place.
-     * New installs use the SQL definitions under sql/. This method is invoked
-     * only from module activation/upgrade; normal synchronization never mutates
-     * database schema.
-     */
-    public function migrateLegacySchema(): void
+new = """$sync = new NavInvoiceSync($db);
+$linkManager = new NavInvoiceLinkManager($db, (int) $conf->entity);
+
 """
 if text.count(old) != 1:
-    raise SystemExit('sync schema method marker not found')
+    raise SystemExit('stale index ensureSchema block not found exactly once')
 text = text.replace(old, new, 1)
-if 'ensureSchema' in text:
-    raise SystemExit('sync still contains ensureSchema')
 p.write_text(text)
 
-# Module activation owns migration. Existing tables are migrated first, then
-# Dolibarr's SQL loader installs/updates the canonical definitions.
-p = Path('core/modules/modNavInvoice.class.php')
+# NAV queryInvoiceData permits supplierTaxNumber only for INBOUND queries. Keep
+# the rule in the API boundary as an invariant, so a future caller cannot emit
+# the invalid OUTBOUND + supplierTaxNumber request that caused HTTP 400.
+p = Path('class/navapi.class.php')
 text = p.read_text()
-start = text.find("    public function init($options = '')\n")
-remove = text.find("    public function remove($options = '')\n", start)
-if start < 0 or remove < 0:
-    raise SystemExit('module init/remove boundaries not found')
-init_block = """    public function init($options = '')
-    {
-        $invoiceTable = MAIN_DB_PREFIX.'navinvoice_invoice';
-        if ($this->tableExists($invoiceTable)) {
-            require_once dirname(__DIR__, 2).'/class/navinvoicesync.class.php';
-            try {
-                $migrator = new NavInvoiceSync($this->db);
-                $migrator->migrateLegacySchema();
-            } catch (Throwable $e) {
-                $this->error = 'NAV legacy schema migration failed: '.$e->getMessage();
-                return -1;
+old = """        if ($supplierTaxNumber !== null && trim($supplierTaxNumber) !== '') {
+            $normalizedSupplierTaxNumber = $this->normalizeTaxNumber($supplierTaxNumber);
+            if (strlen($normalizedSupplierTaxNumber) !== 8) {
+                throw new Exception('NAV supplier tax number must contain the first 8 digits of the Hungarian tax number.');
             }
+            $body .= '<supplierTaxNumber>'.$this->xml($normalizedSupplierTaxNumber).'</supplierTaxNumber>';
         }
-
-        $result = $this->_load_tables('/navinvoice/sql/');
-        if ($result < 0) {
-            return -1;
-        }
-
-        $this->remove($options);
-        $sql = array();
-        return $this->_init($sql, $options);
-    }
-
 """
-text = text[:start] + init_block + text[remove:]
-prep = text.find('    /**\n     * Prepare schema upgrades whose new indexes reuse an existing legacy name.')
-table = text.find('    private function tableExists(string $table): bool\n', prep)
-if prep < 0 or table < 0:
-    raise SystemExit('module duplicate migration block not found')
-text = text[:prep] + text[table:]
-# The splice moves tableExists() to the old migration-block start; search from
-# that new position rather than the pre-splice offset.
-idx = text.find('    /** @return string[] */\n    private function indexColumns', prep)
-if idx >= 0:
-    method_end = text.rfind('\n}')
-    if method_end <= idx:
-        raise SystemExit('module index helper end not found')
-    text = text[:idx] + text[method_end:]
-if 'prepareLegacySchemaUpgrade' in text or 'indexColumns(' in text:
-    raise SystemExit('module duplicate schema helpers remain')
+new = """        if ($direction === 'INBOUND' && $supplierTaxNumber !== null && trim($supplierTaxNumber) !== '') {
+            $normalizedSupplierTaxNumber = $this->normalizeTaxNumber($supplierTaxNumber);
+            if (strlen($normalizedSupplierTaxNumber) !== 8) {
+                throw new Exception('NAV supplier tax number must contain the first 8 digits of the Hungarian tax number.');
+            }
+            $body .= '<supplierTaxNumber>'.$this->xml($normalizedSupplierTaxNumber).'</supplierTaxNumber>';
+        }
+"""
+if text.count(old) != 1:
+    raise SystemExit('queryInvoiceData supplier filter block not found exactly once')
+text = text.replace(old, new, 1)
 p.write_text(text)
 
-Path('audit-refactor-debug.txt').unlink(missing_ok=True)
+# Also make the sync caller explicit. A failed XML request happens after digest
+# upsert, leaving data_fetched=0; that state is deliberately retried on the next
+# sync by the existing (!$upsert['data_fetched']) condition.
+p = Path('class/navinvoicesync.class.php')
+text = p.read_text()
+old = """                    $supplierTaxNumber = trim((string) ($data['supplier_tax_number'] ?? ''));
+                    $xml = $api->queryInvoiceData(
+                        $data['invoice_number'],
+                        (int) $data['batch_index'],
+                        $direction,
+                        $supplierTaxNumber !== '' ? $supplierTaxNumber : null
+                    );
+"""
+new = """                    $supplierTaxNumber = trim((string) ($data['supplier_tax_number'] ?? ''));
+                    $xml = $api->queryInvoiceData(
+                        $data['invoice_number'],
+                        (int) $data['batch_index'],
+                        $direction,
+                        $direction === 'INBOUND' && $supplierTaxNumber !== '' ? $supplierTaxNumber : null
+                    );
+"""
+if text.count(old) != 1:
+    raise SystemExit('sync queryInvoiceData call not found exactly once')
+text = text.replace(old, new, 1)
+p.write_text(text)
+
+# Source-level guard for the cross-layer invariants. This complements the
+# parser/purchase behavioral regressions without requiring live NAV credentials.
+Path('tests/sync_regression.php').write_text(r'''<?php
+
+$root = dirname(__DIR__);
+$index = file_get_contents($root.'/index.php');
+$sync = file_get_contents($root.'/class/navinvoicesync.class.php');
+$api = file_get_contents($root.'/class/navapi.class.php');
+
+$failures = array();
+$assert = static function (bool $condition, string $message) use (&$failures): void {
+    if (!$condition) {
+        $failures[] = $message;
+    }
+};
+
+$assert(strpos($index, 'ensureSchema(') === false, 'index.php must not run schema migration at request time');
+$assert(strpos($sync, 'public function ensureSchema') === false, 'NavInvoiceSync must not expose the removed runtime schema migrator');
+$assert(strpos($sync, "public function migrateLegacySchema(): void") !== false, 'activation-only legacy migration must remain available');
+$assert(strpos($sync, "!$upsert['data_fetched']") !== false, 'rows whose XML download failed must be retried on a later sync');
+$assert(strpos($sync, "$direction === 'INBOUND' && $supplierTaxNumber !== '' ? $supplierTaxNumber : null") !== false, 'sync must pass supplierTaxNumber only for INBOUND XML queries');
+$assert(strpos($api, "$direction === 'INBOUND' && $supplierTaxNumber !== null") !== false, 'API boundary must reject supplierTaxNumber emission for OUTBOUND queries');
+
+if ($failures) {
+    fwrite(STDERR, "NAV sync regression failures:\n - ".implode("\n - ", $failures)."\n");
+    exit(1);
+}
+
+echo "NAV sync regression tests passed.\n";
+''')
