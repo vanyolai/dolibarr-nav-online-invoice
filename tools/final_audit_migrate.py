@@ -1,12 +1,8 @@
 from pathlib import Path
-import re
 
 # This script is intentionally a one-shot branch migration. It is run by the
 # final-audit workflow and commits only the resulting source/test changes.
 
-# Runtime schema migration belongs to module activation only. The final audit
-# renamed ensureSchema() to migrateLegacySchema(), so remove the stale UI caller
-# rather than reintroducing runtime DDL.
 p = Path('index.php')
 text = p.read_text()
 old = """$sync = new NavInvoiceSync($db);
@@ -27,9 +23,6 @@ if text.count(old) != 1:
 text = text.replace(old, new, 1)
 p.write_text(text)
 
-# NAV queryInvoiceData permits supplierTaxNumber only for INBOUND queries. Keep
-# the rule in the API boundary as an invariant, so a future caller cannot emit
-# the invalid OUTBOUND + supplierTaxNumber request that caused HTTP 400.
 p = Path('class/navapi.class.php')
 text = p.read_text()
 old = """        if ($supplierTaxNumber !== null && trim($supplierTaxNumber) !== '') {
@@ -53,9 +46,6 @@ if text.count(old) != 1:
 text = text.replace(old, new, 1)
 p.write_text(text)
 
-# Also make the sync caller explicit. A failed XML request happens after digest
-# upsert, leaving data_fetched=0; that state is deliberately retried on the next
-# sync by the existing (!$upsert['data_fetched']) condition.
 p = Path('class/navinvoicesync.class.php')
 text = p.read_text()
 old = """                    $supplierTaxNumber = trim((string) ($data['supplier_tax_number'] ?? ''));
@@ -79,8 +69,6 @@ if text.count(old) != 1:
 text = text.replace(old, new, 1)
 p.write_text(text)
 
-# Source-level guard for the cross-layer invariants. This complements the
-# parser/purchase behavioral regressions without requiring live NAV credentials.
 Path('tests/sync_regression.php').write_text(r'''<?php
 
 $root = dirname(__DIR__);
@@ -97,10 +85,10 @@ $assert = static function (bool $condition, string $message) use (&$failures): v
 
 $assert(strpos($index, 'ensureSchema(') === false, 'index.php must not run schema migration at request time');
 $assert(strpos($sync, 'public function ensureSchema') === false, 'NavInvoiceSync must not expose the removed runtime schema migrator');
-$assert(strpos($sync, "public function migrateLegacySchema(): void") !== false, 'activation-only legacy migration must remain available');
-$assert(strpos($sync, "!$upsert['data_fetched']") !== false, 'rows whose XML download failed must be retried on a later sync');
-$assert(strpos($sync, "$direction === 'INBOUND' && $supplierTaxNumber !== '' ? $supplierTaxNumber : null") !== false, 'sync must pass supplierTaxNumber only for INBOUND XML queries');
-$assert(strpos($api, "$direction === 'INBOUND' && $supplierTaxNumber !== null") !== false, 'API boundary must reject supplierTaxNumber emission for OUTBOUND queries');
+$assert(strpos($sync, 'public function migrateLegacySchema(): void') !== false, 'activation-only legacy migration must remain available');
+$assert(strpos($sync, '!$upsert[\'data_fetched\']') !== false, 'rows whose XML download failed must be retried on a later sync');
+$assert(strpos($sync, '$direction === \'INBOUND\' && $supplierTaxNumber !== \'\' ? $supplierTaxNumber : null') !== false, 'sync must pass supplierTaxNumber only for INBOUND XML queries');
+$assert(strpos($api, '$direction === \'INBOUND\' && $supplierTaxNumber !== null') !== false, 'API boundary must suppress supplierTaxNumber for OUTBOUND queries');
 
 if ($failures) {
     fwrite(STDERR, "NAV sync regression failures:\n - ".implode("\n - ", $failures)."\n");
