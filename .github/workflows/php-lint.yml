@@ -27,3 +27,5 @@ jobs:
         run: php tests/parser_regression.php
       - name: Purchase policy regression tests
         run: php tests/purchase_policy_regression.php
+      - name: Synchronization regression tests
+        run: php tests/sync_regression.php
