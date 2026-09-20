@@ -34,13 +34,22 @@ class NavProductMatcher
 
         if ($direction === 'INBOUND') {
             $reference = trim((string) ($line['supplier_ref'] ?? ''));
-            if ($reference === '') {
-                return $this->emptyResult('no_reference', 'supplier_ref', '');
-            }
             if ($partnerId <= 0) {
                 return $this->emptyResult('partner_required', 'supplier_ref', $reference);
             }
-            return $this->matchSupplierReference($partnerId, $reference, $expectedType);
+            if ($reference !== '') {
+                return $this->matchSupplierReference($partnerId, $reference, $expectedType);
+            }
+
+            // Some suppliers do not transmit productCodes/itemNumbers but put
+            // their supplier reference as the first token of lineDescription.
+            // This fallback remains deterministic: only an exact, boundary-safe
+            // description prefix and exactly one supplier product may auto-link.
+            $description = trim((string) ($line['description'] ?? ''));
+            if ($description === '') {
+                return $this->emptyResult('no_reference', 'supplier_ref', '');
+            }
+            return $this->matchSupplierDescriptionPrefix($partnerId, $description, $expectedType);
         }
 
         if ($direction === 'OUTBOUND') {
@@ -69,6 +78,83 @@ class NavProductMatcher
         $sql .= ' ORDER BY p.rowid';
 
         return $this->finishQuery($sql, 'supplier_ref', $reference, $expectedType, true);
+    }
+
+    /** @return array<string,mixed> */
+    private function matchSupplierDescriptionPrefix(int $supplierId, string $description, int $expectedType): array
+    {
+        $sql = 'SELECT p.rowid, p.ref, p.label, p.fk_product_type, p.tobuy, p.tosell,';
+        $sql .= ' MIN(pfp.rowid) as supplier_price_id, TRIM(pfp.ref_fourn) as supplier_ref';
+        $sql .= ' FROM '.MAIN_DB_PREFIX.'product_fournisseur_price as pfp';
+        $sql .= ' INNER JOIN '.MAIN_DB_PREFIX.'product as p ON p.rowid = pfp.fk_product';
+        $sql .= ' WHERE pfp.entity IN ('.getEntity('productsupplierprice').')';
+        $sql .= ' AND p.entity IN ('.getEntity('product').')';
+        $sql .= ' AND pfp.fk_soc = '.$supplierId;
+        $sql .= " AND TRIM(pfp.ref_fourn) <> ''";
+        $sql .= ' GROUP BY p.rowid, p.ref, p.label, p.fk_product_type, p.tobuy, p.tosell, TRIM(pfp.ref_fourn)';
+        $sql .= ' ORDER BY CHAR_LENGTH(TRIM(pfp.ref_fourn)) DESC, p.rowid';
+
+        $resql = $this->db->query($sql);
+        if (!$resql) {
+            throw new Exception('Dolibarr supplier-prefix matching failed: '.$this->db->lasterror());
+        }
+
+        $matches = array();
+        while ($obj = $this->db->fetch_object($resql)) {
+            $reference = trim((string) $obj->supplier_ref);
+            if (!$this->descriptionStartsWithReference($description, $reference)) {
+                continue;
+            }
+            $productId = (int) $obj->rowid;
+            $matches[$productId] = array(
+                'id' => $productId,
+                'ref' => (string) $obj->ref,
+                'label' => (string) $obj->label,
+                'product_type' => (int) $obj->fk_product_type,
+                'tobuy' => (int) $obj->tobuy,
+                'tosell' => (int) $obj->tosell,
+                'supplier_price_id' => (int) $obj->supplier_price_id,
+                'supplier_ref' => $reference,
+            );
+        }
+        $this->db->free($resql);
+
+        $candidates = array_values($matches);
+        if (!$candidates) {
+            return $this->emptyResult('no_reference', 'supplier_ref_prefix', '');
+        }
+        if (count($candidates) > 1) {
+            return array(
+                'status' => 'ambiguous',
+                'match_type' => 'supplier_ref_prefix',
+                'reference' => '',
+                'auto_link' => false,
+                'product' => null,
+                'candidates' => array_slice($candidates, 0, 10),
+            );
+        }
+
+        $product = $candidates[0];
+        $reference = (string) $product['supplier_ref'];
+        if ((int) $product['product_type'] !== $expectedType) {
+            return array('status' => 'type_mismatch', 'match_type' => 'supplier_ref_prefix', 'reference' => $reference, 'auto_link' => false, 'product' => $product, 'candidates' => array($product));
+        }
+        if (empty($product['tobuy'])) {
+            return array('status' => 'inactive', 'match_type' => 'supplier_ref_prefix', 'reference' => $reference, 'auto_link' => false, 'product' => $product, 'candidates' => array($product));
+        }
+        return array('status' => 'matched', 'match_type' => 'supplier_ref_prefix', 'reference' => $reference, 'auto_link' => true, 'product' => $product, 'candidates' => array($product));
+    }
+
+    private function descriptionStartsWithReference(string $description, string $reference): bool
+    {
+        if ($reference === '' || strncasecmp($description, $reference, strlen($reference)) !== 0) {
+            return false;
+        }
+        if (strlen($description) === strlen($reference)) {
+            return true;
+        }
+        $next = substr($description, strlen($reference), 1);
+        return $next !== '' && preg_match('/[\\s,;:()\\[\\]{}\\-–—]/u', $next) === 1;
     }
 
     /** @return array<string,mixed> */
