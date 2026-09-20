@@ -29,3 +29,5 @@ jobs:
         run: php tests/purchase_policy_regression.php
       - name: Synchronization regression tests
         run: php tests/sync_regression.php
+      - name: HUF import regression tests
+        run: php tests/huf_import_regression.php
