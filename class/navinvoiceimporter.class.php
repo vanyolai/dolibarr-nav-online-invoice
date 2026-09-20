@@ -497,6 +497,15 @@ class NavInvoiceImporter
         if (strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED') {
             return $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
         }
+        $currency = strtoupper(trim((string) ($preview['header']['currency'] ?? $this->baseCurrency)));
+        if ($currency === 'HUF') {
+            // NAV may expose fractional-forint VAT while the legally payable HUF
+            // gross and Dolibarr's accounting totals are whole forints. Keep net
+            // and gross authoritative and only tolerate a sub-forint VAT delta.
+            return $this->amountsEqual((float) $invoice->total_ht, (float) $expected['net'])
+                && abs((float) $invoice->total_tva - (float) $expected['vat']) < 1.0
+                && $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
+        }
         return $this->amountsEqual((float) $invoice->total_ht, (float) $expected['net'])
             && $this->amountsEqual((float) $invoice->total_tva, (float) $expected['vat'])
             && $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
