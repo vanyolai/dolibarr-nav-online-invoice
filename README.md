@@ -92,20 +92,26 @@ For automatic synchronization, Dolibarr Scheduled Jobs must also be operational.
 
 ## NAV configuration
 
-Open the module setup page and configure:
+The module uses two independent NAV connection profiles:
 
-- environment (`test` or `production`)
-- technical-user login
-- technical-user password
-- taxpayer number (first 8 digits)
-- technical-user signing key
-- scheduled sync switch
-- synchronization lookback window
-- whether complete invoice XML should be downloaded
+- **Production** – used explicitly by live invoice synchronization, taxpayer lookups and relation-chain queries.
+- **Test / sandbox** – reserved for development outbound submissions against the NAV test API.
 
-Use **Save and test NAV connection** before running invoice synchronization.
+Each profile has its own:
 
-The password and signing key use Dolibarr constant names ending in `_PASSWORD` and `_KEY`; Dolibarr 23 therefore treats them as sensitive constants and encrypts their stored values. The module decrypts them only when preparing authenticated NAV API requests.
+- technical-user login;
+- technical-user password;
+- taxpayer number (first 8 digits);
+- XML signing key;
+- XML exchange key.
+
+The production exchange key is optional while the installation is read-only, but it will be required before production outbound reporting is enabled. The sandbox profile requires an exchange key because its purpose is to exercise the complete outbound `tokenExchange → manageInvoice → queryTransactionStatus` flow.
+
+The setup page provides a separate **Save and test connection** action for each profile. Live scheduled synchronization is deliberately pinned to the production profile in code; changing or testing sandbox credentials cannot redirect production acquisition to the test environment.
+
+Older single-profile constants (`NAVINVOICE_ENVIRONMENT`, `NAVINVOICE_LOGIN`, `NAVINVOICE_PASSWORD`, `NAVINVOICE_TAX_NUMBER`, `NAVINVOICE_SIGNING_KEY`) remain a migration fallback only for the environment they originally belonged to. New settings are stored as `NAVINVOICE_PRODUCTION_*` and `NAVINVOICE_TEST_*`.
+
+Passwords and keys use Dolibarr constant names ending in `_PASSWORD` and `_KEY`; Dolibarr 23 therefore treats them as sensitive constants and encrypts their stored values. The module decrypts them only when preparing authenticated NAV API requests.
 
 ## Synchronization and import model
 
