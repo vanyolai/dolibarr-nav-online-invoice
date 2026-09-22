@@ -31,3 +31,5 @@ jobs:
         run: php tests/sync_regression.php
       - name: HUF import regression tests
         run: php tests/huf_import_regression.php
+      - name: Outbound compliance preflight regression tests
+        run: php tests/outbound_preflight_regression.php
