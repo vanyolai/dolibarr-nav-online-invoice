@@ -174,3 +174,5 @@ For inbound invoices the external partner is the supplier; for outbound invoices
 ## Branch policy
 
 `main` is the integration branch consumed by the Dolibarr subtree. Larger development blocks should be implemented on focused feature branches, reviewed/tested there, and merged into `main` before the Dolibarr repository pulls the subtree update.
+
+Historical branches such as `feature/nav-sync-foundation`, `feature/taxpayer-partner-workflow` and `refactor/final-audit` are retained only as development/audit reference points. New development must branch from current `main`, and Dolibarr subtree integration must pull from `main` unless a temporary test of an explicit feature branch is intentionally requested.
