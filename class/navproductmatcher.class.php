@@ -147,13 +147,17 @@ class NavProductMatcher
 
     private function descriptionStartsWithReference(string $description, string $reference): bool
     {
-        if ($reference === '' || strncasecmp($description, $reference, strlen($reference)) !== 0) {
+        if ($reference === '') {
             return false;
         }
-        if (strlen($description) === strlen($reference)) {
+        $referenceLength = dol_strlen($reference);
+        if (dol_strtolower(dol_substr($description, 0, $referenceLength)) !== dol_strtolower($reference)) {
+            return false;
+        }
+        if (dol_strlen($description) === $referenceLength) {
             return true;
         }
-        $next = substr($description, strlen($reference), 1);
+        $next = dol_substr($description, $referenceLength, 1);
         return $next !== '' && preg_match('/[\\s,;:()\\[\\]{}\\-–—]/u', $next) === 1;
     }
 
