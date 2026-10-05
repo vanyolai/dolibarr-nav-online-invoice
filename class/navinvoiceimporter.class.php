@@ -106,15 +106,18 @@ class NavInvoiceImporter
             $invoice = $result['object'];
 
             $reconciliation = $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
-            if ($reconciliation === 'none' && $inbound && in_array($category, array('NORMAL', 'AGGREGATE'), true)) {
-                $linesMatched = $this->prepareSupplierLinesForNavSummary($invoice, $preview);
+            if ($inbound && in_array($category, array('NORMAL', 'AGGREGATE'), true)) {
+                $linesMatched = $this->supplierLinesMatchNav($invoice, $preview);
                 if (!$linesMatched) {
                     $linesMatched = $this->rewriteSupplierLinesFromNav($invoice, $preview);
                     if ($linesMatched) {
                         $reconciliation = 'nav_lines';
                     }
                 }
-                if ($linesMatched) {
+                if (!$linesMatched) {
+                    throw new Exception('Created Dolibarr supplier invoice lines differ from authoritative NAV line totals.');
+                }
+                if ($reconciliation === 'none' || $reconciliation === 'nav_lines') {
                     $this->preserveSupplierNavSummary($invoice, $preview, $user);
                     if ($reconciliation === 'none') {
                         $reconciliation = 'nav_stored_lines';
