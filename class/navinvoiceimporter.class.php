@@ -399,7 +399,7 @@ class NavInvoiceImporter
         if (count($lineIds) !== count($mappedLines)) {
             return false;
         }
-        $currency = strtoupper(trim((string) ($preview['header']['currency'] ?? $this->baseCurrency)));
+        $currency = (string) ($preview['header']['currency'] ?? $this->baseCurrency);
         foreach ($lineIds as $index => $lineId) {
             $mapped = $mappedLines[$index];
             if (($mapped['net'] ?? null) === null || ($mapped['vat'] ?? null) === null || ($mapped['gross'] ?? null) === null) {
