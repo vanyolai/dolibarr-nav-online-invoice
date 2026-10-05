@@ -50,17 +50,20 @@ class NavAmountPolicy
 
         $net = 0.0;
         $vat = 0.0;
+        $gross = 0.0;
         foreach ($lines as $line) {
             if (($line['net'] ?? null) === null || ($line['net'] ?? '') === ''
-                || ($line['vat'] ?? null) === null || ($line['vat'] ?? '') === '') {
+                || ($line['vat'] ?? null) === null || ($line['vat'] ?? '') === ''
+                || ($line['gross'] ?? null) === null || ($line['gross'] ?? '') === '') {
                 return false;
             }
             $net += (float) $line['net'];
             $vat += (float) $line['vat'];
+            $gross += (float) $line['gross'];
         }
 
         return self::invoiceTotalsMatch(
-            array('net' => $net, 'vat' => $vat, 'gross' => $net + $vat),
+            array('net' => $net, 'vat' => $vat, 'gross' => $gross),
             $totals,
             $currency,
             $category
