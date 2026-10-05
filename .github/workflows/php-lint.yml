@@ -31,3 +31,5 @@ jobs:
         run: php tests/sync_regression.php
       - name: HUF import regression tests
         run: php tests/huf_import_regression.php
+      - name: Importer reconciliation regression tests
+        run: php tests/importer_reconciliation_regression.php
