@@ -105,10 +105,15 @@ class NavInvoiceImporter
             $invoice = $result['object'];
 
             $reconciliation = $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
-            if ($reconciliation === 'none' && $inbound && in_array($category, array('NORMAL', 'AGGREGATE'), true)
-                && $this->prepareSupplierLinesForNavSummary($invoice, $preview)) {
-                $this->preserveSupplierNavSummary($invoice, $preview, $user);
-                $reconciliation = 'nav_summary';
+            if ($reconciliation === 'none' && $inbound && in_array($category, array('NORMAL', 'AGGREGATE'), true)) {
+                if (!$this->prepareSupplierLinesForNavSummary($invoice, $preview)
+                    && $this->rewriteSupplierLinesFromNav($invoice, $preview)) {
+                    $reconciliation = 'nav_lines';
+                }
+                if ($this->supplierLinesMatchNav($invoice, $preview)) {
+                    $this->preserveSupplierNavSummary($invoice, $preview, $user);
+                    $reconciliation = $reconciliation === 'nav_lines' ? 'nav_lines_summary' : 'nav_summary';
+                }
             }
 
             // If native Dolibarr semantics plus supported rounding still cannot
@@ -404,6 +409,64 @@ class NavInvoiceImporter
             }
         }
         return true;
+    }
+
+    /**
+     * Rebuild supplier lines from NAV authoritative line net amounts when
+     * Dolibarr's native supplier-invoice calculation rounds them differently.
+     *
+     * We do not merely widen the invoice-total tolerance: qty, VAT rate and
+     * discount semantics stay intact, while subprice is solved so Dolibarr's
+     * stored line total reproduces the NAV line net amount.
+     */
+    private function rewriteSupplierLinesFromNav(FactureFournisseur $invoice, array $preview): bool
+    {
+        $mappedLines = is_array($preview['lines'] ?? null) ? $preview['lines'] : array();
+        $lineIds = $this->supplierLineIds($invoice);
+        if (!$mappedLines || count($lineIds) !== count($mappedLines)) {
+            return false;
+        }
+
+        foreach ($lineIds as $index => $lineId) {
+            $mapped = $mappedLines[$index];
+            if (($mapped['net'] ?? null) === null || ($mapped['net'] ?? '') === '' || !is_numeric($mapped['net'])) {
+                return false;
+            }
+            $qty = (float) ($mapped['quantity'] ?? 0);
+            $discount = $this->discountPercent((float) ($mapped['discount_percent'] ?? 0));
+            $discountFactor = 1.0 - ($discount / 100.0);
+            if (abs($qty) <= 0.000000001 || $discountFactor <= 0.000000001) {
+                if (abs((float) $mapped['net']) <= 0.00001) {
+                    continue;
+                }
+                return false;
+            }
+
+            $subprice = (float) $mapped['net'] / ($qty * $discountFactor);
+            $sql = 'UPDATE '.MAIN_DB_PREFIX.'facture_fourn_det';
+            $sql .= ' SET subprice = '.price2num($subprice, 'MU');
+            $sql .= ', remise_percent = '.price2num($discount, 'MU');
+            $sql .= ' WHERE rowid = '.$lineId;
+            $sql .= ' AND fk_facture_fourn = '.((int) $invoice->id);
+            if (!$this->db->query($sql)) {
+                throw new Exception('Could not reconcile supplier line '.$lineId.' from NAV authoritative amount: '.$this->db->lasterror());
+            }
+        }
+
+        $result = $invoice->fetch_thirdparty();
+        if ($result < 0 || !is_object($invoice->thirdparty)) {
+            throw new Exception('Could not load supplier after NAV line reconciliation.');
+        }
+        // Mode 1 calculates each stored line from the high-precision subprice;
+        // this is the closest representation of NAV line-level accounting.
+        $result = $invoice->update_price(1, '0', 0, $invoice->thirdparty);
+        if ($result <= 0) {
+            throw new Exception('Dolibarr supplier NAV-line reconciliation failed: '.$this->objectError($invoice));
+        }
+        if ($invoice->fetch((int) $invoice->id) <= 0) {
+            throw new Exception('Dolibarr supplier invoice could not be reloaded after NAV-line reconciliation.');
+        }
+        return $this->supplierLinesMatchNav($invoice, $preview);
     }
 
     private function prepareSupplierLinesForNavSummary(FactureFournisseur $invoice, array $preview): bool
