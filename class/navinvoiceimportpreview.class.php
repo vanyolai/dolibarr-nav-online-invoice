@@ -1,6 +1,7 @@
 <?php
 
 dol_include_once('/navinvoice/class/navunitresolver.class.php');
+dol_include_once('/navinvoice/class/navamountpolicy.class.php');
 dol_include_once('/navinvoice/class/navinvoicelinkmanager.class.php');
 
 /**
@@ -437,41 +438,7 @@ class NavInvoiceImportPreview
     /** @param array<int,array<string,mixed>> $lines @param array<string,mixed> $totals */
     private function lineTotalsMatchHeader(array $lines, array $totals, string $currency, string $category): bool
     {
-        $zeroDecimalCurrency = in_array($currency, array('HUF', 'JPY'), true);
-        $decimals = $zeroDecimalCurrency ? 0 : 2;
-
-        if ($category === 'SIMPLIFIED') {
-            $gross = 0.0;
-            foreach ($lines as $line) {
-                if ($line['gross'] === null || $line['gross'] === '') {
-                    return false;
-                }
-                $gross += (float) $line['gross'];
-            }
-            return $zeroDecimalCurrency
-                ? abs($gross - (float) $totals['gross']) < 1.0
-                : round($gross, $decimals) == round((float) $totals['gross'], $decimals);
-        }
-
-        $net = 0.0;
-        $vat = 0.0;
-        foreach ($lines as $line) {
-            if ($line['net'] === null || $line['net'] === '' || $line['vat'] === null || $line['vat'] === '') {
-                return false;
-            }
-            $net += (float) $line['net'];
-            $vat += (float) $line['vat'];
-        }
-        $gross = $net + $vat;
-
-        if ($zeroDecimalCurrency) {
-            return abs($net - (float) $totals['net']) < 1.0
-                && abs($vat - (float) $totals['vat']) < 1.0
-                && abs($gross - (float) $totals['gross']) < 1.0;
-        }
-        return round($net, $decimals) == round((float) $totals['net'], $decimals)
-            && round($vat, $decimals) == round((float) $totals['vat'], $decimals)
-            && round($gross, $decimals) == round((float) $totals['gross'], $decimals);
+        return NavAmountPolicy::lineTotalsMatchHeader($lines, $totals, $currency, $category);
     }
 
     private function decimal(float $value): string
