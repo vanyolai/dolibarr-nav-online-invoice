@@ -186,8 +186,8 @@ $preview = array(
     'category' => 'NORMAL',
     'totals' => array('net' => 2512.0, 'vat' => 679.0, 'gross' => 3191.0),
     'lines' => array(
-        array('quantity' => 1.0, 'discount_percent' => 0.0, 'net' => 1255.6, 'vat' => 339.1, 'gross' => 1594.7),
-        array('quantity' => 1.0, 'discount_percent' => 0.0, 'net' => 1256.3, 'vat' => 339.4, 'gross' => 1595.7),
+        array('quantity' => 1.0, 'discount_percent' => 0.0, 'net' => 1255.6, 'vat' => 339.01, 'gross' => 1594.61),
+        array('quantity' => 1.0, 'discount_percent' => 0.0, 'net' => 1256.4, 'vat' => 339.49, 'gross' => 1595.89),
     ),
 );
 
