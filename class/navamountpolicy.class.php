@@ -69,6 +69,12 @@ class NavAmountPolicy
 
     public static function amountMatches(float $actual, float $expected, string $currency): bool
     {
+        // In a real Dolibarr runtime, honor the configured document-total
+        // precision. The fallback keeps this helper independently testable.
+        if (function_exists('price2num') && function_exists('getDolGlobalInt')) {
+            return (float) price2num($actual, 'MT', 1) == (float) price2num($expected, 'MT', 1);
+        }
+
         $decimals = self::currencyDecimals($currency);
         return round($actual, $decimals) == round($expected, $decimals);
     }
