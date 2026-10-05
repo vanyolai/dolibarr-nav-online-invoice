@@ -461,9 +461,7 @@ class NavInvoiceImporter
             $discount = $this->discountPercent((float) $line->remise_percent);
             $discountFactor = 1.0 - ($discount / 100.0);
             if (abs($qty) <= 0.000000001 || $discountFactor <= 0.000000001) {
-                if (NavAmountPolicy::amountMatches($sourceNet, 0.0, $currency)
-                    && NavAmountPolicy::amountMatches($sourceVat, 0.0, $currency)
-                    && NavAmountPolicy::amountMatches($sourceGross, 0.0, $currency)) {
+                if (abs($sourceNet) <= 0.00001 && abs($sourceVat) <= 0.00001 && abs($sourceGross) <= 0.00001) {
                     continue;
                 }
                 return false;
@@ -492,7 +490,6 @@ class NavInvoiceImporter
             }
         }
 
-        $this->preserveSupplierNavSummary($invoice, $preview, new User($this->db));
         return $this->supplierLinesMatchNav($invoice, $preview);
     }
 
