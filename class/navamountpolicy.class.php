@@ -16,7 +16,7 @@ class NavAmountPolicy
      */
     public static function invoiceTotalsMatch(array $actual, array $expected, string $currency, string $category): bool
     {
-        $category = strtoupper(trim($category));
+        $category = self::normalizeCode($category);
         if ($category === 'SIMPLIFIED') {
             return self::amountMatches(
                 (float) ($actual['gross'] ?? 0),
@@ -36,7 +36,7 @@ class NavAmountPolicy
      */
     public static function lineTotalsMatchHeader(array $lines, array $totals, string $currency, string $category): bool
     {
-        $category = strtoupper(trim($category));
+        $category = self::normalizeCode($category);
         if ($category === 'SIMPLIFIED') {
             $gross = 0.0;
             foreach ($lines as $line) {
@@ -75,6 +75,12 @@ class NavAmountPolicy
 
     private static function currencyDecimals(string $currency): int
     {
-        return in_array(strtoupper(trim($currency)), array('HUF', 'JPY'), true) ? 0 : 2;
+        return in_array(self::normalizeCode($currency), array('HUF', 'JPY'), true) ? 0 : 2;
+    }
+
+    private static function normalizeCode(string $value): string
+    {
+        $value = trim($value);
+        return function_exists('dol_strtoupper') ? dol_strtoupper($value) : strtoupper($value);
     }
 }
