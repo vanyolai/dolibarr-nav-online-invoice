@@ -86,7 +86,7 @@ A named Git remote can be used instead of the repository URL, for example `navin
 
 Then enable **NAV Online Invoice** in Dolibarr's module setup.
 
-For an existing installation, no manual SQL migration is required. On first module-page access or synchronization the module ensures the current mirror schema is present.
+For an existing installation, the legacy mirror schema migration is performed during module initialization/activation (`modNavInvoice::init`), not on module-page access or synchronization. Back up the database and reinitialize the module through Dolibarr module administration after updating its code; no manual SQL migration is required if initialization succeeds.
 
 For automatic synchronization, Dolibarr Scheduled Jobs must also be operational.
 
@@ -174,6 +174,8 @@ The next development blocks are:
 3. support for additional foreign-currency and special VAT cases;
 4. explicit validation workflow for imported outbound drafts while preserving the original NAV invoice number;
 5. bank-transaction reconciliation in a separate integration layer.
+
+A dedicated [0.9.0 integration acceptance checklist](docs/integration-acceptance-0.9.0.md) covers environment isolation, representative HUF imports, invoice chains and the optional supplier-validation workflow before subtree deployment.
 
 Before a stable release, the MODIFY/STORNO mapping still needs validation against real NAV invoice chains and a Dolibarr 23 test installation, especially multi-step modifications, mixed-sign adjustments and supplier credit notes.
 
