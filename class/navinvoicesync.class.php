@@ -76,7 +76,7 @@ class NavInvoiceSync
         $totalChunks = $chunksPerDirection * count($directions);
         $chunkIndex = 0;
 
-        $api = new NavInvoiceApi();
+        $api = NavInvoiceApi::production();
         $stats = array(
             'seen' => 0,
             'inserted' => 0,
