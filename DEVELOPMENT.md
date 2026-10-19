@@ -11,7 +11,7 @@ consumer prefix:  htdocs/custom/navinvoice
 subtree mode:     squashed
 ```
 
-Current integrated version: **0.9.0**.
+Current integrated Dolibarr snapshot version: **0.9.0**.
 
 ## Safety boundary
 
@@ -37,42 +37,47 @@ Implemented on `main`:
 - batch preflight/import;
 - authoritative modification/storno chain lookup;
 - guarded CREATE/MODIFY/STORNO mapping;
+- outbound NAV compliance preflight foundation;
+- Facture -> NAV InvoiceData mapping baseline;
+- separate production and sandbox NAV connection profiles;
+- live NAV reads pinned explicitly to the production profile;
+- shared NAV amount/currency policy;
+- supplier-import reconciliation through Dolibarr line APIs;
+- authoritative NAV line/header consistency validation;
+- HUF fractional and cumulative rounding hardening;
+- outbound-preflight and importer-reconciliation regression coverage;
 - HU/EN strings.
 
 Unsupported/blocked cases remain blocked rather than guessed, including non-deterministic chain/accounting semantics.
 
-### Consolidation candidate — 2026-10-19
+## Branch consolidation — completed 2026-10-19
 
-Two valuable development lines were found outside `main`:
+Two valuable development lines had evolved outside `main`:
 
 1. `feature/outbound-foundation`
-   - outbound NAV compliance preflight foundation;
-   - Facture -> NAV InvoiceData mapping documentation;
-   - separate production and sandbox NAV connection profiles;
-   - live reads explicitly pinned to the production profile;
+   - outbound NAV compliance preflight;
+   - InvoiceData mapping documentation;
+   - separate production/sandbox NAV connection profiles;
    - outbound regression coverage.
 
 2. `refactor/final-audit`
-   - shared NAV amount/currency policy;
-   - supplier-import reconciliation through Dolibarr line APIs;
-   - authoritative NAV line/header consistency validation;
-   - HUF fractional/cumulative rounding fixes;
-   - importer reconciliation regression coverage;
-   - use of Dolibarr string helpers in matching/import code.
+   - shared amount/currency policy;
+   - supplier-import reconciliation;
+   - NAV line/header consistency validation;
+   - HUF rounding fixes;
+   - importer reconciliation regression coverage.
 
-They became separate because `refactor/final-audit` was started later from an older local base (`d31535d1bedf`) instead of the then-current `main` / outbound line. This was branch-base drift, not an architectural requirement.
+The second branch was started later from an older local base (`d31535d1bedf`) instead of the then-current `main` / outbound line. The split was therefore **branch-base drift**, not an architectural requirement.
 
-They are functionally complementary. Their production code paths do not overlap; the only direct file conflict was the GitHub Actions workflow, where each branch added a different regression suite.
+The two lines were complementary. Their production code paths did not overlap; the only direct file conflict was `.github/workflows/php-lint.yml`, where each branch added a different regression suite.
 
-The consolidation branch:
+They were consolidated through PR #4 using `integration/nav-consolidation-20261019`, preserving both histories in the merge ancestry. The combined workflow runs both:
+- `tests/outbound_preflight_regression.php`;
+- `tests/importer_reconciliation_regression.php`.
 
-```text
-integration/nav-consolidation-20261019
-```
+Both PHP 8.1 and PHP 8.3 CI matrices passed on the consolidated tree before merge.
 
-contains a three-parent merge of current `main`, `feature/outbound-foundation` and `refactor/final-audit`. The CI workflow deliberately runs **both** new regression suites.
-
-Do not delete the two source branches until the consolidation PR passes CI, is reviewed/accepted and merged to `main`. After that merge both source branches become historical ancestors and should be deleted.
+The source branches `feature/outbound-foundation`, `refactor/final-audit` and the temporary integration branch are now historical ancestors of `main` and may be deleted.
 
 ## Architectural rules
 
@@ -88,12 +93,12 @@ Do not delete the two source branches until the consolidation PR passes CI, is r
 
 ## Roadmap
 
-### Immediate gate — consolidate existing mature work
-- run PHP 8.1/8.3 lint on the combined tree;
-- run parser, purchase-policy, sync, HUF-import, outbound-preflight and importer-reconciliation regressions together;
-- review the combined NAV profile configuration and importer amount policy;
-- merge the consolidation PR only if those checks remain green;
-- then delete the two superseded development branches.
+### Immediate validation after consolidation
+- validate the merged NAV profile configuration against the real test/sandbox environment;
+- validate importer amount/rounding behavior against representative real invoices;
+- validate MODIFY/STORNO against real multi-step NAV chains;
+- test mixed-sign adjustments and supplier credit notes;
+- only after acceptance pull the updated `main` subtree into the Dolibarr consumer.
 
 ### Next development blocks
 1. Controlled assignment/creation of missing products and supplier-product references.
@@ -103,8 +108,7 @@ Do not delete the two source branches until the consolidation PR passes CI, is r
 5. Bank-transaction reconciliation remains a separate integration layer (BankSync), not a second NAV-owned banking subsystem.
 
 Before stable release:
-- validate MODIFY/STORNO against real multi-step NAV chains;
-- test mixed-sign adjustments and supplier credit notes;
+- keep unsupported accounting semantics blocked rather than guessed;
 - test outbound compliance against a representative NAV test/sandbox workflow before any submission capability is considered;
 - complete Dolibarr 23 integration acceptance.
 
