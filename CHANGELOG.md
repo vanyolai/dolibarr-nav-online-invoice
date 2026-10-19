@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased - outbound foundation
+## Unreleased - post-consolidation hardening
+
+- Reject NAV API responses whose protocol \`result/funcCode\` is not \`OK\` (including HTTP 200 errors or missing result codes), preserving NAV error codes and request IDs.
+- Add network-free protocol response regression cases to the PHP 8.1/8.3 CI matrix.
+- Clarify that optional, explicitly configured READY inbound supplier invoice auto-validation exists after manual draft import; NAV synchronization remains read-only.
+
+## 0.9.0 - development (outbound foundation and consolidation)
 
 - Add the M1 Dolibarr 23 → NAV Online Invoice 3.0 field-map baseline for normal domestic HUF customer invoices.
 - Define a normalized outbound snapshot contract separating Dolibarr source objects from NAV XML serialization.
