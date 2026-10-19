@@ -2,7 +2,7 @@
 
 ## Unreleased - post-consolidation hardening
 
-- Reject NAV API responses whose protocol \`result/funcCode\` is not \`OK\` (including HTTP 200 errors or missing result codes), preserving NAV error codes and request IDs.
+- Reject NAV API responses whose protocol `result/funcCode` is not `OK` (including HTTP 200 errors or missing result codes), preserving NAV error codes and request IDs.
 - Add network-free protocol response regression cases to the PHP 8.1/8.3 CI matrix.
 - Clarify that optional, explicitly configured READY inbound supplier invoice auto-validation exists after manual draft import; NAV synchronization remains read-only.
 
