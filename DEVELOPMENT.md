@@ -17,7 +17,7 @@ Current integrated Dolibarr snapshot version: **0.9.0**.
 
 NAV synchronization and Dolibarr accounting mutation are deliberately separated.
 
-The module may acquire and mirror NAV data automatically, but supported invoices are imported **manually and created as drafts first**. If an administrator explicitly enables \`NAVINVOICE_AUTO_VALIDATE_INBOUND\`, a manually imported READY supplier invoice may subsequently be validated through Dolibarr's native API after permission and stock-safety checks. Synchronization itself must never trigger validation. Customer invoice validation, accounting and payment are not automated.
+The module may acquire and mirror NAV data automatically, but supported invoices are imported **manually and created as drafts first**. If an administrator explicitly enables `NAVINVOICE_AUTO_VALIDATE_INBOUND`, a manually imported READY supplier invoice may subsequently be validated through Dolibarr's native API after permission and stock-safety checks. Synchronization itself must never trigger validation. Customer invoice validation, accounting and payment are not automated.
 
 Existing Dolibarr invoices and partner data must never be overwritten by synchronization.
 
