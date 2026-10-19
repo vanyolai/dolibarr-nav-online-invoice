@@ -95,6 +95,9 @@ The source branches `feature/outbound-foundation`, `refactor/final-audit` and th
 ## Roadmap
 
 ### Immediate validation after consolidation
+
+Track results using [`docs/integration-acceptance-0.9.0.md`](docs/integration-acceptance-0.9.0.md). This checklist is a manual release gate, not a claim that live environment validation has already happened.
+
 - validate the merged NAV profile configuration against the real test/sandbox environment;
 - validate importer amount/rounding behavior against representative real invoices;
 - validate MODIFY/STORNO against real multi-step NAV chains;
