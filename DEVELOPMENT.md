@@ -17,7 +17,7 @@ Current integrated Dolibarr snapshot version: **0.9.0**.
 
 NAV synchronization and Dolibarr accounting mutation are deliberately separated.
 
-The module may acquire and mirror NAV data automatically, but supported invoices are imported **manually as drafts**. It must not silently validate, account or pay them.
+The module may acquire and mirror NAV data automatically, but supported invoices are imported **manually and created as drafts first**. If an administrator explicitly enables `NAVINVOICE_AUTO_VALIDATE_INBOUND`, a manually imported READY supplier invoice may subsequently be validated through Dolibarr's native API after permission and stock-safety checks. Synchronization itself must never trigger validation. Customer invoice validation, accounting and payment are not automated.
 
 Existing Dolibarr invoices and partner data must never be overwritten by synchronization.
 
@@ -46,6 +46,7 @@ Implemented on `main`:
 - authoritative NAV line/header consistency validation;
 - HUF fractional and cumulative rounding hardening;
 - outbound-preflight and importer-reconciliation regression coverage;
+- NAV API protocol-status rejection and network-free regression coverage;
 - HU/EN strings.
 
 Unsupported/blocked cases remain blocked rather than guessed, including non-deterministic chain/accounting semantics.
@@ -94,6 +95,9 @@ The source branches `feature/outbound-foundation`, `refactor/final-audit` and th
 ## Roadmap
 
 ### Immediate validation after consolidation
+
+Track results using [`docs/integration-acceptance-0.9.0.md`](docs/integration-acceptance-0.9.0.md). This checklist is a manual release gate, not a claim that live environment validation has already happened.
+
 - validate the merged NAV profile configuration against the real test/sandbox environment;
 - validate importer amount/rounding behavior against representative real invoices;
 - validate MODIFY/STORNO against real multi-step NAV chains;

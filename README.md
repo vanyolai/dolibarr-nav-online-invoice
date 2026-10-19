@@ -2,7 +2,7 @@
 
 External Dolibarr module for synchronizing inbound and outbound invoices from the Hungarian NAV Online Invoice API v3 and importing supported NAV invoices into Dolibarr as drafts.
 
-> **Development status:** experimental. NAV acquisition is read-only, while supported NAV invoices can be imported manually into Dolibarr as draft customer or supplier invoices. Automatic validation, accounting and payment actions are intentionally not performed.
+> **Development status:** experimental. NAV acquisition is read-only. Supported NAV invoices are imported manually, initially as draft customer or supplier invoices. An explicitly enabled option can validate READY inbound supplier drafts after import, subject to Dolibarr permissions and stock safeguards; customer invoice validation, accounting and payment actions are not automated.
 
 ## Target
 
@@ -86,7 +86,7 @@ A named Git remote can be used instead of the repository URL, for example `navin
 
 Then enable **NAV Online Invoice** in Dolibarr's module setup.
 
-For an existing installation, no manual SQL migration is required. On first module-page access or synchronization the module ensures the current mirror schema is present.
+For an existing installation, the legacy mirror schema migration is performed during module initialization/activation (`modNavInvoice::init`), not on module-page access or synchronization. Back up the database and reinitialize the module through Dolibarr module administration after updating its code; no manual SQL migration is required if initialization succeeds.
 
 For automatic synchronization, Dolibarr Scheduled Jobs must also be operational.
 
@@ -157,9 +157,11 @@ The importer is intentionally conservative. It requires complete NAV XML, a stro
 
 For non-`CREATE` operations the module additionally requires the original NAV invoice to be known and linked to Dolibarr, earlier modification indexes to be imported first, and the local relation chain to match the authoritative NAV chain. Negative `MODIFY` and `STORNO` operations map to source-linked Dolibarr credit notes; positive `MODIFY` operations map to source-linked standard adjustment drafts. Zero-value/non-financial modifications and `modifyWithoutMaster` cases remain blocked until a representation can be made without inventing accounting events.
 
-Existing Dolibarr invoices and partner data are never silently overwritten by the synchronization process. All invoice imports create new drafts only.
+Existing Dolibarr invoices and partner data are never silently overwritten by the synchronization process. Every invoice import initially creates and reconciles a new draft. When the administrator explicitly enables `NAVINVOICE_AUTO_VALIDATE_INBOUND`, a manually imported inbound supplier draft with READY preflight status may then be validated using Dolibarr's native validation flow if the user has permission and no stock/warehouse safeguard blocks it. This option never validates a customer invoice and does not run during NAV synchronization.
 
 Product matching is conservative and non-blocking. A deterministic match is linked through the native Dolibarr `fk_product` field while the NAV description, quantity, unit price and supplier reference remain authoritative for the imported invoice line. Unresolved or ambiguous items stay as free-text lines until product master data is resolved.
+
+The NAV API client treats a NAV protocol-level `result/funcCode` failure as an error even if the HTTP response is 200. A response missing the mandatory protocol result is also rejected.
 
 ## Development roadmap
 
@@ -172,6 +174,8 @@ The next development blocks are:
 3. support for additional foreign-currency and special VAT cases;
 4. explicit validation workflow for imported outbound drafts while preserving the original NAV invoice number;
 5. bank-transaction reconciliation in a separate integration layer.
+
+A dedicated [0.9.0 integration acceptance checklist](docs/integration-acceptance-0.9.0.md) covers environment isolation, representative HUF imports, invoice chains and the optional supplier-validation workflow before subtree deployment.
 
 Before a stable release, the MODIFY/STORNO mapping still needs validation against real NAV invoice chains and a Dolibarr 23 test installation, especially multi-step modifications, mixed-sign adjustments and supplier credit notes.
 

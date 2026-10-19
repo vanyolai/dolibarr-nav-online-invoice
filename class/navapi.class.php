@@ -305,7 +305,36 @@ class NavInvoiceApi
             );
         }
 
+        // HTTP success alone does not mean the NAV operation succeeded.
+        // All normal NAV API responses include result/funcCode; GeneralErrorResponse
+        // can return a protocol failure even when HTTP status is 200.
+        $this->assertSuccessfulResult($response, $endpoint, $requestId);
+
         return $response;
+    }
+
+    /**
+     * @throws Exception when NAV reports a failed or malformed API result
+     */
+    private function assertSuccessfulResult(SimpleXMLElement $response, string $endpoint, string $requestId): void
+    {
+        $funcCode = strtoupper($this->xpathValue(
+            $response,
+            '/*/*[local-name()="result"]/*[local-name()="funcCode"]'
+        ));
+        if ($funcCode === 'OK') {
+            return;
+        }
+
+        $errorCode = $this->xpathValue($response, '/*/*[local-name()="result"]/*[local-name()="errorCode"]');
+        $errorMessage = $this->xpathValue($response, '/*/*[local-name()="result"]/*[local-name()="message"]');
+        $detail = trim($errorCode.($errorMessage !== '' ? ': '.$errorMessage : ''));
+        throw new Exception(
+            'NAV API '.$endpoint.' unsuccessful protocol result: '
+            .($funcCode !== '' ? $funcCode : 'missing funcCode')
+            .($detail !== '' ? ' - '.$detail : '')
+            .' [requestId '.$requestId.'].'
+        );
     }
 
     /**
