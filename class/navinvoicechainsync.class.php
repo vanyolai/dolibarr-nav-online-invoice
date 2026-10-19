@@ -32,7 +32,7 @@ class NavInvoiceChainSyncService
     {
         $this->db = $db;
         $this->entity = $entity;
-        $this->api = $api ?: new NavInvoiceApi();
+        $this->api = $api ?: NavInvoiceApi::production();
         $this->chainService = new NavInvoiceChainService($this->api);
         $this->parser = new NavInvoiceParser();
     }

@@ -9,20 +9,30 @@ class NavInvoiceApi
     private string $password;
     private string $taxNumber;
     private string $signingKey;
+    private string $exchangeKey;
     private string $environment;
     private string $softwareId;
     private string $softwareVersion;
     private int $minIntervalMs;
 
-    public function __construct()
+    public function __construct(?string $environment = null)
     {
-        $this->login = trim((string) getDolGlobalString('NAVINVOICE_LOGIN'));
-        $this->password = $this->readSecret('NAVINVOICE_PASSWORD');
-        $this->taxNumber = $this->normalizeTaxNumber((string) getDolGlobalString('NAVINVOICE_TAX_NUMBER'));
-        $this->signingKey = trim($this->readSecret('NAVINVOICE_SIGNING_KEY'));
-        $this->environment = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === 'production' ? 'production' : 'test';
+        $legacyEnvironment = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === 'production' ? 'production' : 'test';
+        $environment = $environment === null || trim($environment) === '' ? $legacyEnvironment : strtolower(trim($environment));
+        if (!in_array($environment, array('production', 'test'), true)) {
+            throw new InvalidArgumentException('NAV environment must be production or test.');
+        }
+
+        $this->environment = $environment;
+        $prefix = 'NAVINVOICE_'.strtoupper($environment).'_';
+
+        $this->login = trim($this->readProfileValue($prefix.'LOGIN', 'NAVINVOICE_LOGIN', $legacyEnvironment));
+        $this->password = $this->readProfileSecret($prefix.'PASSWORD', 'NAVINVOICE_PASSWORD', $legacyEnvironment);
+        $this->taxNumber = $this->normalizeTaxNumber($this->readProfileValue($prefix.'TAX_NUMBER', 'NAVINVOICE_TAX_NUMBER', $legacyEnvironment));
+        $this->signingKey = trim($this->readProfileSecret($prefix.'SIGNING_KEY', 'NAVINVOICE_SIGNING_KEY', $legacyEnvironment));
+        $this->exchangeKey = trim($this->readProfileSecret($prefix.'EXCHANGE_KEY', 'NAVINVOICE_EXCHANGE_KEY', $legacyEnvironment));
         $this->softwareId = trim((string) getDolGlobalString('NAVINVOICE_SOFTWARE_ID', 'DOLIBARRNAVSYNC001'));
-        $this->softwareVersion = '0.8.0';
+        $this->softwareVersion = '0.9.0';
         // Keep a small serialized gap between requests. Full invoice payloads
         // are queried one-by-one by the NAV API, so a large fixed delay makes
         // historical inbound synchronization unnecessarily slow. The value can
@@ -30,9 +40,29 @@ class NavInvoiceApi
         $this->minIntervalMs = max(0, min(5000, getDolGlobalInt('NAVINVOICE_API_MIN_INTERVAL_MS', 300)));
     }
 
+    public static function production(): self
+    {
+        return new self('production');
+    }
+
+    public static function test(): self
+    {
+        return new self('test');
+    }
+
+    public function getEnvironment(): string
+    {
+        return $this->environment;
+    }
+
     public function isConfigured(): bool
     {
         return $this->login !== '' && $this->password !== '' && strlen($this->taxNumber) === 8 && $this->signingKey !== '';
+    }
+
+    public function isOutboundConfigured(): bool
+    {
+        return $this->isConfigured() && $this->exchangeKey !== '';
     }
 
     public function queryTaxpayer(?string $taxNumber = null): SimpleXMLElement
@@ -370,6 +400,34 @@ class NavInvoiceApi
     {
         $nodes = $node->xpath($xpath);
         return $nodes ? trim((string) $nodes[0]) : '';
+    }
+
+    private function readProfileValue(string $profileName, string $legacyName, string $legacyEnvironment): string
+    {
+        $value = trim((string) getDolGlobalString($profileName));
+        if ($value !== '') {
+            return $value;
+        }
+
+        if ($legacyEnvironment === $this->environment) {
+            return trim((string) getDolGlobalString($legacyName));
+        }
+
+        return '';
+    }
+
+    private function readProfileSecret(string $profileName, string $legacyName, string $legacyEnvironment): string
+    {
+        $value = $this->readSecret($profileName);
+        if ($value !== '') {
+            return $value;
+        }
+
+        if ($legacyEnvironment === $this->environment) {
+            return $this->readSecret($legacyName);
+        }
+
+        return '';
     }
 
     private function readSecret(string $name): string

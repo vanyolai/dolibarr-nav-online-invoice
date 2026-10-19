@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased - outbound foundation
+
+- Add the M1 Dolibarr 23 → NAV Online Invoice 3.0 field-map baseline for normal domestic HUF customer invoices.
+- Define a normalized outbound snapshot contract separating Dolibarr source objects from NAV XML serialization.
+- Add a pure, network-free outbound compliance preflight with deterministic BLOCK/WARN results.
+- Block ambiguous zero-VAT lines unless an explicit NAV tax classification is supplied; positive 5%, 18% and 27% rates are mapped as percentage VAT in the initial MVP.
+- Add conservative customer VAT-status handling: DOMESTIC requires a tax number, while missing tax number alone never implies PRIVATE_PERSON.
+- Add periodical-settlement completeness checks and header/line total reconciliation.
+- Add standalone regression coverage for the outbound preflight and run it in the PHP 8.1/8.3 CI matrix.
+
 ## 0.8.0 - development
 
 - Document git subtree as the preferred integration model; this repository is the authoritative module source and Dolibarr consumes it under `htdocs/custom/navinvoice`.

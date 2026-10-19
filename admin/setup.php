@@ -80,47 +80,113 @@ function navinvoiceSetScheduledSyncCronState($db, int $entity, bool $enabled, $u
 }
 
 $action = GETPOST('action', 'aZ09');
-$isConfigPost = in_array($action, array('save', 'test'), true);
+$isConfigPost = in_array($action, array('save', 'test_production', 'test_test'), true);
 $storedSyncEnabled = (bool) getDolGlobalInt('NAVINVOICE_SYNC_ENABLED');
+$legacyEnvironment = getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test') === 'production' ? 'production' : 'test';
 
-$formEnvironment = $isConfigPost
-    ? (GETPOST('environment', 'alpha') === 'production' ? 'production' : 'test')
-    : getDolGlobalString('NAVINVOICE_ENVIRONMENT', 'test');
-$formLogin = $isConfigPost ? trim(GETPOST('login', 'alphanohtml')) : getDolGlobalString('NAVINVOICE_LOGIN');
-$formTaxNumber = $isConfigPost
-    ? preg_replace('/\D+/', '', GETPOST('tax_number', 'alphanohtml'))
-    : getDolGlobalString('NAVINVOICE_TAX_NUMBER');
+$storedProfileValue = static function (string $environment, string $suffix, string $legacyName) use ($legacyEnvironment): string {
+    $name = 'NAVINVOICE_'.strtoupper($environment).'_'.$suffix;
+    $value = trim((string) getDolGlobalString($name));
+    if ($value !== '') {
+        return $value;
+    }
+    return $legacyEnvironment === $environment ? trim((string) getDolGlobalString($legacyName)) : '';
+};
+$storedProfileSecretPresent = static function (string $environment, string $suffix, string $legacyName) use ($legacyEnvironment): bool {
+    $name = 'NAVINVOICE_'.strtoupper($environment).'_'.$suffix;
+    if (getDolGlobalString($name) !== '') {
+        return true;
+    }
+    return $legacyEnvironment === $environment && getDolGlobalString($legacyName) !== '';
+};
+
+$formProfiles = array();
+foreach (array('production', 'test') as $environment) {
+    $prefix = $environment.'_';
+    $formProfiles[$environment] = array(
+        'login' => $isConfigPost ? trim(GETPOST($prefix.'login', 'alphanohtml')) : $storedProfileValue($environment, 'LOGIN', 'NAVINVOICE_LOGIN'),
+        'tax_number' => $isConfigPost
+            ? (string) preg_replace('/\\D+/', '', GETPOST($prefix.'tax_number', 'alphanohtml'))
+            : $storedProfileValue($environment, 'TAX_NUMBER', 'NAVINVOICE_TAX_NUMBER'),
+        'password' => $isConfigPost ? GETPOST($prefix.'password', 'none') : '',
+        'signing_key' => $isConfigPost ? trim(GETPOST($prefix.'signing_key', 'none')) : '',
+        'exchange_key' => $isConfigPost ? trim(GETPOST($prefix.'exchange_key', 'none')) : '',
+        'has_password' => $storedProfileSecretPresent($environment, 'PASSWORD', 'NAVINVOICE_PASSWORD'),
+        'has_signing_key' => $storedProfileSecretPresent($environment, 'SIGNING_KEY', 'NAVINVOICE_SIGNING_KEY'),
+        'has_exchange_key' => $storedProfileSecretPresent($environment, 'EXCHANGE_KEY', 'NAVINVOICE_EXCHANGE_KEY'),
+    );
+}
+
 $formLookbackDays = $isConfigPost ? max(1, min(35, GETPOSTINT('lookback_days'))) : getDolGlobalInt('NAVINVOICE_SYNC_LOOKBACK_DAYS', 7);
 $formSyncEnabled = $isConfigPost ? (bool) GETPOSTINT('sync_enabled') : $storedSyncEnabled;
 $formFetchFullData = $isConfigPost ? (bool) GETPOSTINT('fetch_full_data') : (bool) getDolGlobalInt('NAVINVOICE_FETCH_FULL_DATA', 1);
 $formAutoValidateInbound = $isConfigPost ? (bool) GETPOSTINT('auto_validate_inbound') : (bool) getDolGlobalInt('NAVINVOICE_AUTO_VALIDATE_INBOUND');
 $formPurchaseWorkbench = $isConfigPost ? (bool) GETPOSTINT('purchase_workbench_enabled') : (bool) getDolGlobalInt('NAVINVOICE_PURCHASE_WORKBENCH_ENABLED');
 $formShowTechnicalXml = $isConfigPost ? (bool) GETPOSTINT('show_technical_xml') : (bool) getDolGlobalInt('NAVINVOICE_SHOW_TECHNICAL_XML', 1);
+$validationErrors = array();
 
 if ($isConfigPost) {
-    $password = GETPOST('password', 'none');
-    $signingKey = trim(GETPOST('signing_key', 'none'));
-    $validationErrors = array();
+    foreach (array('production', 'test') as $environment) {
+        $profile = &$formProfiles[$environment];
+        $configured = $environment === 'production'
+            || $profile['login'] !== ''
+            || $profile['tax_number'] !== ''
+            || $profile['password'] !== ''
+            || $profile['signing_key'] !== ''
+            || $profile['exchange_key'] !== ''
+            || $profile['has_password']
+            || $profile['has_signing_key']
+            || $profile['has_exchange_key'];
 
-    if ($formLogin === '') {
-        $validationErrors[] = $langs->trans('NavLoginRequired');
-    }
-    if (strlen((string) $formTaxNumber) < 8) {
-        $validationErrors[] = $langs->trans('NavTaxNumberInvalid');
-    } else {
-        $formTaxNumber = substr((string) $formTaxNumber, 0, 8);
-    }
-    if ($action === 'test' && $password === '' && getDolGlobalString('NAVINVOICE_PASSWORD') === '') {
-        $validationErrors[] = $langs->trans('NavPasswordRequired');
-    }
-    if ($action === 'test' && $signingKey === '' && getDolGlobalString('NAVINVOICE_SIGNING_KEY') === '') {
-        $validationErrors[] = $langs->trans('NavSigningKeyRequired');
+        if (!$configured) {
+            unset($profile);
+            continue;
+        }
+
+        if ($profile['login'] === '') {
+            $validationErrors[] = ucfirst($environment).': '.$langs->trans('NavLoginRequired');
+        }
+        if (strlen((string) $profile['tax_number']) < 8) {
+            $validationErrors[] = ucfirst($environment).': '.$langs->trans('NavTaxNumberInvalid');
+        } else {
+            $profile['tax_number'] = substr((string) $profile['tax_number'], 0, 8);
+        }
+        if ($profile['password'] === '' && !$profile['has_password']) {
+            $validationErrors[] = ucfirst($environment).': '.$langs->trans('NavPasswordRequired');
+        }
+        if ($profile['signing_key'] === '' && !$profile['has_signing_key']) {
+            $validationErrors[] = ucfirst($environment).': '.$langs->trans('NavSigningKeyRequired');
+        }
+        // The production profile is already useful for read-only synchronization
+        // without an exchange key. The test profile is specifically our outbound
+        // sandbox, therefore require its exchange key as soon as it is configured.
+        if ($environment === 'test' && $profile['exchange_key'] === '' && !$profile['has_exchange_key']) {
+            $validationErrors[] = 'Test: XML exchange key is required for outbound sandbox testing.';
+        }
+        unset($profile);
     }
 
     if (empty($validationErrors)) {
-        dolibarr_set_const($db, 'NAVINVOICE_ENVIRONMENT', $formEnvironment, 'chaine', 0, '', $conf->entity);
-        dolibarr_set_const($db, 'NAVINVOICE_LOGIN', $formLogin, 'chaine', 0, '', $conf->entity);
-        dolibarr_set_const($db, 'NAVINVOICE_TAX_NUMBER', $formTaxNumber, 'chaine', 0, '', $conf->entity);
+        foreach (array('production', 'test') as $environment) {
+            $profile = $formProfiles[$environment];
+            $constPrefix = 'NAVINVOICE_'.strtoupper($environment).'_';
+            dolibarr_set_const($db, $constPrefix.'LOGIN', $profile['login'], 'chaine', 0, '', $conf->entity);
+            dolibarr_set_const($db, $constPrefix.'TAX_NUMBER', $profile['tax_number'], 'chaine', 0, '', $conf->entity);
+
+            if ($profile['password'] !== '') {
+                dolibarr_set_const($db, $constPrefix.'PASSWORD', $profile['password'], 'chaine', 0, '', $conf->entity);
+                $formProfiles[$environment]['has_password'] = true;
+            }
+            if ($profile['signing_key'] !== '') {
+                dolibarr_set_const($db, $constPrefix.'SIGNING_KEY', $profile['signing_key'], 'chaine', 0, '', $conf->entity);
+                $formProfiles[$environment]['has_signing_key'] = true;
+            }
+            if ($profile['exchange_key'] !== '') {
+                dolibarr_set_const($db, $constPrefix.'EXCHANGE_KEY', $profile['exchange_key'], 'chaine', 0, '', $conf->entity);
+                $formProfiles[$environment]['has_exchange_key'] = true;
+            }
+        }
+
         dolibarr_set_const($db, 'NAVINVOICE_SYNC_ENABLED', $formSyncEnabled ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_FETCH_FULL_DATA', $formFetchFullData ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_SYNC_LOOKBACK_DAYS', (string) $formLookbackDays, 'chaine', 0, '', $conf->entity);
@@ -128,18 +194,9 @@ if ($isConfigPost) {
         dolibarr_set_const($db, 'NAVINVOICE_PURCHASE_WORKBENCH_ENABLED', $formPurchaseWorkbench ? '1' : '0', 'yesno', 0, '', $conf->entity);
         dolibarr_set_const($db, 'NAVINVOICE_SHOW_TECHNICAL_XML', $formShowTechnicalXml ? '1' : '0', 'yesno', 0, '', $conf->entity);
 
-        if ($password !== '') {
-            dolibarr_set_const($db, 'NAVINVOICE_PASSWORD', $password, 'chaine', 0, '', $conf->entity);
-        }
-        if ($signingKey !== '') {
-            dolibarr_set_const($db, 'NAVINVOICE_SIGNING_KEY', $signingKey, 'chaine', 0, '', $conf->entity);
-        }
-
         try {
             navinvoiceSetScheduledSyncCronState($db, (int) $conf->entity, $formSyncEnabled, $user);
         } catch (Throwable $e) {
-            // Do not leave the module flag claiming scheduled sync is enabled
-            // when the underlying Dolibarr cron entry could not be synchronized.
             dolibarr_set_const($db, 'NAVINVOICE_SYNC_ENABLED', $storedSyncEnabled ? '1' : '0', 'yesno', 0, '', $conf->entity);
             $formSyncEnabled = $storedSyncEnabled;
             $validationErrors[] = $langs->trans('ScheduledSync').': '.$e->getMessage();
@@ -155,13 +212,14 @@ if ($isConfigPost) {
     }
 }
 
-if ($action === 'test' && empty($validationErrors)) {
+if (in_array($action, array('test_production', 'test_test'), true) && empty($validationErrors)) {
+    $testEnvironment = $action === 'test_production' ? 'production' : 'test';
     try {
-        $api = new NavInvoiceApi();
+        $api = new NavInvoiceApi($testEnvironment);
         $response = $api->queryTaxpayer();
         $validity = $response->xpath('//*[local-name()="taxpayerValidity"]');
         $name = $response->xpath('//*[local-name()="taxpayerName"]');
-        $message = $langs->trans('NavConnectionSuccessful');
+        $message = ucfirst($testEnvironment).' - '.$langs->trans('NavConnectionSuccessful');
         if ($name) {
             $message .= ' - '.(string) $name[0];
         }
@@ -170,12 +228,10 @@ if ($action === 'test' && empty($validationErrors)) {
         }
         setEventMessages($message, null, 'mesgs');
     } catch (Throwable $e) {
-        setEventMessages($langs->trans('NavConnectionFailed').': '.$e->getMessage(), null, 'errors');
+        setEventMessages(ucfirst($testEnvironment).' - '.$langs->trans('NavConnectionFailed').': '.$e->getMessage(), null, 'errors');
     }
 }
 
-$hasStoredPassword = getDolGlobalString('NAVINVOICE_PASSWORD') !== '';
-$hasStoredSigningKey = getDolGlobalString('NAVINVOICE_SIGNING_KEY') !== '';
 $secretHint = static function (bool $hasValue) use ($langs): string {
     return $hasValue ? $langs->trans('StoredSecretPresent') : $langs->trans('StoredSecretMissing');
 };
@@ -183,7 +239,7 @@ $stockValidationNeedsWarehouse = isModEnabled('stock') && getDolGlobalString('ST
 $isHungarianUi = substr(strtolower((string) $langs->defaultlang), 0, 2) === 'hu';
 $fetchFullXmlHelp = $isHungarianUi
     ? 'Bekapcsolva az új vagy módosult számlák teljes NAV XML-je is letöltődik. Ez szükséges a tételszintű részletekhez, az importhoz és a beszerzési workbenchhez. Kikapcsolva csak az összesítő NAV-adatok frissülnek; a korábban letöltött XML-ek megmaradnak.'
-    : 'When enabled, the complete NAV XML is downloaded for new or changed invoices. It is required for line-level details, invoice import and the purchase workbench. When disabled, only summary NAV data is refreshed; XML files downloaded earlier are kept.';
+    : 'When enabled, the complete NAV XML is downloaded for new or changed invoices. It is required for line-level details, invoice import and the purchase workbench. When disabled, only summary NAV data are refreshed; XML files downloaded earlier are kept.';
 
 llxHeader('', $langs->trans('NavInvoiceSetup'));
 print load_fiche_titre($langs->trans('NavInvoiceSetup'), '', 'title_setup');
@@ -191,19 +247,36 @@ print load_fiche_titre($langs->trans('NavInvoiceSetup'), '', 'title_setup');
 print '<form method="POST" action="'.$_SERVER['PHP_SELF'].'">';
 print '<input type="hidden" name="token" value="'.newToken().'">';
 print '<table class="noborder centpercent">';
-print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavApiConfiguration').'</td></tr>';
 
-print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('Environment').'</td><td><select name="environment">';
-foreach (array('test' => 'Test', 'production' => 'Production') as $value => $label) {
-    $selected = $formEnvironment === $value ? ' selected' : '';
-    print '<option value="'.$value.'"'.$selected.'>'.$langs->trans($label).'</option>';
+$profileTitles = array(
+    'production' => $isHungarianUi ? 'Éles NAV kapcsolat' : 'Production NAV connection',
+    'test' => $isHungarianUi ? 'NAV teszt / sandbox kapcsolat' : 'NAV test / sandbox connection',
+);
+$profileHelp = array(
+    'production' => $isHungarianUi
+        ? 'Az élő NAV számlák lekérdezése és szinkronizálása mindig ezt a profilt használja.'
+        : 'Live NAV invoice queries and synchronization always use this profile.',
+    'test' => $isHungarianUi
+        ? 'A fejlesztési outbound beküldések kizárólag ezt a profilt és a NAV teszt API-t használják.'
+        : 'Development outbound submissions use only this profile and the NAV test API.',
+);
+
+foreach (array('production', 'test') as $environment) {
+    $profile = $formProfiles[$environment];
+    $fieldPrefix = $environment.'_';
+    print '<tr class="liste_titre"><td colspan="2">'.dol_escape_htmltag($profileTitles[$environment]).'</td></tr>';
+    print '<tr class="oddeven"><td>'.$langs->trans('Environment').'</td><td><strong>'.($environment === 'production' ? 'PRODUCTION' : 'TEST').'</strong> <span class="opacitymedium">'.dol_escape_htmltag($profileHelp[$environment]).'</span></td></tr>';
+    print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnicalUserLogin').'</td><td><input class="minwidth300" type="text" name="'.$fieldPrefix.'login" value="'.dol_escape_htmltag((string) $profile['login']).'" autocomplete="off"></td></tr>';
+    print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnicalUserPassword').'</td><td><input class="minwidth300" type="password" name="'.$fieldPrefix.'password" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint((bool) $profile['has_password']).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
+    print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTaxNumber').'</td><td><input class="minwidth200" maxlength="8" inputmode="numeric" type="text" name="'.$fieldPrefix.'tax_number" value="'.dol_escape_htmltag((string) $profile['tax_number']).'"> <span class="opacitymedium">'.$langs->trans('NavTaxNumberHelp').'</span></td></tr>';
+    print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavSigningKey').'</td><td><input class="minwidth300" type="password" name="'.$fieldPrefix.'signing_key" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint((bool) $profile['has_signing_key']).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
+    $exchangeRequired = $environment === 'test' ? ' class="fieldrequired"' : '';
+    print '<tr class="oddeven"><td'.$exchangeRequired.'>XML exchange key</td><td><input class="minwidth300" type="password" name="'.$fieldPrefix.'exchange_key" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint((bool) $profile['has_exchange_key']).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
+    print '<tr class="oddeven"><td></td><td><button class="button" type="submit" name="action" value="test_'.$environment.'">'.($isHungarianUi ? 'Mentés és kapcsolat tesztelése' : 'Save and test connection').'</button></td></tr>';
 }
-print '</select></td></tr>';
-print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnicalUserLogin').'</td><td><input class="minwidth300" type="text" name="login" value="'.dol_escape_htmltag($formLogin).'" autocomplete="off"></td></tr>';
-print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTechnicalUserPassword').'</td><td><input class="minwidth300" type="password" name="password" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint($hasStoredPassword).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
-print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavTaxNumber').'</td><td><input class="minwidth200" maxlength="8" inputmode="numeric" type="text" name="tax_number" value="'.dol_escape_htmltag((string) $formTaxNumber).'"> <span class="opacitymedium">'.$langs->trans('NavTaxNumberHelp').'</span></td></tr>';
-print '<tr class="oddeven"><td class="fieldrequired">'.$langs->trans('NavSigningKey').'</td><td><input class="minwidth300" type="password" name="signing_key" value="" autocomplete="new-password"> <span class="opacitymedium">'.$secretHint($hasStoredSigningKey).'; '.$langs->trans('LeaveBlankToKeep').'</span></td></tr>';
-print '<tr class="oddeven"><td>'.$langs->trans('ScheduledSync').'</td><td><input type="checkbox" name="sync_enabled" value="1"'.($formSyncEnabled ? ' checked' : '').'> <span class="opacitymedium">1 × 3600 s; '.$langs->trans('DirectionBoth').'</span></td></tr>';
+
+print '<tr class="liste_titre"><td colspan="2">'.($isHungarianUi ? 'Éles NAV szinkronizálás' : 'Production NAV synchronization').'</td></tr>';
+print '<tr class="oddeven"><td>'.$langs->trans('ScheduledSync').'</td><td><input type="checkbox" name="sync_enabled" value="1"'.($formSyncEnabled ? ' checked' : '').'> <span class="opacitymedium">1 × 3600 s; '.$langs->trans('DirectionBoth').'; PRODUCTION</span></td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('SyncLookbackDays').'</td><td><input type="number" min="1" max="35" name="lookback_days" value="'.((int) $formLookbackDays).'"></td></tr>';
 print '<tr class="oddeven"><td>'.$langs->trans('DownloadFullInvoiceXml').'</td><td><input type="checkbox" name="fetch_full_data" value="1"'.($formFetchFullData ? ' checked' : '').'> <span class="opacitymedium">'.dol_escape_htmltag($fetchFullXmlHelp).'</span></td></tr>';
 
@@ -219,8 +292,7 @@ print '<tr class="liste_titre"><td colspan="2">'.$langs->trans('NavDisplayConfig
 print '<tr class="oddeven"><td>'.$langs->trans('ShowTechnicalNavXml').'</td><td><input type="checkbox" name="show_technical_xml" value="1"'.($formShowTechnicalXml ? ' checked' : '').'> <span class="opacitymedium">'.$langs->trans('ShowTechnicalNavXmlHelp').'</span></td></tr>';
 print '</table>';
 print '<div class="center">';
-print '<button class="button button-save" type="submit" name="action" value="save">'.$langs->trans('Save').'</button> ';
-print '<button class="button" type="submit" name="action" value="test">'.$langs->trans('SaveAndTestNavConnection').'</button>';
+print '<button class="button button-save" type="submit" name="action" value="save">'.$langs->trans('Save').'</button>';
 print '</div>';
 print '</form>';
 

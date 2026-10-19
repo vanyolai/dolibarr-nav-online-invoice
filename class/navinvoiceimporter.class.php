@@ -2,6 +2,7 @@
 
 dol_include_once('/navinvoice/class/navunitresolver.class.php');
 dol_include_once('/navinvoice/class/navpaymentresolver.class.php');
+dol_include_once('/navinvoice/class/navamountpolicy.class.php');
 
 /**
  * Import a validated NAV import preview into Dolibarr.
@@ -10,11 +11,11 @@ dol_include_once('/navinvoice/class/navpaymentresolver.class.php');
  * invoices may then be validated through Dolibarr's native validation flow when
  * the module setting allows it and the preflight state is fully READY.
  *
- * Source line semantics must remain internally consistent in Dolibarr. This
- * importer never repairs mismatches by overwriting calculated line totals: a
- * line must be representable through quantity, unit price, discount and VAT or
- * the import fails. Only invoice-summary rounding may be reconciled separately
- * after every created line already matches NAV.
+ * Source line semantics must remain internally consistent in Dolibarr. Native
+ * Dolibarr pricing is preferred. When its configured rounding cannot reproduce
+ * authoritative NAV supplier-line amounts, the importer preserves those source
+ * totals through SupplierInvoiceLine and then asks Dolibarr to sum the stored
+ * lines without recalculating them (update_price rounding mode "none").
  */
 class NavInvoiceImporter
 {
@@ -105,15 +106,28 @@ class NavInvoiceImporter
             $invoice = $result['object'];
 
             $reconciliation = $this->reconcileRoundingWithNav($invoice, $preview, $inbound);
-            if ($reconciliation === 'none' && $inbound && in_array($category, array('NORMAL', 'AGGREGATE'), true)
-                && $this->prepareSupplierLinesForNavSummary($invoice, $preview)) {
-                $this->preserveSupplierNavSummary($invoice, $preview, $user);
-                $reconciliation = 'nav_summary';
+            if ($inbound && in_array($category, array('NORMAL', 'AGGREGATE'), true)) {
+                $linesMatched = $this->supplierLinesMatchNav($invoice, $preview);
+                if (!$linesMatched) {
+                    $linesMatched = $this->rewriteSupplierLinesFromNav($invoice, $preview);
+                    if ($linesMatched) {
+                        $reconciliation = 'nav_lines';
+                    }
+                }
+                if (!$linesMatched) {
+                    throw new Exception('Created Dolibarr supplier invoice lines differ from authoritative NAV line totals.');
+                }
+                if ($reconciliation === 'none' || $reconciliation === 'nav_lines') {
+                    $this->preserveSupplierNavSummary($invoice, $preview, $user);
+                    if ($reconciliation === 'none') {
+                        $reconciliation = 'nav_stored_lines';
+                    }
+                }
             }
 
-            // If native Dolibarr semantics plus supported rounding still cannot
-            // reproduce the NAV source, fail and roll the draft back. Never leave
-            // a line whose stored totals contradict qty/price/discount/VAT.
+            // If native Dolibarr semantics plus supported source-line
+            // reconciliation still cannot reproduce NAV at currency precision,
+            // fail and roll the draft back.
             $this->assertCreatedTotals($invoice, $preview);
             $this->assertOperationMapping($invoice, $preview);
             $this->linkMirrorRecord((int) $record->rowid, $direction, $invoiceId);
@@ -388,6 +402,7 @@ class NavInvoiceImporter
         if (count($lineIds) !== count($mappedLines)) {
             return false;
         }
+        $currency = (string) ($preview['header']['currency'] ?? $this->baseCurrency);
         foreach ($lineIds as $index => $lineId) {
             $mapped = $mappedLines[$index];
             if (($mapped['net'] ?? null) === null || ($mapped['vat'] ?? null) === null || ($mapped['gross'] ?? null) === null) {
@@ -397,52 +412,139 @@ class NavInvoiceImporter
             if ($line->fetch($lineId) <= 0) {
                 throw new Exception('Could not reload created supplier invoice line '.$lineId.'.');
             }
-            if (!$this->amountsEqual((float) $line->total_ht, (float) $mapped['net'])
-                || !$this->amountsEqual((float) $line->total_tva, (float) $mapped['vat'])
-                || !$this->amountsEqual((float) $line->total_ttc, (float) $mapped['gross'])) {
+            if (!NavAmountPolicy::amountMatches((float) $line->total_ht, (float) $mapped['net'], $currency)
+                || !NavAmountPolicy::amountMatches((float) $line->total_tva, (float) $mapped['vat'], $currency)
+                || !NavAmountPolicy::amountMatches((float) $line->total_ttc, (float) $mapped['gross'], $currency)) {
                 return false;
             }
         }
         return true;
     }
 
-    private function prepareSupplierLinesForNavSummary(FactureFournisseur $invoice, array $preview): bool
+    /**
+     * Preserve authoritative NAV supplier-line amounts when Dolibarr's normal
+     * calculation modes cannot represent the source rounding.
+     *
+     * SupplierInvoiceLine::update() is deliberately used instead of direct SQL
+     * against Dolibarr core tables. Triggers are suppressed here because the
+     * lines have already gone through the normal create/updateline lifecycle;
+     * this is an internal accounting reconciliation step of the same import.
+     */
+    private function rewriteSupplierLinesFromNav(FactureFournisseur $invoice, array $preview): bool
     {
-        if ($this->supplierLinesMatchNav($invoice, $preview)) {
-            return true;
+        $mappedLines = is_array($preview['lines'] ?? null) ? $preview['lines'] : array();
+        $lineIds = $this->supplierLineIds($invoice);
+        if (!$mappedLines || count($lineIds) !== count($mappedLines)) {
+            return false;
         }
-        $result = $invoice->fetch_thirdparty();
-        if ($result < 0 || !is_object($invoice->thirdparty)) {
-            throw new Exception('Could not load supplier for NAV line reconciliation.');
+
+        $currency = (string) ($preview['header']['currency'] ?? $this->baseCurrency);
+        foreach ($lineIds as $index => $lineId) {
+            $mapped = $mappedLines[$index];
+            foreach (array('net', 'vat', 'gross') as $amountKey) {
+                if (($mapped[$amountKey] ?? null) === null || ($mapped[$amountKey] ?? '') === '' || !is_numeric($mapped[$amountKey])) {
+                    return false;
+                }
+            }
+
+            $sourceNet = (float) $mapped['net'];
+            $sourceVat = (float) $mapped['vat'];
+            $sourceGross = (float) $mapped['gross'];
+            $calculatedGross = $sourceNet + $sourceVat;
+            if (!NavAmountPolicy::amountMatches($calculatedGross, $sourceGross, $currency)) {
+                return false;
+            }
+
+            $line = new SupplierInvoiceLine($this->db);
+            if ($line->fetch($lineId) <= 0) {
+                throw new Exception('Could not reload created supplier invoice line '.$lineId.'.');
+            }
+
+            $qty = (float) $line->qty;
+            $discount = $this->discountPercent((float) $line->remise_percent);
+            $discountFactor = 1.0 - ($discount / 100.0);
+            if (abs($qty) <= 0.000000001 || $discountFactor <= 0.000000001) {
+                if (abs($sourceNet) <= 0.00001 && abs($sourceVat) <= 0.00001 && abs($sourceGross) <= 0.00001) {
+                    continue;
+                }
+                return false;
+            }
+
+            $subprice = $sourceNet / ($qty * $discountFactor);
+            $subpriceTtc = $calculatedGross / ($qty * $discountFactor);
+
+            $line->subprice = $subprice;
+            $line->pu_ht = $subprice;
+            $line->subprice_ttc = $subpriceTtc;
+            $line->pu_ttc = $subpriceTtc;
+            $line->total_ht = $sourceNet;
+            $line->total_tva = $sourceVat;
+            $line->total_ttc = $calculatedGross;
+
+            // NAV import currently accepts only the Dolibarr base currency with
+            // multicurrency_tx=1, so mirror authoritative amounts consistently.
+            $line->multicurrency_subprice = $subprice;
+            $line->multicurrency_total_ht = $sourceNet;
+            $line->multicurrency_total_tva = $sourceVat;
+            $line->multicurrency_total_ttc = $calculatedGross;
+
+            if ($line->update(1) <= 0) {
+                throw new Exception('Could not preserve NAV amounts on supplier invoice line '.$lineId.': '.$this->objectError($line));
+            }
         }
-        foreach (array('0', '1') as $roundingMode) {
-            $result = $invoice->update_price(1, $roundingMode, 0, $invoice->thirdparty);
-            if ($result <= 0) {
-                throw new Exception('Dolibarr supplier line reconciliation failed in mode '.$roundingMode.': '.$this->objectError($invoice));
-            }
-            if ($invoice->fetch((int) $invoice->id) <= 0) {
-                throw new Exception('Dolibarr supplier invoice could not be reloaded after line reconciliation.');
-            }
-            if ($this->supplierLinesMatchNav($invoice, $preview)) {
-                return true;
-            }
-        }
-        return false;
+
+        return $this->supplierLinesMatchNav($invoice, $preview);
     }
 
     /**
-     * Reconcile only NAV header-summary rounding after every supplier line has
-     * already been proven equal to its NAV source line.
+     * Preserve authoritative NAV header totals after all supplier lines have
+     * already been proven equivalent to their NAV source amounts.
+     *
+     * Summing individually rounded HUF lines can legitimately differ from
+     * rounding the NAV invoice summary once (for example VAT 678 vs 679).
+     * Dolibarr's own object API is used for the denormalized invoice header;
+     * core tables are never updated directly here.
      */
     private function preserveSupplierNavSummary(FactureFournisseur $invoice, array $preview, User $user): void
     {
-        $expected = $preview['totals'] ?? array();
-        if (($expected['net'] ?? null) === null || ($expected['vat'] ?? null) === null || ($expected['gross'] ?? null) === null) {
-            throw new Exception('NAV authoritative invoice totals are incomplete.');
-        }
         if (!$this->supplierLinesMatchNav($invoice, $preview)) {
-            throw new Exception('Cannot apply NAV summary-only reconciliation because supplier line totals differ.');
+            throw new Exception('Cannot preserve NAV supplier totals because supplier line totals still differ.');
         }
+
+        $expected = is_array($preview['totals'] ?? null) ? $preview['totals'] : array();
+        foreach (array('net', 'vat', 'gross') as $amountKey) {
+            if (($expected[$amountKey] ?? null) === null || ($expected[$amountKey] ?? '') === '' || !is_numeric($expected[$amountKey])) {
+                throw new Exception('NAV authoritative supplier invoice totals are incomplete.');
+            }
+        }
+
+        $currency = (string) ($preview['header']['currency'] ?? $this->baseCurrency);
+        if (!NavAmountPolicy::amountMatches(
+            (float) $expected['net'] + (float) $expected['vat'],
+            (float) $expected['gross'],
+            $currency
+        )) {
+            throw new Exception('NAV authoritative supplier invoice header is internally inconsistent.');
+        }
+
+        // First let Dolibarr sum the already reconciled stored lines without
+        // recalculating them. If the result matches NAV, no header override is
+        // needed.
+        $result = $invoice->update_price(1, 'none', 0, is_object($invoice->thirdparty ?? null) ? $invoice->thirdparty : null);
+        if ($result <= 0) {
+            throw new Exception('Could not sum authoritative NAV supplier lines: '.$this->objectError($invoice));
+        }
+        if ($invoice->fetch((int) $invoice->id) <= 0) {
+            throw new Exception('Supplier invoice could not be reloaded after NAV line reconciliation.');
+        }
+        if ($this->totalsMatch($invoice, $preview)) {
+            dol_syslog('NavInvoiceImporter summed authoritative NAV supplier lines without header adjustment on invoice '.((int) $invoice->id), LOG_INFO);
+            return;
+        }
+
+        // Cumulative line rounding differs from the authoritative NAV summary.
+        // FactureFournisseur::update() is the Dolibarr business-object API for
+        // these denormalized base-currency totals.
         $invoice->total_ht = (float) $expected['net'];
         $invoice->total_tva = (float) $expected['vat'];
         $invoice->total_ttc = (float) $expected['gross'];
@@ -452,10 +554,29 @@ class NavInvoiceImporter
         if ($invoice->update($user, 1) <= 0) {
             throw new Exception('Could not preserve authoritative NAV supplier invoice summary: '.$this->objectError($invoice));
         }
+
+        // Imports are restricted to the Dolibarr base currency with tx=1.
+        // Keep the parallel multicurrency denormalized totals coherent as well,
+        // using CommonObject::setValueFrom() rather than direct SQL.
+        $multicurrencyTotals = array(
+            'multicurrency_total_ht' => (float) $expected['net'],
+            'multicurrency_total_tva' => (float) $expected['vat'],
+            'multicurrency_total_ttc' => (float) $expected['gross'],
+        );
+        foreach ($multicurrencyTotals as $field => $value) {
+            if ($invoice->setValueFrom($field, price2num($value, 'MT', 1), '', null, '', '', 'none', '') <= 0) {
+                throw new Exception('Could not preserve NAV supplier invoice '.$field.': '.$this->objectError($invoice));
+            }
+        }
+
         if ($invoice->fetch((int) $invoice->id) <= 0) {
             throw new Exception('Supplier invoice could not be reloaded after preserving NAV summary.');
         }
-        dol_syslog('NavInvoiceImporter preserved authoritative NAV summary without rewriting lines on supplier invoice '.((int) $invoice->id), LOG_INFO);
+        if (!$this->totalsMatch($invoice, $preview)) {
+            throw new Exception('NAV supplier invoice summary could not be preserved at Dolibarr document precision.');
+        }
+
+        dol_syslog('NavInvoiceImporter preserved authoritative NAV supplier summary after cumulative line rounding on invoice '.((int) $invoice->id), LOG_INFO);
     }
 
     private function reconcileRoundingWithNav($invoice, array $preview, bool $inbound): string
@@ -493,22 +614,18 @@ class NavInvoiceImporter
 
     private function totalsMatch($invoice, array $preview): bool
     {
-        $expected = $preview['totals'];
-        if (strtoupper((string) ($preview['category'] ?? '')) === 'SIMPLIFIED') {
-            return $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
-        }
+        $expected = is_array($preview['totals'] ?? null) ? $preview['totals'] : array();
         $currency = strtoupper(trim((string) ($preview['header']['currency'] ?? $this->baseCurrency)));
-        if ($currency === 'HUF') {
-            // NAV may expose fractional-forint VAT while the legally payable HUF
-            // gross and Dolibarr's accounting totals are whole forints. Keep net
-            // and gross authoritative and only tolerate a sub-forint VAT delta.
-            return $this->amountsEqual((float) $invoice->total_ht, (float) $expected['net'])
-                && abs((float) $invoice->total_tva - (float) $expected['vat']) < 1.0
-                && $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
-        }
-        return $this->amountsEqual((float) $invoice->total_ht, (float) $expected['net'])
-            && $this->amountsEqual((float) $invoice->total_tva, (float) $expected['vat'])
-            && $this->amountsEqual((float) $invoice->total_ttc, (float) $expected['gross']);
+        return NavAmountPolicy::invoiceTotalsMatch(
+            array(
+                'net' => (float) ($invoice->total_ht ?? 0),
+                'vat' => (float) ($invoice->total_tva ?? 0),
+                'gross' => (float) ($invoice->total_ttc ?? 0),
+            ),
+            $expected,
+            $currency,
+            (string) ($preview['category'] ?? '')
+        );
     }
 
     private function amountsEqual(float $actual, float $expected): bool

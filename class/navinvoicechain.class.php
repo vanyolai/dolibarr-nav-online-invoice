@@ -17,7 +17,7 @@ class NavInvoiceChainService
 
     public function __construct(?NavInvoiceApi $api = null)
     {
-        $this->api = $api ?: new NavInvoiceApi();
+        $this->api = $api ?: NavInvoiceApi::production();
     }
 
     /**
